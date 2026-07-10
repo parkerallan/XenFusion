@@ -1,8 +1,7 @@
 #include "project/ProjectIO.h"
 
+#include "project/SceneJson.h"
 #include "state/EngineState.h"
-
-#include <nlohmann/json.hpp>
 
 #include <windows.h>
 
@@ -11,7 +10,6 @@
 #include <system_error>
 
 namespace fs = std::filesystem;
-using nlohmann::json;
 
 namespace
 {
@@ -20,65 +18,6 @@ namespace
         wchar_t buf[MAX_PATH];
         const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
         return fs::path(std::wstring(buf, n)).parent_path() / "recent_projects.txt";
-    }
-
-    void WriteSceneJson(const SceneFile& scene)
-    {
-        json j;
-        j["name"] = scene.name;
-        j["objects"] = json::array();
-        for (const SceneObject& o : scene.objects)
-        {
-            json jo;
-            jo["name"]     = o.name;
-            jo["position"] = {o.position[0], o.position[1], o.position[2]};
-            jo["rotation"] = {o.rotation[0], o.rotation[1], o.rotation[2]};
-            jo["scale"]    = {o.scale[0], o.scale[1], o.scale[2]};
-            jo["visible"]  = o.visible;
-            j["objects"].push_back(jo);
-        }
-
-        std::ofstream out(scene.path, std::ios::binary | std::ios::trunc);
-        out << j.dump(2) << '\n';
-    }
-
-    bool ReadSceneJson(SceneFile& scene)
-    {
-        std::ifstream in(scene.path, std::ios::binary);
-        if (!in)
-            return false;
-
-        json j;
-        try { in >> j; }
-        catch (const std::exception&) { return false; }
-
-        scene.name = j.value("name", scene.path.stem().string());
-        scene.objects.clear();
-        if (j.contains("objects") && j["objects"].is_array())
-        {
-            for (const json& jo : j["objects"])
-            {
-                SceneObject o;
-                o.name = jo.value("name", std::string("Object"));
-                auto read3 = [&](const char* key, float* dst, float d0, float d1, float d2)
-                {
-                    if (jo.contains(key) && jo[key].is_array() && jo[key].size() == 3)
-                    {
-                        dst[0] = jo[key][0].get<float>();
-                        dst[1] = jo[key][1].get<float>();
-                        dst[2] = jo[key][2].get<float>();
-                    }
-                    else { dst[0] = d0; dst[1] = d1; dst[2] = d2; }
-                };
-                read3("position", o.position, 0, 0, 0);
-                read3("rotation", o.rotation, 0, 0, 0);
-                read3("scale",    o.scale,    1, 1, 1);
-                o.visible = jo.value("visible", true);
-                scene.objects.push_back(o);
-            }
-        }
-        scene.dirty = false;
-        return true;
     }
 }
 
@@ -93,14 +32,10 @@ namespace project
             fs::create_directories(root / sub, ec);
 
         // Manifest.
+        if (!WriteProjectManifest(root / (name + ".proj"), name))
         {
-            json j;
-            j["name"]         = name;
-            j["version"]      = 1;
-            j["startupScene"] = "scenes/Main.scene";
-            std::ofstream out(root / (name + ".proj"), std::ios::binary | std::ios::trunc);
-            if (!out) { state.AddLog("Failed to write project manifest"); return false; }
-            out << j.dump(2) << '\n';
+            state.AddLog("Failed to write project manifest", LogLevel::Error);
+            return false;
         }
 
         // Starter scene (only if not already present).
@@ -122,7 +57,7 @@ namespace project
         std::error_code ec;
         if (!fs::is_directory(root, ec))
         {
-            state.AddLog("Open project failed: not a folder");
+            state.AddLog("Open project failed: not a folder", LogLevel::Error);
             return false;
         }
 
@@ -134,19 +69,12 @@ namespace project
         }
         if (manifest.empty())
         {
-            state.AddLog("Open project failed: no .proj manifest in " + root.filename().string());
+            state.AddLog("Open project failed: no .proj manifest in " + root.filename().string(), LogLevel::Error);
             return false;
         }
 
         state.project_root = root;
-        state.project_name = manifest.stem().string();
-        try
-        {
-            std::ifstream in(manifest, std::ios::binary);
-            json j; in >> j;
-            state.project_name = j.value("name", state.project_name);
-        }
-        catch (const std::exception&) { /* keep filename-derived name */ }
+        state.project_name = ReadProjectManifestName(manifest, manifest.stem().string());
 
         LoadScenes(state);
         AddRecent(state, root);
@@ -248,6 +176,83 @@ namespace project
         SaveScene(scene);
         state.AddLog("Created object: " + obj.name);
         return (int)scene.objects.size() - 1;
+    }
+
+    bool RenameScene(EngineState& state, int index, const std::string& new_name)
+    {
+        if (index < 0 || index >= (int)state.scenes.size() || new_name.empty())
+            return false;
+
+        SceneFile& scene = state.scenes[index];
+        const fs::path new_path = scene.path.parent_path() / (new_name + ".scene");
+        std::error_code ec;
+        if (new_path != scene.path)
+        {
+            if (fs::exists(new_path))
+            {
+                state.AddLog("Rename failed: '" + new_name + "' already exists");
+                return false;
+            }
+            fs::rename(scene.path, new_path, ec);
+            if (ec)
+            {
+                state.AddLog("Rename failed");
+                return false;
+            }
+            scene.path = new_path;
+        }
+        scene.name = new_name;
+        SaveScene(scene);
+        state.AddLog("Renamed scene to: " + new_name);
+        return true;
+    }
+
+    int CopyScene(EngineState& state, int index)
+    {
+        if (index < 0 || index >= (int)state.scenes.size())
+            return -1;
+
+        const SceneFile& src = state.scenes[index];
+        const std::string base = src.name + " copy";
+        std::string unique = base;
+        fs::path path = src.path.parent_path() / (base + ".scene");
+        int n = 1;
+        while (fs::exists(path))
+        {
+            unique = base + " " + std::to_string(++n);
+            path = src.path.parent_path() / (unique + ".scene");
+        }
+
+        SceneFile copy;
+        copy.path = path;
+        copy.name = unique;
+        copy.objects = src.objects;
+        WriteSceneJson(copy);
+
+        state.scenes.push_back(std::move(copy));
+        state.AddLog("Copied scene: " + unique);
+        return (int)state.scenes.size() - 1;
+    }
+
+    void DeleteScene(EngineState& state, int index)
+    {
+        if (index < 0 || index >= (int)state.scenes.size())
+            return;
+
+        std::error_code ec;
+        fs::remove(state.scenes[index].path, ec);
+        state.AddLog("Deleted scene: " + state.scenes[index].name);
+        state.scenes.erase(state.scenes.begin() + index);
+
+        if (state.selected_scene == index)
+        {
+            state.selected_scene = -1;
+            state.selected_object = -1;
+        }
+        else if (state.selected_scene > index)
+        {
+            --state.selected_scene;
+        }
     }
 
     void LoadRecents(EngineState& state)

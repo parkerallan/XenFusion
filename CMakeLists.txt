@@ -63,15 +63,57 @@ target_include_directories(imguicolortextedit PUBLIC ${imguicolortextedit_SOURCE
 target_link_libraries(imguicolortextedit PUBLIC imgui)
 
 # ---------------------------------------------------------------------------
+# ImGuizmo (CedricGuillemet) — the 3D manipulation gizmo, same as the
+# reference engine. Ships no CMakeLists, so we compile ImGuizmo.cpp.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(
+    imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG        a15acd87a3f3241a29ea1363ceafc680dca3a96b
+)
+FetchContent_MakeAvailable(imguizmo)
+add_library(imguizmo STATIC ${imguizmo_SOURCE_DIR}/ImGuizmo.cpp)
+target_include_directories(imguizmo PUBLIC ${imguizmo_SOURCE_DIR})
+target_link_libraries(imguizmo PUBLIC imgui)
+
+# ---------------------------------------------------------------------------
+# Assimp — editor-side model importer. Only a few importers are enabled to
+# keep the build reasonable. (First configure/build compiles Assimp — slow.)
+# ---------------------------------------------------------------------------
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_OBJ_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_GLTF_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)
+set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    assimp
+    GIT_REPOSITORY https://github.com/assimp/assimp.git
+    GIT_TAG        v5.4.3
+)
+FetchContent_MakeAvailable(assimp)
+
+# ---------------------------------------------------------------------------
 # The engine executable.
 # ---------------------------------------------------------------------------
 add_executable(engine360
     src/app/main.cpp
     src/app/EngineApplication.cpp
+    src/core/Log.cpp
     src/render/Renderer.cpp
     src/render/SceneRenderer.cpp
+    src/render/MeshBaker.cpp
+    src/render/MeshLoad.cpp
+    src/render/MeshCache.cpp
+    src/render/TextureLoad.cpp
     src/platform/Dialogs.cpp
     src/project/ProjectIO.cpp
+    src/project/SceneJson.cpp
     src/panels/ViewportPanel.cpp
     src/panels/InspectorPanel.cpp
     src/panels/FilesPanel.cpp
@@ -82,9 +124,9 @@ add_executable(engine360
     src/panels/PerformancePanel.cpp
     src/panels/EditorPanel.cpp
 )
-target_include_directories(engine360 PRIVATE src)
+target_include_directories(engine360 PRIVATE src third_party)
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
-target_link_libraries(engine360 PRIVATE imgui d3d9 nlohmann_json::nlohmann_json imguicolortextedit Ole32 Shell32)
+target_link_libraries(engine360 PRIVATE imgui d3d9 nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp Ole32 Shell32)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
 set_target_properties(engine360 PROPERTIES

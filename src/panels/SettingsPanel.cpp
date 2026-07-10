@@ -23,5 +23,11 @@ void SettingsPanel::Render(EngineState& state)
     ImGui::Checkbox("Auto-scroll log", &state.auto_scroll_log);
     ImGui::Checkbox("Show ImGui demo window", &state.show_imgui_demo);
 
+    ImGui::SeparatorText("Log filters");
+    ImGui::Checkbox("Info",    &state.log_show_info);
+    ImGui::SameLine(); ImGui::Checkbox("Warning", &state.log_show_warning);
+    ImGui::Checkbox("Error",   &state.log_show_error);
+    ImGui::SameLine(); ImGui::Checkbox("Build",   &state.log_show_build);
+
     ImGui::End();
 }

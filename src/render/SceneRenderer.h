@@ -1,7 +1,10 @@
 #pragma once
 
+#include "render/MeshCache.h"
+
 #include <d3d9.h>
 
+#include <string>
 #include <vector>
 
 struct EngineState;
@@ -34,6 +37,13 @@ private:
     void BuildGrid();
     void HandleCameraInput(); // call right after the viewport Image item
 
+    struct DrawItem
+    {
+        std::string model_path;
+        D3DMATRIX   world;
+        bool        selected = false;
+    };
+
     struct Vertex
     {
         float    x, y, z;
@@ -60,5 +70,21 @@ private:
     bool     m_renderRequested = false;
     D3DCOLOR m_background       = D3DCOLOR_ARGB(255, 24, 24, 28);
 
+    // Camera matrices computed in RenderUi (used by both the gizmo and RenderGpu).
+    D3DMATRIX m_view = {};
+    D3DMATRIX m_proj = {};
+
+    // Focus-key ("F") target: the selected object's position + rough size.
+    bool  m_has_focus   = false;
+    float m_focus_pos[3] = {0.0f, 0.0f, 0.0f};
+    float m_focus_scale = 1.0f;
+
+    bool m_gizmo_editing = false; // gizmo drag in progress (commit on release)
+
     std::vector<Vertex> m_grid;
+
+    // Models to draw this frame (captured in RenderUi) + the mesh cache that
+    // bakes/loads them.
+    std::vector<DrawItem> m_draw_items;
+    MeshCache             m_meshes;
 };

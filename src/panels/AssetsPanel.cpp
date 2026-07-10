@@ -1,5 +1,6 @@
 #include "panels/AssetsPanel.h"
 
+#include "core/Log.h"
 #include "state/EngineState.h"
 #include "ui/Icons.h"
 
@@ -8,7 +9,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <cstdio>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -56,7 +60,6 @@ namespace
         }
     }
 
-    // Fake a shaded 3D sphere for shader assets.
     void DrawSphere(ImDrawList* dl, ImVec2 c)
     {
         const float r = 22.0f;
@@ -90,6 +93,57 @@ namespace
             t.pop_back();
         return t + "..";
     }
+
+    // --- Deferred filesystem action (applied after the grid is drawn) ---
+    struct PendingOp
+    {
+        enum Type { None, Copy, Delete, Move, NewFolder } type = None;
+        fs::path a; // primary path
+        fs::path b; // destination dir (Move) / parent dir (NewFolder)
+    };
+    PendingOp g_pending;
+    bool      g_open_rename = false;
+    fs::path  g_rename_target;
+    char      g_rename_buf[256] = {};
+
+    fs::path UniqueName(const fs::path& desired)
+    {
+        std::error_code ec;
+        if (!fs::exists(desired, ec))
+            return desired;
+        const fs::path dir  = desired.parent_path();
+        const std::string stem = desired.stem().string();
+        const std::string ext  = desired.extension().string();
+        for (int n = 2; n < 1000; ++n)
+        {
+            fs::path c = dir / (stem + " " + std::to_string(n) + ext);
+            if (!fs::exists(c, ec))
+                return c;
+        }
+        return desired;
+    }
+
+    // True if `p` is `base` or lives inside it (used to block moving a folder
+    // into itself / a descendant).
+    bool UnderOrEqual(const fs::path& base, const fs::path& p)
+    {
+        const std::string b = base.lexically_normal().string();
+        const std::string q = p.lexically_normal().string();
+        return q.size() >= b.size() && q.compare(0, b.size(), b) == 0;
+    }
+
+    // Drop target that moves the dragged asset into `dest_dir`.
+    void MoveDropTarget(EngineState& state, const fs::path& dest_dir)
+    {
+        if (!ImGui::BeginDragDropTarget())
+            return;
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+        {
+            std::string rel((const char*)pl->Data, (std::size_t)pl->DataSize);
+            g_pending = {PendingOp::Move, state.project_root / rel, dest_dir};
+        }
+        ImGui::EndDragDropTarget();
+    }
 }
 
 void AssetsPanel::Render(EngineState& state)
@@ -110,25 +164,27 @@ void AssetsPanel::Render(EngineState& state)
         return;
     }
 
-    // --- Breadcrumb + import button ---
+    const fs::path dir = state.AssetsDir() / state.assets_cwd;
+
+    // --- Breadcrumb (each crumb is also a move target) + Import on the right ---
     if (ImGui::Button(ICON_FA_FOLDER_OPEN " assets"))
         state.assets_cwd.clear();
+    MoveDropTarget(state, state.AssetsDir());
     {
         fs::path acc;
         for (const fs::path& part : state.assets_cwd)
         {
             acc /= part;
-            ImGui::SameLine(0.0f, 4.0f);
-            ImGui::TextUnformatted("/");
-            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::SameLine(0.0f, 4.0f); ImGui::TextUnformatted("/"); ImGui::SameLine(0.0f, 4.0f);
             if (ImGui::Button(part.string().c_str()))
                 state.assets_cwd = acc;
+            MoveDropTarget(state, state.AssetsDir() / acc);
         }
     }
-    ImGui::SameLine();
     {
         const char* lbl = ICON_FA_PLUS " Import";
         const float w = ImGui::CalcTextSize(lbl).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SameLine();
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - w);
         if (ImGui::Button(lbl))
             state.show_import_modal = true;
@@ -138,8 +194,7 @@ void AssetsPanel::Render(EngineState& state)
 
     ImGui::Separator();
 
-    // --- Gather current directory entries (folders first) ---
-    const fs::path dir = state.AssetsDir() / state.assets_cwd;
+    // --- Gather + sort entries (folders first) ---
     std::error_code ec;
     std::vector<fs::directory_entry> entries;
     for (const fs::directory_entry& e : fs::directory_iterator(dir, ec))
@@ -152,28 +207,21 @@ void AssetsPanel::Render(EngineState& state)
                   return a.path().filename().string() < b.path().filename().string();
               });
 
-    if (entries.empty())
-    {
-        ImGui::TextDisabled("(empty)");
-        ImGui::End();
-        return;
-    }
-
     // --- Tile grid ---
     const float tile_w = 96.0f, tile_h = 104.0f, spacing = 10.0f;
     const float avail_w = ImGui::GetContentRegionAvail().x;
     const int   cols = (std::max)(1, (int)((avail_w + spacing) / (tile_w + spacing)));
-
     ImDrawList* dl = ImGui::GetWindowDrawList();
+
     fs::path pending_nav;
     bool     do_nav = false;
 
     int col = 0;
     for (const fs::directory_entry& e : entries)
     {
-        const fs::path  p    = e.path();
-        const std::string nm = p.filename().string();
-        const AssetKind kind = Classify(e);
+        const fs::path    p    = e.path();
+        const std::string nm   = p.filename().string();
+        const AssetKind   kind = Classify(e);
 
         ImGui::PushID(nm.c_str());
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -183,29 +231,49 @@ void AssetsPanel::Render(EngineState& state)
         const bool dbl     = hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
         const ImVec2 p1(p0.x + tile_w, p0.y + tile_h);
 
+        // Drag source (files and folders can be moved).
+        if (ImGui::BeginDragDropSource())
+        {
+            const std::string rel = fs::relative(p, state.project_root).generic_string();
+            ImGui::SetDragDropPayload("ASSET_PATH", rel.c_str(), rel.size());
+            ImGui::TextUnformatted(nm.c_str());
+            ImGui::EndDragDropSource();
+        }
+        // Folders are move targets.
+        if (kind == AssetKind::Folder)
+            MoveDropTarget(state, p);
+
+        // Right-click context menu.
+        if (ImGui::BeginPopupContextItem("##ctx"))
+        {
+            if (ImGui::MenuItem("Rename"))
+            {
+                g_rename_target = p;
+                std::snprintf(g_rename_buf, sizeof(g_rename_buf), "%s", nm.c_str());
+                g_open_rename = true;
+            }
+            if (ImGui::MenuItem("Copy"))   g_pending = {PendingOp::Copy,   p, {}};
+            if (ImGui::MenuItem("Delete")) g_pending = {PendingOp::Delete, p, {}};
+            ImGui::EndPopup();
+        }
+
         const bool selected = (selected_ == p);
-        if (selected)
-            dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImGuiCol_Header), 6.0f);
-        else if (hovered)
-            dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImGuiCol_HeaderHovered), 6.0f);
+        if (selected)      dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImGuiCol_Header), 6.0f);
+        else if (hovered)  dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImGuiCol_HeaderHovered), 6.0f);
 
         DrawVisual(dl, ImVec2(p0.x + tile_w * 0.5f, p0.y + 36.0f), kind, state);
-
         const std::string label = Ellipsize(nm, tile_w - 10.0f);
         const float tw = ImGui::CalcTextSize(label.c_str()).x;
         dl->AddText(ImVec2(p0.x + (tile_w - tw) * 0.5f, p0.y + 74.0f),
                     ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
 
-        if (kind == AssetKind::Folder)
+        // Single click selects; double click opens (folder = navigate, text = editor).
+        if (clicked)
+            selected_ = p;
+        if (dbl)
         {
-            if (clicked || dbl) { pending_nav = state.assets_cwd / nm; do_nav = true; }
-        }
-        else
-        {
-            if (clicked)
-                selected_ = p;
-            // Double-click a text/code/shader file to edit it.
-            if (dbl && (kind == AssetKind::Text || kind == AssetKind::Shader || kind == AssetKind::Generic))
+            if (kind == AssetKind::Folder) { pending_nav = state.assets_cwd / nm; do_nav = true; }
+            else if (kind == AssetKind::Text || kind == AssetKind::Shader || kind == AssetKind::Generic)
             {
                 state.open_file_path = p;
                 state.show_editor_panel = true;
@@ -215,14 +283,90 @@ void AssetsPanel::Render(EngineState& state)
 
         ImGui::PopID();
 
-        if (++col < cols)
-            ImGui::SameLine(0.0f, spacing);
-        else
-            col = 0;
+        if (++col < cols) ImGui::SameLine(0.0f, spacing);
+        else              col = 0;
     }
 
     if (do_nav)
         state.assets_cwd = pending_nav;
+
+    // Right-click empty space -> New Folder.
+    if (ImGui::BeginPopupContextWindow("##assets_bg",
+                                       ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
+    {
+        if (ImGui::MenuItem(ICON_FA_FOLDER " New Folder"))
+            g_pending = {PendingOp::NewFolder, dir, {}};
+        ImGui::EndPopup();
+    }
+
+    // --- Apply deferred filesystem op ---
+    if (g_pending.type != PendingOp::None)
+    {
+        std::error_code fec;
+        switch (g_pending.type)
+        {
+        case PendingOp::Copy:
+        {
+            const fs::path src = g_pending.a;
+            const fs::path dst = UniqueName(src.parent_path() /
+                                            (src.stem().string() + " copy" + src.extension().string()));
+            if (fs::is_directory(src, fec)) fs::copy(src, dst, fs::copy_options::recursive, fec);
+            else                            fs::copy_file(src, dst, fec);
+            applog::Info(fec ? "Copy failed: " + src.filename().string()
+                             : "Copied " + src.filename().string());
+            break;
+        }
+        case PendingOp::Delete:
+        {
+            fs::remove_all(g_pending.a, fec);
+            applog::Info(fec ? "Delete failed: " + g_pending.a.filename().string()
+                             : "Deleted " + g_pending.a.filename().string());
+            if (selected_ == g_pending.a) selected_.clear();
+            break;
+        }
+        case PendingOp::Move:
+        {
+            const fs::path src = g_pending.a, destDir = g_pending.b;
+            const bool same    = (src.parent_path() == destDir);
+            const bool intoSelf = fs::is_directory(src, fec) && UnderOrEqual(src, destDir);
+            if (!same && !intoSelf && src != destDir)
+            {
+                fs::rename(src, destDir / src.filename(), fec);
+                applog::Info(fec ? "Move failed: " + src.filename().string()
+                                 : "Moved " + src.filename().string() + " -> " + destDir.filename().string());
+            }
+            break;
+        }
+        case PendingOp::NewFolder:
+        {
+            fs::create_directory(UniqueName(g_pending.a / "New Folder"), fec);
+            break;
+        }
+        default: break;
+        }
+        g_pending.type = PendingOp::None;
+    }
+
+    // --- Rename popup ---
+    if (g_open_rename) { ImGui::OpenPopup("Rename Asset"); g_open_rename = false; }
+    if (ImGui::BeginPopup("Rename Asset"))
+    {
+        ImGui::TextUnformatted("New name:");
+        ImGui::SetNextItemWidth(240.0f);
+        const bool enter = ImGui::InputText("##rn", g_rename_buf, sizeof(g_rename_buf),
+                                            ImGuiInputTextFlags_EnterReturnsTrue);
+        if ((ImGui::Button("Rename") || enter) && g_rename_buf[0] != '\0')
+        {
+            std::error_code fec;
+            fs::rename(g_rename_target, g_rename_target.parent_path() / g_rename_buf, fec);
+            applog::Info(fec ? "Rename failed" : "Renamed to " + std::string(g_rename_buf));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel"))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     ImGui::End();
 }

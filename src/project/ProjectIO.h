@@ -33,6 +33,11 @@ namespace project
     // Adds a default object to `scene`, saves it, and returns the new index.
     int NewObject(EngineState& state, SceneFile& scene, const std::string& name);
 
+    // Scene file operations (rename/copy/delete on disk + in state.scenes).
+    bool RenameScene(EngineState& state, int index, const std::string& new_name);
+    int  CopyScene(EngineState& state, int index);   // returns new index or -1
+    void DeleteScene(EngineState& state, int index);
+
     // Recent projects list, persisted to recent_projects.txt next to the exe.
     void LoadRecents(EngineState& state);
     void AddRecent(EngineState& state, const std::filesystem::path& root);

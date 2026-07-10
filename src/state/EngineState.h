@@ -1,10 +1,20 @@
 #pragma once
 
+#include "core/Log.h"
+
 #include "imgui.h"
 
 #include <filesystem>
 #include <string>
 #include <vector>
+
+// A component-style attribute attached to an object. For now the only type is
+// "3D Model" (holds a model asset path). Serialized into the scene JSON.
+struct ObjectAttribute
+{
+    std::string type = "3D Model";
+    std::string model_path; // for "3D Model": path to the model asset
+};
 
 // A single object within a scene. Objects are not files — they live inside a
 // .scene file and are shown as children of that file in the Files tree.
@@ -15,6 +25,7 @@ struct SceneObject
     float       rotation[3] = {0.0f, 0.0f, 0.0f};
     float       scale[3]    = {1.0f, 1.0f, 1.0f};
     bool        visible     = true;
+    std::vector<ObjectAttribute> attributes;
 };
 
 // One .scene file on disk, parsed into memory. Serialized as minimal JSON.
@@ -82,13 +93,16 @@ struct EngineState
     // --- Viewport ---
     float clear_color[4] = {0.094f, 0.094f, 0.106f, 1.0f};
 
-    // --- Log ---
-    std::vector<std::string> log_messages;
+    // --- Log --- (entries live in the global applog buffer)
     bool auto_scroll_log = true;
+    bool log_show_info    = true;
+    bool log_show_warning = true;
+    bool log_show_error   = true;
+    bool log_show_build   = true;
 
-    void AddLog(const std::string& message)
+    void AddLog(const std::string& message, LogLevel level = LogLevel::Info)
     {
-        log_messages.push_back(message);
+        applog::Add(level, message);
     }
 
     bool HasProject() const { return !project_root.empty(); }

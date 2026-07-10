@@ -565,31 +565,61 @@ void EngineApplication::ApplyStyle()
 
 void EngineApplication::ApplyGrayTheme()
 {
-    // Start from the light theme, then shift the surfaces toward gray while
-    // keeping the dark text for readability.
+    // Start from the light theme, then shift the surfaces toward gray and swap
+    // the default blue accent for orange.
     ImGui::StyleColorsLight();
 
+    const ImVec4 orange       = ImVec4(0.90f, 0.50f, 0.12f, 1.00f);
+    const ImVec4 orange_hover = ImVec4(0.98f, 0.58f, 0.20f, 1.00f);
+    const ImVec4 orange_active= ImVec4(0.78f, 0.40f, 0.08f, 1.00f);
+    auto tint = [](const ImVec4& col, float a) { return ImVec4(col.x, col.y, col.z, a); };
+
     ImVec4* c = ImGui::GetStyle().Colors;
+
+    // Gray surfaces.
     c[ImGuiCol_WindowBg]       = ImVec4(0.80f, 0.80f, 0.82f, 1.00f);
     c[ImGuiCol_ChildBg]        = ImVec4(0.83f, 0.83f, 0.85f, 1.00f);
     c[ImGuiCol_PopupBg]        = ImVec4(0.85f, 0.85f, 0.87f, 1.00f);
     c[ImGuiCol_MenuBarBg]      = ImVec4(0.76f, 0.76f, 0.78f, 1.00f);
-    c[ImGuiCol_FrameBg]        = ImVec4(0.86f, 0.86f, 0.88f, 1.00f);
-    c[ImGuiCol_FrameBgHovered] = ImVec4(0.78f, 0.80f, 0.84f, 1.00f);
-    c[ImGuiCol_FrameBgActive]  = ImVec4(0.72f, 0.74f, 0.78f, 1.00f);
+    c[ImGuiCol_FrameBg]        = ImVec4(0.88f, 0.88f, 0.90f, 1.00f);
     c[ImGuiCol_TitleBg]        = ImVec4(0.74f, 0.74f, 0.76f, 1.00f);
     c[ImGuiCol_TitleBgActive]  = ImVec4(0.66f, 0.66f, 0.69f, 1.00f);
-    c[ImGuiCol_Header]         = ImVec4(0.72f, 0.72f, 0.75f, 1.00f);
-    c[ImGuiCol_HeaderHovered]  = ImVec4(0.66f, 0.68f, 0.72f, 1.00f);
-    c[ImGuiCol_HeaderActive]   = ImVec4(0.60f, 0.62f, 0.66f, 1.00f);
     c[ImGuiCol_Button]         = ImVec4(0.74f, 0.74f, 0.77f, 1.00f);
-    c[ImGuiCol_ButtonHovered]  = ImVec4(0.66f, 0.68f, 0.72f, 1.00f);
-    c[ImGuiCol_ButtonActive]   = ImVec4(0.58f, 0.60f, 0.65f, 1.00f);
     c[ImGuiCol_Tab]            = ImVec4(0.72f, 0.72f, 0.75f, 1.00f);
-    c[ImGuiCol_TabHovered]     = ImVec4(0.64f, 0.66f, 0.70f, 1.00f);
-    c[ImGuiCol_TabSelected]    = ImVec4(0.80f, 0.80f, 0.83f, 1.00f);
     c[ImGuiCol_Border]         = ImVec4(0.55f, 0.55f, 0.58f, 1.00f);
     c[ImGuiCol_Separator]      = ImVec4(0.55f, 0.55f, 0.58f, 1.00f);
+
+    // Orange accents (everywhere the light theme used blue).
+    c[ImGuiCol_CheckMark]        = orange;
+    c[ImGuiCol_SliderGrab]       = orange;
+    c[ImGuiCol_SliderGrabActive] = orange_active;
+    c[ImGuiCol_FrameBgHovered]   = tint(orange, 0.30f);
+    c[ImGuiCol_FrameBgActive]    = tint(orange, 0.55f);
+    c[ImGuiCol_Header]           = tint(orange, 0.45f);
+    c[ImGuiCol_HeaderHovered]    = tint(orange, 0.70f);
+    c[ImGuiCol_HeaderActive]     = orange;
+    c[ImGuiCol_ButtonHovered]    = orange_hover;
+    c[ImGuiCol_ButtonActive]     = orange_active;
+    c[ImGuiCol_Tab]              = ImVec4(0.72f, 0.72f, 0.75f, 1.00f);
+    c[ImGuiCol_TabHovered]       = ImVec4(0.98f, 0.70f, 0.40f, 1.00f);
+    c[ImGuiCol_TabSelected]      = ImVec4(0.95f, 0.62f, 0.28f, 1.00f);
+    c[ImGuiCol_TabSelectedOverline]        = orange;
+    // Docked panels that aren't the focused window use the *dimmed* tab colors —
+    // these were left as the light theme's blue.
+    c[ImGuiCol_TabDimmed]                 = ImVec4(0.76f, 0.76f, 0.78f, 1.00f);
+    c[ImGuiCol_TabDimmedSelected]         = ImVec4(0.90f, 0.68f, 0.45f, 1.00f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = tint(orange, 0.60f);
+    c[ImGuiCol_SeparatorHovered] = orange_hover;
+    c[ImGuiCol_SeparatorActive]  = orange_active;
+    c[ImGuiCol_ResizeGrip]       = tint(orange, 0.35f);
+    c[ImGuiCol_ResizeGripHovered]= tint(orange, 0.70f);
+    c[ImGuiCol_ResizeGripActive] = orange;
+    c[ImGuiCol_TextSelectedBg]   = tint(orange, 0.35f);
+    c[ImGuiCol_DockingPreview]   = tint(orange, 0.45f);
+    c[ImGuiCol_NavCursor]        = orange;
+    c[ImGuiCol_DragDropTarget]   = orange;
+    c[ImGuiCol_PlotLinesHovered] = orange_hover;
+    c[ImGuiCol_PlotHistogram]    = orange;
 }
 
 void EngineApplication::BuildDefaultDockLayout(ImGuiID dockspace_id)
