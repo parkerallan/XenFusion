@@ -1,5 +1,6 @@
 #include "app/EngineApplication.h"
 
+#include "app/Settings.h"
 #include "platform/Dialogs.h"
 #include "project/ProjectIO.h"
 #include "ui/Icons.h"
@@ -83,6 +84,8 @@ bool EngineApplication::Init()
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    settings::Load(state_); // restore persisted settings before the theme is applied
 
     LoadFonts();
     ApplyStyle();
@@ -219,6 +222,24 @@ void EngineApplication::RenderUI()
     viewport_panel_.Render(state_);
     editor_panel_.Render(state_);
     settings_panel_.Render(state_);
+    // Settings requested a toolchain folder pick — open the native picker here
+    // (EngineApplication owns the window handle).
+    if (state_.toolchain_pick)
+    {
+        std::filesystem::path folder;
+        if (platform::PickFolder(window_, folder))
+        {
+            const std::string p = folder.string();
+            switch (state_.toolchain_pick)
+            {
+            case 1: state_.toolchain_xdk      = p; break;
+            case 2: state_.toolchain_emulator = p; break;
+            case 3: state_.toolchain_vs2010   = p; break;
+            }
+            settings::Save(state_); // persist the toolchain path immediately
+        }
+        state_.toolchain_pick = 0;
+    }
     inspector_panel_.Render(state_);
     assets_panel_.Render(state_);
     log_panel_.Render(state_);
@@ -274,6 +295,13 @@ void EngineApplication::RenderMainMenuBar()
 
         if (ImGui::MenuItem("Exit"))
             running_ = false;
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Build"))
+    {
+        if (ImGui::MenuItem("Compile Shaders", nullptr, false, state_.HasProject()))
+            state_.compile_shaders_requested = true;
         ImGui::EndMenu();
     }
 
@@ -654,6 +682,8 @@ void EngineApplication::BuildDefaultDockLayout(ImGuiID dockspace_id)
 
 void EngineApplication::Shutdown()
 {
+    settings::Save(state_); // persist settings on exit
+
     viewport_panel_.Shutdown();
 
     if (ImGui::GetCurrentContext())

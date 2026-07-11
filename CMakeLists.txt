@@ -99,11 +99,20 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(assimp)
 
 # ---------------------------------------------------------------------------
+# Shaders. The engine ships standard.hlsl next to the exe (below). At runtime it
+# compiles standard.hlsl AND the project's custom shaders into ONE folder that
+# the project owns — <project>/shaders/ — so a shipped game has a complete,
+# self-contained set of compiled .cso and doesn't depend on the engine folder.
+# ---------------------------------------------------------------------------
+set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/src/shaders)
+
+# ---------------------------------------------------------------------------
 # The engine executable.
 # ---------------------------------------------------------------------------
 add_executable(engine360
     src/app/main.cpp
     src/app/EngineApplication.cpp
+    src/app/Settings.cpp
     src/core/Log.cpp
     src/render/Renderer.cpp
     src/render/SceneRenderer.cpp
@@ -111,6 +120,9 @@ add_executable(engine360
     src/render/MeshLoad.cpp
     src/render/MeshCache.cpp
     src/render/TextureLoad.cpp
+    src/render/Shader.cpp
+    src/render/ShaderCache.cpp
+    src/render/ShaderCompiler.cpp
     src/platform/Dialogs.cpp
     src/project/ProjectIO.cpp
     src/project/SceneJson.cpp
@@ -126,7 +138,7 @@ add_executable(engine360
 )
 target_include_directories(engine360 PRIVATE src third_party)
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
-target_link_libraries(engine360 PRIVATE imgui d3d9 nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp Ole32 Shell32)
+target_link_libraries(engine360 PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp Ole32 Shell32)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
 set_target_properties(engine360 PROPERTIES
@@ -139,5 +151,14 @@ add_custom_command(TARGET engine360 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/third_party/fonts/fa-solid-900.ttf"
         "$<TARGET_FILE_DIR:engine360>/fonts/fa-solid-900.ttf"
+    VERBATIM
+)
+
+# Ship the engine's built-in shader source in <exe>/shaders. At runtime the
+# engine compiles it into each project's own shaders/ folder (with the customs).
+add_custom_command(TARGET engine360 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:engine360>/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SHADER_SRC_DIR}/standard.hlsl" "$<TARGET_FILE_DIR:engine360>/shaders/standard.hlsl"
     VERBATIM
 )

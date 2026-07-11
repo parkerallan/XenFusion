@@ -6,11 +6,26 @@
 
 namespace fs = std::filesystem;
 
+namespace
+{
+    void ReadStr(std::ifstream& in, std::string& s)
+    {
+        s.clear();
+        uint32_t len = 0;
+        in.read(reinterpret_cast<char*>(&len), sizeof(len));
+        if (in && len > 0 && len < 4096)
+        {
+            s.resize(len);
+            in.read(s.data(), len);
+        }
+    }
+}
+
 namespace mesh
 {
-    bool LoadMeshBlob(IDirect3DDevice9* device, const fs::path& mesh_path, GpuMesh& out, std::string& out_diffuse)
+    bool LoadMeshBlob(IDirect3DDevice9* device, const fs::path& mesh_path, GpuMesh& out, MeshTextures& out_tex)
     {
-        out_diffuse.clear();
+        out_tex = {};
         if (!device)
             return false;
 
@@ -20,8 +35,9 @@ namespace mesh
 
         MeshHeader h{};
         in.read(reinterpret_cast<char*>(&h), sizeof(h));
-        if (!in || std::memcmp(h.magic, "M360", 4) != 0 || h.vertexCount == 0 || h.indexCount == 0)
-            return false;
+        if (!in || std::memcmp(h.magic, "M360", 4) != 0 || h.version != MESH_VERSION ||
+            h.vertexCount == 0 || h.indexCount == 0)
+            return false; // wrong/old version -> caller re-bakes
 
         std::vector<MeshVertex> vertices(h.vertexCount);
         std::vector<uint32_t>   indices(h.indexCount);
@@ -30,20 +46,12 @@ namespace mesh
         if (!in)
             return false;
 
-        // Material section (v2+): diffuse texture path.
-        if (h.version >= 2)
-        {
-            uint32_t len = 0;
-            in.read(reinterpret_cast<char*>(&len), sizeof(len));
-            if (in && len > 0 && len < 4096)
-            {
-                out_diffuse.resize(len);
-                in.read(out_diffuse.data(), len);
-            }
-        }
+        ReadStr(in, out_tex.diffuse);
+        ReadStr(in, out_tex.normal);
+        ReadStr(in, out_tex.specular);
 
         const UINT vb_bytes = (UINT)(vertices.size() * sizeof(MeshVertex));
-        if (FAILED(device->CreateVertexBuffer(vb_bytes, 0, MESH_FVF, D3DPOOL_MANAGED, &out.vb, nullptr)))
+        if (FAILED(device->CreateVertexBuffer(vb_bytes, 0, 0 /*non-FVF, uses a decl*/, D3DPOOL_MANAGED, &out.vb, nullptr)))
             return false;
         void* dst = nullptr;
         out.vb->Lock(0, 0, &dst, 0);

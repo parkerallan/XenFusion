@@ -11,6 +11,7 @@
 #include <cfloat>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -97,10 +98,49 @@ namespace
     // --- Deferred filesystem action (applied after the grid is drawn) ---
     struct PendingOp
     {
-        enum Type { None, Copy, Delete, Move, NewFolder } type = None;
+        enum Type { None, Copy, Delete, Move, NewFolder, NewShader } type = None;
         fs::path a; // primary path
-        fs::path b; // destination dir (Move) / parent dir (NewFolder)
+        fs::path b; // destination dir (Move) / parent dir (NewFolder/NewShader)
     };
+
+    // Starter template written into a freshly-created custom shader. Uses the
+    // same SM3.0 entry points (VSMain/PSMain) as the built-in standard shader.
+    const char* kNewShaderTemplate =
+        "// Custom shader (Shader Model 3.0). Entry points: VSMain (vertex), PSMain (pixel).\n"
+        "\n"
+        "// Render setup - how this shader draws (edit the values):\n"
+        "//@geometry quad\n"
+        "//@blend    opaque\n"
+        "//@depth    on\n"
+        "//@cull     none\n"
+        "//   geometry: quad | volume | model\n"
+        "//   blend:    opaque | alpha | additive\n"
+        "//   depth:    on | test | off\n"
+        "//   cull:     none | back\n"
+        "\n"
+        "// Declarations available to the shader:\n"
+        "//   VS: c0 gWVP (world*view*proj),  c4 gWorld\n"
+        "//   PS: c3 gTime (.x = seconds),    c4 gCamObj (camera in local space, geometry \"volume\")\n"
+        "//       s0 diffuse, s1 normal, s2 specular  (the model's maps, geometry \"model\")\n"
+        "// Vertex input: POSITION, NORMAL, TANGENT, TEXCOORD0.\n"
+        "\n"
+        "float4x4 gWVP : register(c0);\n"
+        "\n"
+        "struct VSIn  { float3 pos : POSITION; float3 nrm : NORMAL; float3 tan : TANGENT; float2 uv : TEXCOORD0; };\n"
+        "struct VSOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };\n"
+        "\n"
+        "VSOut VSMain(VSIn i)\n"
+        "{\n"
+        "    VSOut o;\n"
+        "    o.pos = mul(float4(i.pos, 1.0), gWVP);\n"
+        "    o.uv  = i.uv;\n"
+        "    return o;\n"
+        "}\n"
+        "\n"
+        "float4 PSMain(VSOut i) : COLOR\n"
+        "{\n"
+        "    return float4(i.uv, 0.0, 1.0);\n"
+        "}\n";
     PendingOp g_pending;
     bool      g_open_rename = false;
     fs::path  g_rename_target;
@@ -246,6 +286,16 @@ void AssetsPanel::Render(EngineState& state)
         // Right-click context menu.
         if (ImGui::BeginPopupContextItem("##ctx"))
         {
+            if (kind == AssetKind::Shader || kind == AssetKind::Text || kind == AssetKind::Generic)
+            {
+                if (ImGui::MenuItem("Open in editor"))
+                {
+                    state.open_file_path = p;
+                    state.show_editor_panel = true;
+                    ImGui::SetWindowFocus("Editor");
+                }
+                ImGui::Separator();
+            }
             if (ImGui::MenuItem("Rename"))
             {
                 g_rename_target = p;
@@ -296,6 +346,8 @@ void AssetsPanel::Render(EngineState& state)
     {
         if (ImGui::MenuItem(ICON_FA_FOLDER " New Folder"))
             g_pending = {PendingOp::NewFolder, dir, {}};
+        if (ImGui::MenuItem(ICON_FA_FILE " New Shader"))
+            g_pending = {PendingOp::NewShader, dir, {}};
         ImGui::EndPopup();
     }
 
@@ -340,6 +392,15 @@ void AssetsPanel::Render(EngineState& state)
         case PendingOp::NewFolder:
         {
             fs::create_directory(UniqueName(g_pending.a / "New Folder"), fec);
+            break;
+        }
+        case PendingOp::NewShader:
+        {
+            const fs::path path = UniqueName(g_pending.a / "NewShader.hlsl");
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << kNewShaderTemplate;
+            applog::Info(out ? "Created " + path.filename().string()
+                             : "Create shader failed: " + path.filename().string());
             break;
         }
         default: break;

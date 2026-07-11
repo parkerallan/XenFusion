@@ -1,14 +1,39 @@
 #include "render/SceneRenderer.h"
 
+#include "core/Log.h"
 #include "project/ProjectIO.h"
+#include "render/Shader.h"
+#include "render/ShaderCompiler.h"
 #include "state/EngineState.h"
 
 #include "imgui.h"
 #include "ImGuizmo.h"
 
+#include <windows.h> // GetModuleFileNameW
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <string>
+#include <system_error>
+
+namespace
+{
+    IDirect3DTexture9* CreateSolidTexture(IDirect3DDevice9* dev, D3DCOLOR argb)
+    {
+        IDirect3DTexture9* t = nullptr;
+        if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, nullptr)))
+            return nullptr;
+        D3DLOCKED_RECT r;
+        if (SUCCEEDED(t->LockRect(0, &r, nullptr, 0)))
+        {
+            *static_cast<D3DCOLOR*>(r.pBits) = argb;
+            t->UnlockRect(0);
+        }
+        return t;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Minimal matrix helpers (left-handed, row-major to match D3D9). Hand-rolled
@@ -122,17 +147,155 @@ namespace
         return Multiply(Multiply(Scaling(o.scale[0], o.scale[1], o.scale[2]), rot),
                         Translation(o.position[0], o.position[1], o.position[2]));
     }
+
+    // Transpose the rotation 3x3 (translation zeroed) — the inverse of a rotation.
+    D3DMATRIX Transpose3(const D3DMATRIX& m)
+    {
+        D3DMATRIX r = Identity();
+        r._11 = m._11; r._12 = m._21; r._13 = m._31;
+        r._21 = m._12; r._22 = m._22; r._23 = m._32;
+        r._31 = m._13; r._32 = m._23; r._33 = m._33;
+        return r;
+    }
+
+    // Transform a point (row vector, w = 1) by a matrix.
+    Vec3 TransformPoint(const Vec3& p, const D3DMATRIX& m)
+    {
+        return { p.x * m._11 + p.y * m._21 + p.z * m._31 + m._41,
+                 p.x * m._12 + p.y * m._22 + p.z * m._32 + m._42,
+                 p.x * m._13 + p.y * m._23 + p.z * m._33 + m._43 };
+    }
 }
 
 void SceneRenderer::Initialize(IDirect3DDevice9* device)
 {
     m_device = device;
     m_meshes.Init(device);
+    m_shaders.Init(device);
     BuildGrid();
+
+    // The engine ships its built-in shader source in <exe>/shaders. It's
+    // compiled into each project's own shaders/ folder (with the custom shaders)
+    // by the Reload-shaders action.
+    wchar_t exe[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    m_standard_src = std::filesystem::path(std::wstring(exe, n)).parent_path() / "shaders" / "standard.hlsl";
+
+    // Vertex declaration matching MeshVertex (pos/normal/tangent/uv).
+    const D3DVERTEXELEMENT9 elems[] = {
+        {0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL,   0},
+        {0, 24, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT,  0},
+        {0, 36, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+        D3DDECL_END()
+    };
+    device->CreateVertexDeclaration(elems, &m_mesh_decl);
+
+    // Fallback textures for meshes missing a map.
+    m_def_white  = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 255, 255, 255)); // diffuse
+    m_def_normal = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 128, 128, 255)); // flat normal (0,0,1)
+    m_def_black  = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 0, 0, 0));       // no specular
+
+    // Unit quad (XY plane, uv 0..1, v=0 at the bottom) for standalone shaders.
+    // MeshVertex layout: pos, normal, tangent, uv. MANAGED so it survives resets.
+    const MeshVertex quad[4] = {
+        {-0.5f, -0.5f, 0.0f,  0,0,-1,  1,0,0,  0.0f, 0.0f},
+        { 0.5f, -0.5f, 0.0f,  0,0,-1,  1,0,0,  1.0f, 0.0f},
+        { 0.5f,  0.5f, 0.0f,  0,0,-1,  1,0,0,  1.0f, 1.0f},
+        {-0.5f,  0.5f, 0.0f,  0,0,-1,  1,0,0,  0.0f, 1.0f},
+    };
+    const uint32_t quad_idx[6] = {0, 1, 2, 0, 2, 3};
+    if (SUCCEEDED(device->CreateVertexBuffer(sizeof(quad), 0, 0, D3DPOOL_MANAGED, &m_quad_vb, nullptr)))
+    {
+        void* p = nullptr;
+        if (SUCCEEDED(m_quad_vb->Lock(0, sizeof(quad), &p, 0))) { memcpy(p, quad, sizeof(quad)); m_quad_vb->Unlock(); }
+    }
+    if (SUCCEEDED(device->CreateIndexBuffer(sizeof(quad_idx), 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &m_quad_ib, nullptr)))
+    {
+        void* p = nullptr;
+        if (SUCCEEDED(m_quad_ib->Lock(0, sizeof(quad_idx), &p, 0))) { memcpy(p, quad_idx, sizeof(quad_idx)); m_quad_ib->Unlock(); }
+    }
+
+    // Unit cube [-0.5, 0.5]^3 for "volume" shaders (raymarched in local space).
+    // Only position matters; the volume pixel shader ignores normal/tangent/uv.
+    MeshVertex cube[8];
+    const float c = 0.5f;
+    const float cx[8] = {-c,  c,  c, -c, -c,  c,  c, -c};
+    const float cy[8] = {-c, -c,  c,  c, -c, -c,  c,  c};
+    const float cz[8] = {-c, -c, -c, -c,  c,  c,  c,  c};
+    for (int k = 0; k < 8; ++k)
+        cube[k] = { cx[k], cy[k], cz[k],  0,0,0,  0,0,0,  0,0 };
+    const uint32_t cube_idx[36] = {
+        0,1,2, 0,2,3,  // -z
+        5,4,7, 5,7,6,  // +z
+        4,0,3, 4,3,7,  // -x
+        1,5,6, 1,6,2,  // +x
+        4,5,1, 4,1,0,  // -y
+        3,2,6, 3,6,7,  // +y
+    };
+    if (SUCCEEDED(device->CreateVertexBuffer(sizeof(cube), 0, 0, D3DPOOL_MANAGED, &m_cube_vb, nullptr)))
+    {
+        void* p = nullptr;
+        if (SUCCEEDED(m_cube_vb->Lock(0, sizeof(cube), &p, 0))) { memcpy(p, cube, sizeof(cube)); m_cube_vb->Unlock(); }
+    }
+    if (SUCCEEDED(device->CreateIndexBuffer(sizeof(cube_idx), 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &m_cube_ib, nullptr)))
+    {
+        void* p = nullptr;
+        if (SUCCEEDED(m_cube_ib->Lock(0, sizeof(cube_idx), &p, 0))) { memcpy(p, cube_idx, sizeof(cube_idx)); m_cube_ib->Unlock(); }
+    }
+}
+
+// Load the already-compiled standard shader from the project's shaders/ folder.
+// No compiling here — that only happens via CompileShaders (the button).
+void SceneRenderer::LoadStandardShader()
+{
+    if (m_project_root.empty())
+        return;
+    const std::filesystem::path out = m_project_root / "shaders";
+    IDirect3DVertexShader9* vs = shader::LoadVS(m_device, out / "standard_vs.cso");
+    IDirect3DPixelShader9*  ps = shader::LoadPS(m_device, out / "standard_ps.cso");
+    if (vs && ps)
+    {
+        if (m_vs) m_vs->Release();
+        if (m_ps) m_ps->Release();
+        m_vs = vs;
+        m_ps = ps;
+    }
+    else
+    {
+        if (vs) vs->Release();
+        if (ps) ps->Release();
+        applog::Warn("Shaders not compiled yet — press 'Compile shaders' in Settings");
+    }
+}
+
+// "Compile shaders" action: compile every shader into <project>/shaders (the
+// actual work lives in shadercompiler), then reload the results.
+void SceneRenderer::CompileShaders()
+{
+    if (m_project_root.empty())
+    {
+        applog::Warn("Open a project to compile shaders");
+        return;
+    }
+    shadercompiler::CompileAll(m_standard_src, m_project_root);
+    LoadStandardShader(); // reload standard from the fresh .cso
+    m_shaders.Clear();    // custom shaders reload from the fresh .cso on next use
 }
 
 void SceneRenderer::Shutdown()
 {
+    if (m_cube_ib)    { m_cube_ib->Release();    m_cube_ib = nullptr; }
+    if (m_cube_vb)    { m_cube_vb->Release();    m_cube_vb = nullptr; }
+    if (m_quad_ib)    { m_quad_ib->Release();    m_quad_ib = nullptr; }
+    if (m_quad_vb)    { m_quad_vb->Release();    m_quad_vb = nullptr; }
+    if (m_def_black)  { m_def_black->Release();  m_def_black = nullptr; }
+    if (m_def_normal) { m_def_normal->Release(); m_def_normal = nullptr; }
+    if (m_def_white)  { m_def_white->Release();  m_def_white = nullptr; }
+    if (m_mesh_decl)  { m_mesh_decl->Release();  m_mesh_decl = nullptr; }
+    if (m_ps)         { m_ps->Release();         m_ps = nullptr; }
+    if (m_vs)         { m_vs->Release();         m_vs = nullptr; }
+    m_shaders.Shutdown();
     m_meshes.Shutdown();
     OnDeviceLost();
     m_device = nullptr;
@@ -140,6 +303,8 @@ void SceneRenderer::Shutdown()
 
 void SceneRenderer::OnDeviceLost()
 {
+    if (m_depthMS)   { m_depthMS->Release();   m_depthMS = nullptr; }
+    if (m_rtMS)      { m_rtMS->Release();      m_rtMS = nullptr; }
     if (m_depth)     { m_depth->Release();     m_depth = nullptr; }
     if (m_rtSurface) { m_rtSurface->Release(); m_rtSurface = nullptr; }
     if (m_rt)        { m_rt->Release();        m_rt = nullptr; }
@@ -171,10 +336,26 @@ void SceneRenderer::RenderUi(EngineState& state)
         return; // m_renderRequested stays false -> RenderGpu no-ops
     }
 
-    m_meshes.SetProjectRoot(state.project_root); // clears cache on project change
+    // On project open/change, load the compiled shaders. Compiling is only done
+    // by the Compile-shaders button (CompileShaders), never automatically.
+    if (m_project_root != state.project_root)
+    {
+        m_project_root = state.project_root;
+        LoadStandardShader();
+    }
+    m_meshes.SetProjectRoot(state.project_root);  // clears cache on project change
+    m_shaders.SetProjectRoot(state.project_root);
 
-    // Capture the models to draw from the selected scene.
+    // Compile-shaders button: compile every shader (standard + all custom).
+    if (state.compile_shaders_requested)
+    {
+        CompileShaders();
+        state.compile_shaders_requested = false;
+    }
+
+    // Capture the models + standalone shaders to draw from the selected scene.
     m_draw_items.clear();
+    m_shader_items.clear();
     if (SceneFile* scene = state.SelectedScene())
     {
         for (int i = 0; i < (int)scene->objects.size(); ++i)
@@ -183,11 +364,36 @@ void SceneRenderer::RenderUi(EngineState& state)
             if (!o.visible)
                 continue;
             const bool selected = (i == state.selected_object);
+
+            std::string model_path, shader_path;
             for (const ObjectAttribute& a : o.attributes)
             {
-                if (a.type == "3D Model" && !a.model_path.empty())
-                    m_draw_items.push_back({a.model_path, ComposeWorld(o), selected});
+                if (a.type == "3D Model" && !a.model_path.empty() && model_path.empty())
+                    model_path = a.model_path;
+                else if (a.type == "Shader" && !a.shader_path.empty() && shader_path.empty())
+                    shader_path = a.shader_path;
             }
+
+            // A "//@geometry model" shader takes over the mesh, replacing the
+            // standard material; anything else is standalone geometry.
+            bool shader_owns_mesh = false;
+            if (!shader_path.empty())
+            {
+                CustomShader* cs = m_shaders.Get(shader_path);
+                shader_owns_mesh = cs && cs->state.geometry == ShaderState::Model;
+
+                ShaderItem si;
+                si.shader_path = shader_path;
+                si.model_path  = model_path;
+                si.pos[0] = o.position[0]; si.pos[1] = o.position[1]; si.pos[2] = o.position[2];
+                si.rot[0] = o.rotation[0]; si.rot[1] = o.rotation[1]; si.rot[2] = o.rotation[2];
+                si.scale[0] = o.scale[0]; si.scale[1] = o.scale[1]; si.scale[2] = o.scale[2];
+                si.selected = selected;
+                m_shader_items.push_back(si);
+            }
+
+            if (!model_path.empty() && !shader_owns_mesh)
+                m_draw_items.push_back({model_path, ComposeWorld(o), selected});
         }
     }
 
@@ -227,6 +433,7 @@ void SceneRenderer::RenderUi(EngineState& state)
         Vec3 cat  = { m_target[0], m_target[1], m_target[2] };
         Vec3 ceye = { cat.x + cdir.x * m_distance, cat.y + cdir.y * m_distance,
                       cat.z + cdir.z * m_distance };
+        m_eye[0] = ceye.x; m_eye[1] = ceye.y; m_eye[2] = ceye.z;
         m_view = LookAtLH(ceye, cat, {0.0f, 1.0f, 0.0f});
         m_proj = PerspectiveFovLH(3.14159265f / 4.0f, (float)m_width / (float)m_height, 0.1f, 200.0f);
 
@@ -322,7 +529,7 @@ void SceneRenderer::RenderGpu(float dt)
     if (!m_device || !m_renderRequested || !m_rtSurface)
         return;
 
-    (void)dt; // camera is fully input-driven
+    m_time += dt; // drives animated custom shaders (gTime)
 
     // Redirect rendering to the offscreen target, remembering the back buffer.
     IDirect3DSurface9* prevRt    = nullptr;
@@ -330,8 +537,12 @@ void SceneRenderer::RenderGpu(float dt)
     m_device->GetRenderTarget(0, &prevRt);
     m_device->GetDepthStencilSurface(&prevDepth);
 
-    m_device->SetRenderTarget(0, m_rtSurface);
-    m_device->SetDepthStencilSurface(m_depth);
+    // Render into the multisampled target when available (for alpha-to-coverage);
+    // it is resolved into m_rt after EndScene.
+    IDirect3DSurface9* sceneRt    = (m_msaa != D3DMULTISAMPLE_NONE) ? m_rtMS    : m_rtSurface;
+    IDirect3DSurface9* sceneDepth = (m_msaa != D3DMULTISAMPLE_NONE) ? m_depthMS : m_depth;
+    m_device->SetRenderTarget(0, sceneRt);
+    m_device->SetDepthStencilSurface(sceneDepth);
     m_device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, m_background, 1.0f, 0);
 
     if (SUCCEEDED(m_device->BeginScene()))
@@ -342,72 +553,114 @@ void SceneRenderer::RenderGpu(float dt)
         m_device->SetTransform(D3DTS_VIEW, &m_view);
         m_device->SetTransform(D3DTS_PROJECTION, &m_proj);
 
+        // --- Grid (fixed-function line list) ---
+        m_device->SetVertexShader(nullptr);
+        m_device->SetPixelShader(nullptr);
         m_device->SetRenderState(D3DRS_LIGHTING, FALSE);
         m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
         m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         m_device->SetTexture(0, nullptr);
         m_device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-
         if (!m_grid.empty())
         {
             m_device->DrawPrimitiveUP(D3DPT_LINELIST, (UINT)(m_grid.size() / 2),
                                       m_grid.data(), sizeof(Vertex));
         }
 
-        // --- Scene models ---
-        if (!m_draw_items.empty())
+        // --- Scene models (shader: diffuse / normal / specular) ---
+        if (!m_draw_items.empty() && m_vs && m_ps && m_mesh_decl)
         {
-            // Simple fixed-function directional lighting (no PBR / materials).
-            D3DLIGHT9 light = {};
-            light.Type = D3DLIGHT_DIRECTIONAL;
-            light.Diffuse.r = light.Diffuse.g = light.Diffuse.b = light.Diffuse.a = 1.0f;
-            Vec3 ld = Normalize({-0.4f, -1.0f, -0.5f});
-            light.Direction = {ld.x, ld.y, ld.z};
-            m_device->SetLight(0, &light);
-            m_device->LightEnable(0, TRUE);
-            m_device->SetRenderState(D3DRS_LIGHTING, TRUE);
-            m_device->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
-            m_device->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_ARGB(255, 55, 55, 60));
-
-            D3DMATERIAL9 mtl = {};
-            mtl.Diffuse.r = mtl.Diffuse.g = mtl.Diffuse.b = 0.85f; mtl.Diffuse.a = 1.0f;
-            mtl.Ambient = mtl.Diffuse;
-            m_device->SetMaterial(&mtl);
-            m_device->SetFVF(MESH_FVF);
-            m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-            m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            m_device->SetVertexDeclaration(m_mesh_decl);
+            m_device->SetVertexShader(m_vs);
+            m_device->SetPixelShader(m_ps);
             m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+            for (DWORD s = 0; s < 3; ++s)
+            {
+                m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+                m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+            }
 
+            // Pixel-shader constants: light direction, camera position, ambient.
+            const Vec3  ld = Normalize({-0.4f, -1.0f, -0.5f});
+            const float light_dir[4] = { ld.x, ld.y, ld.z, 0.0f };
+            const float cam_pos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
+            const float ambient[4]   = { 0.22f, 0.22f, 0.25f, 0.0f };
+            m_device->SetPixelShaderConstantF(0, light_dir, 1);
+            m_device->SetPixelShaderConstantF(1, cam_pos, 1);
+            m_device->SetPixelShaderConstantF(2, ambient, 1);
+
+            const D3DMATRIX vp = Multiply(m_view, m_proj);
+            auto draw_mesh = [&](GpuMesh* gm, const DrawItem& item)
+            {
+                const D3DMATRIX wvp = Multiply(item.world, vp);
+                m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
+                m_device->SetVertexShaderConstantF(4, &item.world.m[0][0], 4);
+                m_device->SetTexture(0, gm->diffuse  ? gm->diffuse  : m_def_white);
+                m_device->SetTexture(1, gm->normal   ? gm->normal   : m_def_normal);
+                m_device->SetTexture(2, gm->specular ? gm->specular : m_def_black);
+                m_device->SetStreamSource(0, gm->vb, 0, sizeof(MeshVertex));
+                m_device->SetIndices(gm->ib);
+                m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+                                               gm->vertexCount, 0, gm->indexCount / 3);
+            };
+
+            // Pass 1 - opaque + cutout (both write depth, no blending). Cutout
+            // (a hard-edged alpha mask: hair cards / foliage) uses the diffuse's
+            // alpha: alpha-to-coverage when the GPU supports it, so the mask edge
+            // is anti-aliased and depth-correct with no sorting; otherwise a hard
+            // alpha test as a fallback.
+            m_device->SetRenderState(D3DRS_ALPHAREF,  128); // ~0.5
+            m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
             for (const DrawItem& item : m_draw_items)
             {
                 GpuMesh* gm = m_meshes.Get(item.model_path);
                 if (!gm)
                     continue;
-
-                // Modulate the diffuse texture with the lit vertex color; if the
-                // mesh has no texture, just use the lit color.
-                if (gm->diffuse)
+                if (gm->alpha == AlphaKind::Blend)
+                    continue; // smooth translucency -> pass 2
+                const bool cutout = gm->alpha == AlphaKind::Cutout;
+                if (cutout && m_hasA2C)
                 {
-                    m_device->SetTexture(0, gm->diffuse);
-                    m_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-                    m_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-                    m_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+                    // Alpha test at the mask's mid-point drops the fully-transparent
+                    // background AND the faint low-alpha haze between strands (which
+                    // otherwise renders as a pale veil/rim); A2C anti-aliases the
+                    // remaining solid strand edges via MSAA coverage.
+                    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+                    m_device->SetRenderState(D3DRS_ALPHAREF, 170);
+                    m_device->SetRenderState(m_a2cState, m_a2cOn);
                 }
                 else
                 {
-                    m_device->SetTexture(0, nullptr);
-                    m_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-                    m_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+                    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, cutout ? TRUE : FALSE);
+                    m_device->SetRenderState(D3DRS_ALPHAREF, 128);
                 }
-
-                m_device->SetTransform(D3DTS_WORLD, &item.world);
-                m_device->SetStreamSource(0, gm->vb, 0, sizeof(MeshVertex));
-                m_device->SetIndices(gm->ib);
-                m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
-                                               gm->vertexCount, 0, gm->indexCount / 3);
+                draw_mesh(gm, item);
+                if (cutout && m_hasA2C)
+                    m_device->SetRenderState(m_a2cState, m_a2cOff);
             }
+            m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
 
-            // Selection outline: redraw selected meshes as an orange wireframe.
+            // Pass 2 - alpha-blended (glass etc.), no depth write.
+            m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+            m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+            m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+            for (const DrawItem& item : m_draw_items)
+            {
+                GpuMesh* gm = m_meshes.Get(item.model_path);
+                if (gm && gm->alpha == AlphaKind::Blend)
+                    draw_mesh(gm, item);
+            }
+            m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+            m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+
+            // --- Selection outline (fixed-function orange wireframe) ---
+            m_device->SetVertexShader(nullptr);
+            m_device->SetPixelShader(nullptr);
+            m_device->SetTransform(D3DTS_VIEW, &m_view);
+            m_device->SetTransform(D3DTS_PROJECTION, &m_proj);
             m_device->SetRenderState(D3DRS_LIGHTING, FALSE);
             m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME);
             m_device->SetTexture(0, nullptr);
@@ -427,21 +680,118 @@ void SceneRenderer::RenderGpu(float dt)
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                gm->vertexCount, 0, gm->indexCount / 3);
             }
-
-            // Restore states.
             m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
             m_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-            m_device->SetRenderState(D3DRS_LIGHTING, FALSE);
+        }
+
+        // --- Standalone shader objects: each is drawn by DrawShaderItem. ---
+        if (!m_shader_items.empty() && m_quad_vb && m_quad_ib && m_mesh_decl)
+        {
+            m_device->SetVertexDeclaration(m_mesh_decl);
+            const D3DMATRIX vp = Multiply(m_view, m_proj);
+            for (const ShaderItem& si : m_shader_items)
+            {
+                CustomShader* cs = m_shaders.Get(si.shader_path);
+                if (cs && cs->Valid())
+                    DrawShaderItem(si, *cs, vp);
+            }
+            // Restore fixed-function defaults for the grid/mesh next frame.
+            m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+            m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+            m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+            m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         }
 
         m_device->EndScene();
     }
+
+    // Resolve the multisampled scene into the single-sampled texture ImGui shows.
+    if (m_msaa != D3DMULTISAMPLE_NONE && m_rtMS && m_rtSurface)
+        m_device->StretchRect(m_rtMS, nullptr, m_rtSurface, nullptr, D3DTEXF_NONE);
 
     // Restore the back buffer as the active target.
     m_device->SetRenderTarget(0, prevRt);
     m_device->SetDepthStencilSurface(prevDepth);
     if (prevRt)    prevRt->Release();
     if (prevDepth) prevDepth->Release();
+}
+
+// Draw one standalone shader: pick geometry, build its transform + uniforms,
+// set its parsed render states (raw values), and draw. The whole "how a shader
+// draws" story is here in one place.
+void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& shader, const D3DMATRIX& viewProj)
+{
+    const ShaderState& s = shader.state;
+    const float d2r = 3.14159265f / 180.0f;
+
+    const D3DMATRIX rot = Multiply(Multiply(RotationX(item.rot[0] * d2r),
+                                            RotationY(item.rot[1] * d2r)),
+                                   RotationZ(item.rot[2] * d2r));
+    D3DMATRIX w = Multiply(Multiply(Scaling(item.scale[0], item.scale[1], item.scale[2]), rot),
+                           Translation(item.pos[0], item.pos[1], item.pos[2]));
+
+    IDirect3DVertexBuffer9* vb = m_quad_vb;
+    IDirect3DIndexBuffer9*  ib = m_quad_ib;
+    UINT verts = 4, prims = 2;
+
+    if (s.geometry == ShaderState::Volume && m_cube_vb && m_cube_ib)
+    {
+        vb = m_cube_vb; ib = m_cube_ib; verts = 8; prims = 12;
+        // Camera in the cube's local space, so the pixel shader can raymarch it.
+        const D3DMATRIX invW =
+            Multiply(Multiply(Translation(-item.pos[0], -item.pos[1], -item.pos[2]), Transpose3(rot)),
+                     Scaling(1.0f / item.scale[0], 1.0f / item.scale[1], 1.0f / item.scale[2]));
+        const Vec3 camObj = TransformPoint({ m_eye[0], m_eye[1], m_eye[2] }, invW);
+        const float camObj4[4] = { camObj.x, camObj.y, camObj.z, 0.0f };
+        m_device->SetPixelShaderConstantF(4, camObj4, 1); // gCamObj (PS c4)
+    }
+    else if (s.geometry == ShaderState::Model)
+    {
+        // The shader is the mesh's material: draw the model, bind its textures.
+        GpuMesh* gm = m_meshes.Get(item.model_path);
+        if (!gm)
+            return; // no mesh to draw on
+        vb = gm->vb; ib = gm->ib; verts = gm->vertexCount; prims = gm->indexCount / 3;
+        for (DWORD t = 0; t < 3; ++t)
+        {
+            m_device->SetSamplerState(t, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(t, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(t, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+            m_device->SetSamplerState(t, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+        }
+        m_device->SetTexture(0, gm->diffuse  ? gm->diffuse  : m_def_white);
+        m_device->SetTexture(1, gm->normal   ? gm->normal   : m_def_normal);
+        m_device->SetTexture(2, gm->specular ? gm->specular : m_def_black);
+    }
+
+    // Parsed render states — flat, no switching.
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, s.alphaBlend);
+    m_device->SetRenderState(D3DRS_SRCBLEND,  s.srcBlend);
+    m_device->SetRenderState(D3DRS_DESTBLEND, s.destBlend);
+    m_device->SetRenderState(D3DRS_ZENABLE,      s.zEnable);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, s.zWrite);
+    m_device->SetRenderState(D3DRS_CULLMODE,     s.cull);
+
+    // Frame inputs any custom shader may use (same registers as the standard
+    // material), so a "model" shader can light/texture the mesh like standard.
+    const Vec3  ld = Normalize({ -0.4f, -1.0f, -0.5f });
+    const float lightDir[4] = { ld.x, ld.y, ld.z, 0.0f };
+    const float camPos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
+    const float ambient[4]  = { 0.22f, 0.22f, 0.25f, 0.0f };
+    const float time4[4]    = { m_time, 0.0f, 0.0f, 0.0f };
+
+    const D3DMATRIX wvp = Multiply(w, viewProj);
+    m_device->SetVertexShader(shader.vs);
+    m_device->SetPixelShader(shader.ps);
+    m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
+    m_device->SetVertexShaderConstantF(4, &w.m[0][0], 4);
+    m_device->SetPixelShaderConstantF(0, lightDir, 1);
+    m_device->SetPixelShaderConstantF(1, camPos, 1);
+    m_device->SetPixelShaderConstantF(2, ambient, 1);
+    m_device->SetPixelShaderConstantF(3, time4, 1); // gTime
+    m_device->SetStreamSource(0, vb, 0, sizeof(MeshVertex));
+    m_device->SetIndices(ib);
+    m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);
 }
 
 void SceneRenderer::BuildGrid()
@@ -479,21 +829,79 @@ bool SceneRenderer::EnsureTarget(int width, int height)
 
     OnDeviceLost(); // release any existing target before recreating
 
+    // Resolved, single-sampled texture that ImGui samples.
     if (FAILED(m_device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET,
                                        D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_rt, nullptr)))
         return false;
-
     if (FAILED(m_rt->GetSurfaceLevel(0, &m_rtSurface)))
     {
         OnDeviceLost();
         return false;
     }
 
-    if (FAILED(m_device->CreateDepthStencilSurface(width, height, D3DFMT_D16,
-                                                   D3DMULTISAMPLE_NONE, 0, TRUE, &m_depth, nullptr)))
+    // Pick the best MSAA level this GPU supports for both color and depth, and
+    // detect the vendor's alpha-to-coverage toggle (for hair/foliage cutout).
+    m_msaa   = D3DMULTISAMPLE_NONE;
+    m_hasA2C = false;
+    if (IDirect3D9* d3d = nullptr; SUCCEEDED(m_device->GetDirect3D(&d3d)) && d3d)
     {
-        OnDeviceLost();
-        return false;
+        D3DDEVICE_CREATION_PARAMETERS cp{};
+        m_device->GetCreationParameters(&cp);
+
+        const D3DMULTISAMPLE_TYPE want[] = { D3DMULTISAMPLE_4_SAMPLES, D3DMULTISAMPLE_2_SAMPLES };
+        for (D3DMULTISAMPLE_TYPE t : want)
+        {
+            DWORD qc = 0, qd = 0;
+            if (SUCCEEDED(d3d->CheckDeviceMultiSampleType(cp.AdapterOrdinal, cp.DeviceType, D3DFMT_A8R8G8B8, TRUE, t, &qc)) &&
+                SUCCEEDED(d3d->CheckDeviceMultiSampleType(cp.AdapterOrdinal, cp.DeviceType, D3DFMT_D16,      TRUE, t, &qd)))
+            {
+                m_msaa = t;
+                break;
+            }
+        }
+
+        auto fourcc = [](char a, char b, char c, char d) -> DWORD {
+            return (DWORD)(BYTE)a | ((DWORD)(BYTE)b << 8) | ((DWORD)(BYTE)c << 16) | ((DWORD)(BYTE)d << 24); };
+        D3DDISPLAYMODE mode{};
+        d3d->GetAdapterDisplayMode(cp.AdapterOrdinal, &mode);
+        if (SUCCEEDED(d3d->CheckDeviceFormat(cp.AdapterOrdinal, cp.DeviceType, mode.Format, 0,
+                                             D3DRTYPE_SURFACE, (D3DFORMAT)fourcc('A','2','M','1'))))
+        {   // NVIDIA-style A2C
+            m_hasA2C = true; m_a2cState = D3DRS_ADAPTIVETESS_Y;
+            m_a2cOn = fourcc('A','2','M','1'); m_a2cOff = fourcc('A','2','M','0');
+        }
+        else if (SUCCEEDED(d3d->CheckDeviceFormat(cp.AdapterOrdinal, cp.DeviceType, mode.Format, 0,
+                                                  D3DRTYPE_SURFACE, (D3DFORMAT)fourcc('A','T','O','C'))))
+        {   // AMD/ATI-style A2C
+            m_hasA2C = true; m_a2cState = D3DRS_POINTSIZE;
+            m_a2cOn = fourcc('A','2','M','1'); m_a2cOff = 0;
+        }
+        d3d->Release();
+    }
+    if (m_msaa == D3DMULTISAMPLE_NONE)
+        m_hasA2C = false; // A2C needs a multisampled target to do anything
+
+    // Multisampled color + matching depth; the scene renders here, then resolves
+    // into m_rt. Fall back to single-sampled if any of it fails.
+    if (m_msaa != D3DMULTISAMPLE_NONE)
+    {
+        if (FAILED(m_device->CreateRenderTarget(width, height, D3DFMT_A8R8G8B8, m_msaa, 0, FALSE, &m_rtMS, nullptr)) ||
+            FAILED(m_device->CreateDepthStencilSurface(width, height, D3DFMT_D16, m_msaa, 0, FALSE, &m_depthMS, nullptr)))
+        {
+            if (m_rtMS)    { m_rtMS->Release();    m_rtMS = nullptr; }
+            if (m_depthMS) { m_depthMS->Release(); m_depthMS = nullptr; }
+            m_msaa = D3DMULTISAMPLE_NONE;
+            m_hasA2C = false;
+        }
+    }
+    if (m_msaa == D3DMULTISAMPLE_NONE)
+    {
+        if (FAILED(m_device->CreateDepthStencilSurface(width, height, D3DFMT_D16,
+                                                       D3DMULTISAMPLE_NONE, 0, TRUE, &m_depth, nullptr)))
+        {
+            OnDeviceLost();
+            return false;
+        }
     }
 
     m_width  = width;

@@ -28,8 +28,9 @@ namespace project
             for (const ObjectAttribute& a : o.attributes)
             {
                 json ja;
-                ja["type"]       = a.type;
-                ja["model_path"] = a.model_path;
+                ja["type"]        = a.type;
+                ja["model_path"]  = a.model_path;
+                ja["shader_path"] = a.shader_path;
                 jo["attributes"].push_back(ja);
             }
             j["objects"].push_back(jo);
@@ -76,8 +77,9 @@ namespace project
                     for (const json& ja : jo["attributes"])
                     {
                         ObjectAttribute a;
-                        a.type       = ja.value("type", std::string("3D Model"));
-                        a.model_path = ja.value("model_path", std::string());
+                        a.type        = ja.value("type", std::string("3D Model"));
+                        a.model_path  = ja.value("model_path", std::string());
+                        a.shader_path = ja.value("shader_path", std::string());
                         o.attributes.push_back(a);
                     }
                 }

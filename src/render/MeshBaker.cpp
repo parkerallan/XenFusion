@@ -9,6 +9,16 @@
 
 namespace fs = std::filesystem;
 
+namespace
+{
+    void WriteStr(std::ofstream& out, const std::string& s)
+    {
+        const uint32_t len = (uint32_t)s.size();
+        out.write(reinterpret_cast<const char*>(&len), sizeof(len));
+        out.write(s.data(), len);
+    }
+}
+
 namespace mesh
 {
     bool BakeModel(const fs::path& source, const fs::path& out_mesh, std::string& error)
@@ -18,9 +28,10 @@ namespace mesh
             source.string(),
             aiProcess_Triangulate |
             aiProcess_GenSmoothNormals |
+            aiProcess_CalcTangentSpace |        // tangents for normal mapping
             aiProcess_JoinIdenticalVertices |
-            aiProcess_PreTransformVertices |   // flatten the node hierarchy
-            aiProcess_ConvertToLeftHanded);    // match our LH D3D9 pipeline
+            aiProcess_PreTransformVertices |
+            aiProcess_ConvertToLeftHanded);
 
         if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || scene->mNumMeshes == 0)
         {
@@ -29,7 +40,6 @@ namespace mesh
             return false;
         }
 
-        // Merge every mesh into one vertex/index array.
         std::vector<MeshVertex> vertices;
         std::vector<uint32_t>   indices;
         for (unsigned m = 0; m < scene->mNumMeshes; ++m)
@@ -40,23 +50,12 @@ namespace mesh
             for (unsigned v = 0; v < am->mNumVertices; ++v)
             {
                 MeshVertex mv{};
-                mv.px = am->mVertices[v].x;
-                mv.py = am->mVertices[v].y;
-                mv.pz = am->mVertices[v].z;
-                if (am->mNormals)
-                {
-                    mv.nx = am->mNormals[v].x;
-                    mv.ny = am->mNormals[v].y;
-                    mv.nz = am->mNormals[v].z;
-                }
-                if (am->mTextureCoords[0])
-                {
-                    mv.u = am->mTextureCoords[0][v].x;
-                    mv.v = am->mTextureCoords[0][v].y;
-                }
+                mv.px = am->mVertices[v].x; mv.py = am->mVertices[v].y; mv.pz = am->mVertices[v].z;
+                if (am->mNormals)  { mv.nx = am->mNormals[v].x;  mv.ny = am->mNormals[v].y;  mv.nz = am->mNormals[v].z; }
+                if (am->mTangents) { mv.tx = am->mTangents[v].x; mv.ty = am->mTangents[v].y; mv.tz = am->mTangents[v].z; }
+                if (am->mTextureCoords[0]) { mv.u = am->mTextureCoords[0][v].x; mv.v = am->mTextureCoords[0][v].y; }
                 vertices.push_back(mv);
             }
-
             for (unsigned f = 0; f < am->mNumFaces; ++f)
             {
                 const aiFace& face = am->mFaces[f];
@@ -71,21 +70,32 @@ namespace mesh
             return false;
         }
 
-        // Diffuse texture reference (first material that has one). Stored as the
-        // path the model gave, relative to the model file.
-        std::string diffuse;
-        for (unsigned m = 0; m < scene->mNumMeshes && diffuse.empty(); ++m)
+        // Grab the first material's diffuse / normal / specular textures.
+        auto find_tex = [&](std::initializer_list<aiTextureType> types) -> std::string
         {
-            const aiMaterial* mat = scene->mMaterials[scene->mMeshes[m]->mMaterialIndex];
-            aiString tex;
-            if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &tex) == AI_SUCCESS)
-                diffuse = tex.C_Str();
-        }
-        for (char& c : diffuse) if (c == '\\') c = '/';
+            for (unsigned m = 0; m < scene->mNumMeshes; ++m)
+            {
+                const aiMaterial* mat = scene->mMaterials[scene->mMeshes[m]->mMaterialIndex];
+                for (aiTextureType t : types)
+                {
+                    aiString tex;
+                    if (mat->GetTexture(t, 0, &tex) == AI_SUCCESS)
+                    {
+                        std::string s = tex.C_Str();
+                        for (char& c : s) if (c == '\\') c = '/';
+                        return s;
+                    }
+                }
+            }
+            return {};
+        };
+        const std::string diffuse  = find_tex({aiTextureType_DIFFUSE, aiTextureType_BASE_COLOR});
+        const std::string normal   = find_tex({aiTextureType_NORMALS, aiTextureType_HEIGHT});
+        const std::string specular = find_tex({aiTextureType_SPECULAR});
 
         MeshHeader h{};
         h.magic[0] = 'M'; h.magic[1] = '3'; h.magic[2] = '6'; h.magic[3] = '0';
-        h.version     = 2;
+        h.version     = MESH_VERSION;
         h.vertexCount = (uint32_t)vertices.size();
         h.indexCount  = (uint32_t)indices.size();
 
@@ -97,10 +107,10 @@ namespace mesh
         }
         out.write(reinterpret_cast<const char*>(&h), sizeof(h));
         out.write(reinterpret_cast<const char*>(vertices.data()), vertices.size() * sizeof(MeshVertex));
-        out.write(reinterpret_cast<const char*>(indices.data()), indices.size() * sizeof(uint32_t));
-        const uint32_t diffuse_len = (uint32_t)diffuse.size();
-        out.write(reinterpret_cast<const char*>(&diffuse_len), sizeof(diffuse_len));
-        out.write(diffuse.data(), diffuse_len);
+        out.write(reinterpret_cast<const char*>(indices.data()),  indices.size() * sizeof(uint32_t));
+        WriteStr(out, diffuse);
+        WriteStr(out, normal);
+        WriteStr(out, specular);
         return true;
     }
 }

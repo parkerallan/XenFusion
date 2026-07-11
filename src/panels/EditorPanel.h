@@ -2,12 +2,14 @@
 
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 struct EngineState;
 class TextEditor;
 
 // Code/text editor panel backed by ImGuiColorTextEdit, mirroring the reference
-// engine's EditorComponent. Edits the file at state.open_file_path.
+// engine's EditorComponent. Holds one tab per open file; a file is opened (or
+// re-focused) by setting state.open_file_path, which this panel drains.
 class EditorPanel
 {
 public:
@@ -17,9 +19,15 @@ public:
     void Render(EngineState& state);
 
 private:
-    void LoadFile(const std::filesystem::path& path);
-    void Save(EngineState& state);
+    struct Doc
+    {
+        std::filesystem::path       path;
+        std::unique_ptr<TextEditor> editor;
+        bool                        want_focus = false; // select this tab this frame
+    };
 
-    std::unique_ptr<TextEditor> editor_;
-    std::filesystem::path       loaded_path_;
+    void OpenFile(const std::filesystem::path& path); // add a tab or focus existing
+    void SaveDoc(Doc& doc, EngineState& state);
+
+    std::vector<Doc> docs_;
 };

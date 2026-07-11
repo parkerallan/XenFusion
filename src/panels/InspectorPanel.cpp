@@ -126,6 +126,42 @@ void InspectorPanel::Render(EngineState& state)
                 }
                 ImGui::EndDragDropTarget();
             }
+            // Transparency (blend vs. cutout) is derived from the diffuse's alpha
+            // channel at load time — no toggle, same as the rest of the material.
+        }
+        else if (attr.type == "Shader")
+        {
+            // Read-only path display; set by dragging a .hlsl from the Assets panel.
+            char buf[260];
+            const std::string shown = attr.shader_path.empty() ? "(drag a .hlsl from Assets)" : attr.shader_path;
+            std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##shader_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+
+                    if (ext == ".hlsl" || ext == ".fx")
+                    {
+                        attr.shader_path = dropped;
+                        save();
+                    }
+                    else
+                    {
+                        state.AddLog("Not a shader file: " + dropped, LogLevel::Error);
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
         }
 
         ImGui::PopID();
@@ -139,6 +175,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "3D Model";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Shader"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Shader";
             obj->attributes.push_back(attr);
             save();
         }

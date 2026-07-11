@@ -121,15 +121,37 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
         }
     }
 
-    // Load the blob + its texture.
-    GpuMesh gm;
-    std::string diffuse_rel;
-    mesh::LoadMeshBlob(m_device, baked, gm, diffuse_rel);
-    if (gm.vb && !diffuse_rel.empty())
+    // Load the blob + its textures (diffuse / normal / specular).
+    auto try_load = [&](GpuMesh& g)
     {
-        gm.diffuse = mesh::LoadTexture(m_device, baked.parent_path() / diffuse_rel);
-        if (!gm.diffuse)
-            applog::Warn("Texture not found for " + model_path + ": " + diffuse_rel);
+        MeshTextures mt;
+        if (mesh::LoadMeshBlob(m_device, baked, g, mt) && g.vb)
+        {
+            auto load = [&](const std::string& rel, AlphaKind* alpha = nullptr) -> IDirect3DTexture9*
+            {
+                if (rel.empty()) return nullptr;
+                IDirect3DTexture9* t = mesh::LoadTexture(m_device, baked.parent_path() / rel, alpha);
+                if (!t) applog::Warn("Texture not found for " + model_path + ": " + rel);
+                return t;
+            };
+            g.diffuse  = load(mt.diffuse, &g.alpha); // transparency mode comes from the diffuse's alpha
+            g.normal   = load(mt.normal);
+            g.specular = load(mt.specular);
+        }
+    };
+
+    GpuMesh gm;
+    try_load(gm);
+
+    // Blob missing or an old format? If we have a source, force a re-bake.
+    if (!gm.vb && !bake_failed && have_source && baked_exists && !source_newer)
+    {
+        std::string err;
+        if (mesh::BakeModel(source, baked, err))
+        {
+            applog::Build("Rebaked " + baked.filename().string());
+            try_load(gm);
+        }
     }
     if (!gm.vb && !bake_failed && first_attempt)
         applog::Error("Failed to load model: " + model_path);

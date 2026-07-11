@@ -8,12 +8,14 @@
 #include <string>
 #include <vector>
 
-// A component-style attribute attached to an object. For now the only type is
-// "3D Model" (holds a model asset path). Serialized into the scene JSON.
+// A component-style attribute attached to an object. Types: "3D Model" (holds a
+// model asset path) and "Shader" (holds a custom .hlsl path, replacing the
+// built-in material for that object). Serialized into the scene JSON.
 struct ObjectAttribute
 {
     std::string type = "3D Model";
-    std::string model_path; // for "3D Model": path to the model asset
+    std::string model_path;  // for "3D Model": path to the model asset
+    std::string shader_path; // for "Shader": path to a custom .hlsl asset
 };
 
 // A single object within a scene. Objects are not files — they live inside a
@@ -64,6 +66,7 @@ struct EngineState
     bool show_editor_panel    = true;
     bool show_imgui_demo      = false;
     bool show_style_editor    = false;
+    bool compile_shaders_requested = false; // compile all project shaders next frame
 
     // Text/code file currently open in the Editor panel (empty = none).
     std::filesystem::path open_file_path;
@@ -92,6 +95,12 @@ struct EngineState
 
     // --- Viewport ---
     float clear_color[4] = {0.094f, 0.094f, 0.106f, 1.0f};
+
+    // --- Toolchain (console build) paths, chosen via the folder picker ---
+    std::string toolchain_xdk;      // Xbox 360 SDK (XDK)
+    std::string toolchain_emulator; // Xenia emulator
+    std::string toolchain_vs2010;   // Visual Studio 2010
+    int         toolchain_pick = 0; // 0=none, 1=xdk, 2=emulator, 3=vs2010 (EngineApplication picks)
 
     // --- Log --- (entries live in the global applog buffer)
     bool auto_scroll_log = true;

@@ -6,50 +6,65 @@
 #include "TextEditor.h"
 #include "imgui.h"
 
-#include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <sstream>
 #include <string>
 
-EditorPanel::EditorPanel()
-    : editor_(std::make_unique<TextEditor>())
-{
-    editor_->SetShowWhitespaces(false);
-    editor_->SetPalette(TextEditor::GetDarkPalette());
-}
-
+EditorPanel::EditorPanel()  = default;
 EditorPanel::~EditorPanel() = default;
 
-void EditorPanel::LoadFile(const std::filesystem::path& path)
+namespace
 {
+    void ApplyLanguage(TextEditor& ed, const std::filesystem::path& path)
+    {
+        std::string ext = path.extension().string();
+        for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+
+        if (ext == ".lua")
+            ed.SetLanguageDefinition(TextEditor::LanguageDefinition::Lua());
+        else if (ext == ".hlsl" || ext == ".glsl" || ext == ".fx" || ext == ".vsh" || ext == ".fsh")
+            ed.SetLanguageDefinition(TextEditor::LanguageDefinition::GLSL());
+        else if (ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".c" || ext == ".cs")
+            ed.SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
+        else
+            ed.SetLanguageDefinition(TextEditor::LanguageDefinition());
+    }
+}
+
+void EditorPanel::OpenFile(const std::filesystem::path& path)
+{
+    // Already open? Just focus that tab.
+    for (Doc& d : docs_)
+    {
+        if (d.path == path)
+        {
+            d.want_focus = true;
+            return;
+        }
+    }
+
+    Doc doc;
+    doc.path   = path;
+    doc.editor = std::make_unique<TextEditor>();
+    doc.editor->SetShowWhitespaces(false);
+    doc.editor->SetPalette(TextEditor::GetDarkPalette());
+
     std::ifstream in(path, std::ios::binary);
     std::ostringstream ss;
     ss << in.rdbuf();
-    editor_->SetText(ss.str());
+    doc.editor->SetText(ss.str());
+    ApplyLanguage(*doc.editor, path);
 
-    std::string ext = path.extension().string();
-    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-
-    if (ext == ".lua")
-        editor_->SetLanguageDefinition(TextEditor::LanguageDefinition::Lua());
-    else if (ext == ".hlsl" || ext == ".glsl" || ext == ".fx" || ext == ".vsh" || ext == ".fsh")
-        editor_->SetLanguageDefinition(TextEditor::LanguageDefinition::GLSL());
-    else if (ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".c" || ext == ".cs")
-        editor_->SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
-    else
-        editor_->SetLanguageDefinition(TextEditor::LanguageDefinition());
-
-    loaded_path_ = path;
+    doc.want_focus = true;
+    docs_.push_back(std::move(doc));
 }
 
-void EditorPanel::Save(EngineState& state)
+void EditorPanel::SaveDoc(Doc& doc, EngineState& state)
 {
-    if (loaded_path_.empty())
-        return;
-    std::ofstream out(loaded_path_, std::ios::binary | std::ios::trunc);
-    out << editor_->GetText();
-    state.AddLog("Saved " + loaded_path_.filename().string());
+    std::ofstream out(doc.path, std::ios::binary | std::ios::trunc);
+    out << doc.editor->GetText();
+    state.AddLog("Saved " + doc.path.filename().string());
 }
 
 void EditorPanel::Render(EngineState& state)
@@ -57,37 +72,62 @@ void EditorPanel::Render(EngineState& state)
     if (!state.show_editor_panel)
         return;
 
-    if (!ImGui::Begin("Editor", &state.show_editor_panel, ImGuiWindowFlags_MenuBar))
+    if (!ImGui::Begin("Editor", &state.show_editor_panel))
     {
         ImGui::End();
         return;
     }
 
-    // Load a newly-requested file.
-    if (!state.open_file_path.empty() && state.open_file_path != loaded_path_)
-        LoadFile(state.open_file_path);
+    // A panel (Assets/Files) requested a file be opened.
+    if (!state.open_file_path.empty())
+    {
+        OpenFile(state.open_file_path);
+        state.open_file_path.clear();
+    }
 
-    if (loaded_path_.empty())
+    if (docs_.empty())
     {
         ImGui::TextDisabled("Open a text or code file from the Files or Assets panel.");
         ImGui::End();
         return;
     }
 
-    if (ImGui::BeginMenuBar())
+    if (ImGui::BeginTabBar("##editor_tabs",
+                           ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs |
+                           ImGuiTabBarFlags_FittingPolicyScroll))
     {
-        ImGui::TextUnformatted(ICON_FA_FILE " ");
-        ImGui::TextUnformatted(loaded_path_.filename().string().c_str());
-        if (ImGui::SmallButton(ICON_FA_FLOPPY_DISK " Save"))
-            Save(state);
-        // Save when the editor is focused and Ctrl+S is pressed.
-        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-            ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S))
-            Save(state);
-        ImGui::EndMenuBar();
-    }
+        for (std::size_t i = 0; i < docs_.size(); /* advance below */)
+        {
+            Doc& doc = docs_[i];
+            ImGui::PushID((int)i);
 
-    editor_->Render("##texteditor");
+            bool open = true;
+            const ImGuiTabItemFlags flags = doc.want_focus ? ImGuiTabItemFlags_SetSelected : 0;
+            doc.want_focus = false;
+
+            if (ImGui::BeginTabItem(doc.path.filename().string().c_str(), &open, flags))
+            {
+                if (ImGui::SmallButton(ICON_FA_FLOPPY_DISK " Save"))
+                    SaveDoc(doc, state);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", doc.path.string().c_str());
+
+                // Ctrl+S saves the active tab.
+                if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                    ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S))
+                    SaveDoc(doc, state);
+
+                doc.editor->Render("##texteditor");
+                ImGui::EndTabItem();
+            }
+
+            ImGui::PopID();
+
+            if (!open) docs_.erase(docs_.begin() + (long)i);
+            else       ++i;
+        }
+        ImGui::EndTabBar();
+    }
 
     ImGui::End();
 }
