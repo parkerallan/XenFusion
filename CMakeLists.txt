@@ -113,6 +113,7 @@ add_executable(engine360
     src/app/main.cpp
     src/app/EngineApplication.cpp
     src/app/Settings.cpp
+    src/build/BuildRun.cpp
     src/core/Log.cpp
     src/render/Renderer.cpp
     src/render/SceneRenderer.cpp
@@ -137,6 +138,9 @@ add_executable(engine360
     src/panels/EditorPanel.cpp
 )
 target_include_directories(engine360 PRIVATE src third_party)
+# Lets the editor's "Build and Run XEX" locate the console runtime project +
+# build_run.ps1 during development (the runtime is a sibling of the editor source).
+target_compile_definitions(engine360 PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
 target_link_libraries(engine360 PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp Ole32 Shell32)
 

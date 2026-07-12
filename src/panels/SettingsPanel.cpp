@@ -1,5 +1,6 @@
 #include "panels/SettingsPanel.h"
 
+#include "app/Settings.h"
 #include "state/EngineState.h"
 
 #include "imgui.h"
@@ -42,7 +43,40 @@ void SettingsPanel::Render(EngineState& state)
 
     path_row("Xbox 360 SDK (XDK)", state.toolchain_xdk,      1);
     path_row("Xenia emulator",     state.toolchain_emulator, 2);
-    path_row("Visual Studio 2010", state.toolchain_vs2010,   3);
+
+    ImGui::SeparatorText("Build Configuration");
+
+    // Base folder for all console build artifacts (.xex, deploy\, .iso, obj).
+    // Keeps builds out of the engine's source tree. Empty = the runtime\ folder.
+    path_row("Build output folder", state.build_output_dir, 3);
+    if (state.build_output_dir.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextUnformatted("  (not set - defaults to the engine's runtime\\ folder)");
+        ImGui::PopStyleColor();
+    }
+
+    // Release / Debug for the .xex build. Persisted immediately on change.
+    ImGui::TextUnformatted("Configuration");
+    ImGui::SetNextItemWidth(160.0f);
+    const bool isDebug = (state.build_config == "Debug");
+    if (ImGui::BeginCombo("##buildconfig", isDebug ? "Debug" : "Release"))
+    {
+        if (ImGui::Selectable("Release", !isDebug)) { state.build_config = "Release"; settings::Save(state); }
+        if (ImGui::Selectable("Debug",    isDebug)) { state.build_config = "Debug";   settings::Save(state); }
+        ImGui::EndCombo();
+    }
+
+    // Disc image filename (editable). Empty = "<project>.iso". Saved when the
+    // field loses focus after an edit.
+    ImGui::TextUnformatted("ISO name");
+    char isobuf[256];
+    std::snprintf(isobuf, sizeof(isobuf), "%s", state.build_iso_name.c_str());
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::InputTextWithHint("##isoname", "<project>.iso", isobuf, sizeof(isobuf)))
+        state.build_iso_name = isobuf;
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        settings::Save(state);
 
     ImGui::SeparatorText("Log filters");
     ImGui::Checkbox("Info",    &state.log_show_info);

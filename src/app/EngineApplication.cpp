@@ -1,6 +1,7 @@
 #include "app/EngineApplication.h"
 
 #include "app/Settings.h"
+#include "build/BuildRun.h"
 #include "platform/Dialogs.h"
 #include "project/ProjectIO.h"
 #include "ui/Icons.h"
@@ -234,7 +235,7 @@ void EngineApplication::RenderUI()
             {
             case 1: state_.toolchain_xdk      = p; break;
             case 2: state_.toolchain_emulator = p; break;
-            case 3: state_.toolchain_vs2010   = p; break;
+            case 3: state_.build_output_dir   = p; break;
             }
             settings::Save(state_); // persist the toolchain path immediately
         }
@@ -260,6 +261,24 @@ void EngineApplication::RenderUI()
             ImGui::ShowStyleEditor();
         ImGui::End();
     }
+
+    // "Build and Run XEX": kick off on request and stream its output to the Log.
+    if (state_.build_run_requested)
+    {
+        buildrun::Start(state_);
+        state_.build_run_requested = false;
+    }
+    if (state_.build_iso_requested)
+    {
+        buildrun::StartIso(state_);
+        state_.build_iso_requested = false;
+    }
+    if (state_.clean_build_requested)
+    {
+        buildrun::Clean(state_);
+        state_.clean_build_requested = false;
+    }
+    buildrun::Poll(state_);
 }
 
 void EngineApplication::RenderMainMenuBar()
@@ -300,8 +319,16 @@ void EngineApplication::RenderMainMenuBar()
 
     if (ImGui::BeginMenu("Build"))
     {
-        if (ImGui::MenuItem("Compile Shaders", nullptr, false, state_.HasProject()))
+        if (ImGui::MenuItem("Rebuild Engine Shaders", nullptr, false, state_.HasProject()))
             state_.compile_shaders_requested = true;
+        if (ImGui::MenuItem("Build and Run XEX", nullptr, false,
+                            state_.HasProject() && !buildrun::Running()))
+            state_.build_run_requested = true;
+        if (ImGui::MenuItem("Build .iso Image", nullptr, false,
+                            state_.HasProject() && !buildrun::Running()))
+            state_.build_iso_requested = true;
+        if (ImGui::MenuItem("Clean Build", nullptr, false, !buildrun::Running()))
+            state_.clean_build_requested = true;
         ImGui::EndMenu();
     }
 

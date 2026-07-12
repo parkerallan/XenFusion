@@ -67,6 +67,9 @@ struct EngineState
     bool show_imgui_demo      = false;
     bool show_style_editor    = false;
     bool compile_shaders_requested = false; // compile all project shaders next frame
+    bool build_run_requested       = false; // build the .xex + launch it in Xenia
+    bool build_iso_requested       = false; // build the .xex + pack an XDVDFS .iso
+    bool clean_build_requested     = false; // delete the Xbox build artifacts
 
     // Text/code file currently open in the Editor panel (empty = none).
     std::filesystem::path open_file_path;
@@ -97,10 +100,14 @@ struct EngineState
     float clear_color[4] = {0.094f, 0.094f, 0.106f, 1.0f};
 
     // --- Toolchain (console build) paths, chosen via the folder picker ---
-    std::string toolchain_xdk;      // Xbox 360 SDK (XDK)
+    std::string toolchain_xdk;      // Xbox 360 SDK (XDK) root -> passed to the build as XEDK
     std::string toolchain_emulator; // Xenia emulator
-    std::string toolchain_vs2010;   // Visual Studio 2010
-    int         toolchain_pick = 0; // 0=none, 1=xdk, 2=emulator, 3=vs2010 (EngineApplication picks)
+    int         toolchain_pick = 0; // 0=none, 1=xdk, 2=emulator, 3=build output (EngineApplication picks)
+
+    // --- Build configuration (console build outputs) ---
+    std::string build_output_dir;          // base dir for all build artifacts (empty = runtime/)
+    std::string build_config = "Release";  // "Release" or "Debug"
+    std::string build_iso_name;            // disc image filename (empty = <project>.iso)
 
     // --- Log --- (entries live in the global applog buffer)
     bool auto_scroll_log = true;

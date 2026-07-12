@@ -38,7 +38,11 @@ namespace settings
         j["toolchain"] = {
             {"xdk",      s.toolchain_xdk},
             {"emulator", s.toolchain_emulator},
-            {"vs2010",   s.toolchain_vs2010},
+        };
+        j["build"] = {
+            {"output_dir", s.build_output_dir},
+            {"config",     s.build_config},
+            {"iso_name",   s.build_iso_name},
         };
         j["panels"] = {
             {"viewport",        s.show_viewport_panel},
@@ -84,7 +88,13 @@ namespace settings
             const json& t = j["toolchain"];
             s.toolchain_xdk      = t.value("xdk",      std::string());
             s.toolchain_emulator = t.value("emulator", std::string());
-            s.toolchain_vs2010   = t.value("vs2010",   std::string());
+        }
+        if (j.contains("build"))
+        {
+            const json& b = j["build"];
+            s.build_output_dir = b.value("output_dir", s.build_output_dir);
+            s.build_config     = b.value("config",     s.build_config);
+            s.build_iso_name   = b.value("iso_name",   s.build_iso_name);
         }
         if (j.contains("panels"))
         {
