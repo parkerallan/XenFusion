@@ -29,6 +29,28 @@ namespace endian
         return f;
     }
 
+    // Big-endian assembly, for formats the cooker writes big-endian on purpose so
+    // the console reads them natively (the .spak container — see SpakFormat.h).
+    // Assembling from explicit byte order keeps these correct on either host.
+    inline unsigned short LoadU16BE(const unsigned char* p)
+    {
+        return (unsigned short)(((unsigned)p[0] << 8) | (unsigned)p[1]);
+    }
+
+    inline unsigned int LoadU32BE(const unsigned char* p)
+    {
+        return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) |
+               ((unsigned int)p[2] << 8)  |  (unsigned int)p[3];
+    }
+
+    inline void StoreU32BE(unsigned char* p, unsigned int u)
+    {
+        p[0] = (unsigned char)((u >> 24) & 0xFF);
+        p[1] = (unsigned char)((u >> 16) & 0xFF);
+        p[2] = (unsigned char)((u >> 8)  & 0xFF);
+        p[3] = (unsigned char)( u        & 0xFF);
+    }
+
     // Store helpers write explicit little-endian bytes regardless of host order.
     // Procedurally-built vertex data must be little-endian to match the shipped
     // mesh blobs: the 360 vertex-fetch format (D3DDECLTYPE_FLOAT*) byte-swaps

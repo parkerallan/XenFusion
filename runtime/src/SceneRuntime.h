@@ -2,6 +2,7 @@
 
 #include "Content.h"
 #include "SceneData.h"
+#include "StreamCache.h"
 
 #include <xtl.h>
 
@@ -45,6 +46,10 @@ private:
     IDirect3DTexture9* SolidTexture(D3DCOLOR argb);
     bool BuildGeometry();
 
+    // Resolve a scene mesh: streamed from game.spak via the cache first, falling
+    // back to the raw D3DX loader while both are shipped (pre phase-5 cutover).
+    RtMesh* ResolveMesh(const std::string& relPath);
+
     IDirect3DDevice9*            m_device;
     std::string                  m_root;
     Content                      m_content;
@@ -72,4 +77,8 @@ private:
 
     std::vector<DrawItem>   m_draw_items;
     std::vector<ShaderItem> m_shader_items;
+
+    // Streaming: the pak is opened once and driven through the residency cache.
+    StreamPak   m_pak;
+    StreamCache m_cache;
 };

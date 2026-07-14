@@ -1,7 +1,9 @@
 # Assemble a Xenia-loadable game folder from a built game360.xex plus a project's
-# content. Xenia mounts the folder that holds the launched .xex as "game:\", which
-# is exactly the paths the runtime reads (game:\game.proj, game:\scenes\...,
-# game:\assets\..., game:\shaders\*.cso). Shaders ship precompiled (no HLSL).
+# content. Xenia mounts the folder that holds the launched .xex as "game:\".
+#
+# All meshes + textures ship inside a single cooked **game.spak** (the streaming
+# subsystem — STREAMING.md); the game image contains NO raw .mesh/.png. Scenes,
+# the project manifest, and precompiled Xenos shaders (.cso + .dir) ship as files.
 #
 #   powershell -ExecutionPolicy Bypass -File deploy.ps1 -Project <dir> [-Xedk <xdk-root>] [-OutDir <dir>] [-Config Release|Debug]
 #
@@ -24,20 +26,23 @@ $out  = Join-Path $base "deploy"
 if (-not (Test-Path $xex))     { throw "Build first: $xex not found (run MSBuild for $Config|Xbox 360)." }
 if (-not (Test-Path $Project)) { throw "Project not found: $Project" }
 
-if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+# Wipe any previous deploy. If a file is locked (Xenia still running on this
+# deploy), Remove-Item deletes some files before failing and leaves a broken
+# folder — catch that and give a clear message instead of a partial wipe.
+if (Test-Path $out) {
+    try { Remove-Item -Recurse -Force $out -ErrorAction Stop }
+    catch { throw "Could not clear $out (is Xenia still running on this deploy? close it and retry): $($_.Exception.Message)" }
+}
 New-Item -ItemType Directory -Force $out | Out-Null
 
 # The title image Xenia loads. A bare .xex mounts its own folder as game:\.
 Copy-Item $xex (Join-Path $out "default.xex")
 
-# Scene + asset content, laid out exactly as the editor's project.
-foreach ($sub in @("scenes", "assets")) {
-    $src = Join-Path $Project $sub
-    if (Test-Path $src) { Copy-Item $src (Join-Path $out $sub) -Recurse }
-}
-# The game ships no HLSL source — shaders are precompiled to .cso below, so strip
-# any .hlsl that got copied in with the assets.
-Get-ChildItem (Join-Path $out "assets") -Filter *.hlsl -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
+# Scene content (the .scene files the runtime reads). Meshes + textures do NOT
+# ship as raw files — they are cooked into game.spak below. Custom-shader .hlsl are
+# read from the source project (not the image) and compiled to .cso further down.
+$scenesSrc = Join-Path $Project "scenes"
+if (Test-Path $scenesSrc) { Copy-Item $scenesSrc (Join-Path $out "scenes") -Recurse }
 
 # Shaders. Compile every HLSL -> Xenos .cso offline with the XDK's PC-side fxc,
 # and bake each custom shader's //@ render directives into a tiny .dir sidecar.
@@ -78,6 +83,37 @@ if ($fxc -and (Test-Path $fxc)) {
 # to scenes\Main.scene when it's absent.
 $proj = Get-ChildItem (Join-Path $Project "*.proj") -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($proj) { Copy-Item $proj.FullName (Join-Path $out "game.proj") }
+
+# Cook every mesh the startup scene references (+ their textures, deduped) into
+# game.spak. This is the ONLY place mesh/texture assets ship — the runtime streams
+# them from the pak. Needs the XDK (spakc links the win32 xcompress libs and shells
+# out to Bundler.exe), so this is mandatory now that no raw assets are shipped.
+if ($xdk) { $env:XEDK = $xdk } # so spakc (Bundler + win32 libs) resolves the XDK
+$msbuild  = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe"
+$spakcDir = Join-Path $root "tools\spakc"
+$spakcExe = Join-Path $spakcDir "Release\spakc.exe"
+& $msbuild (Join-Path $spakcDir "spakc.vcxproj") /p:Configuration=Release /p:Platform=Win32 /v:minimal /nologo | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $spakcExe)) { throw "spakc build failed (needs the XDK win32 libs / VS2010)" }
+
+# Resolve the startup scene: game.proj -> startupScene, else scenes\Main.scene.
+$startup = "scenes/Main.scene"
+if ($proj) { $s = (Get-Content $proj.FullName -Raw | ConvertFrom-Json).startupScene; if ($s) { $startup = $s } }
+$sceneFile = Join-Path $Project $startup
+
+$meshes = @()
+if (Test-Path $sceneFile) {
+    $scene = Get-Content $sceneFile -Raw | ConvertFrom-Json
+    foreach ($o in $scene.objects) {
+        foreach ($a in $o.attributes) { if ($a.model_path) { $meshes += $a.model_path } }
+    }
+}
+$meshes = $meshes | Select-Object -Unique
+if ($meshes.Count -gt 0) {
+    & $spakcExe build (Join-Path $out "game.spak") $Project @meshes
+    if ($LASTEXITCODE -ne 0) { throw "spakc cook failed" }
+} else {
+    Write-Output "Note: startup scene references no meshes; no game.spak written (shader-only scene)"
+}
 
 Write-Output "Deployed to $out"
 Write-Output "Launch in Xenia:  <xenia.exe> `"$($out)\default.xex`""

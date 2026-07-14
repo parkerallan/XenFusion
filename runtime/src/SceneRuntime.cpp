@@ -43,6 +43,12 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
 
     m_content.Init(device, contentRoot);
 
+    // Streaming: open game.spak once and drive it through the residency cache.
+    // Absent/failed open is fine — every lookup then misses and ResolveMesh falls
+    // back to the raw loader.
+    m_pak.Open(m_content.Resolve("game.spak").c_str());
+    m_cache.Init(device, &m_pak); // default 128 MB residency budget
+
     // Vertex declaration matching MeshVertex (pos/normal/tangent/uv).
     const D3DVERTEXELEMENT9 elems[] = {
         {0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
@@ -74,8 +80,23 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     return true;
 }
 
+// Streamed mesh first (game.spak via the async residency cache); fall back to the
+// raw D3DX loader for anything not cooked into the pak. A mesh that's in the pak
+// but still streaming in returns NULL and is skipped this frame (no stall) rather
+// than falling back to a synchronous load. Both paths ship until the phase-5 cutover.
+RtMesh* SceneRuntime::ResolveMesh(const std::string& relPath)
+{
+    bool inPak = false;
+    RtMesh* m = m_cache.GetMesh(relPath, &inPak);
+    if (m)     return m;                    // resident
+    if (inPak) return NULL;                 // streaming in — skip this frame
+    return m_content.GetMesh(relPath);      // not in the pak — raw fallback
+}
+
 void SceneRuntime::Shutdown()
 {
+    m_cache.Shutdown();
+    m_pak.Close();
     if (m_cube_ib)   { m_cube_ib->Release();   m_cube_ib = NULL; }
     if (m_cube_vb)   { m_cube_vb->Release();   m_cube_vb = NULL; }
     if (m_quad_ib)   { m_quad_ib->Release();   m_quad_ib = NULL; }
@@ -209,6 +230,10 @@ void SceneRuntime::Render(float dt)
 
     m_time += dt;
 
+    // Register a budgeted batch of finished streaming loads into live resources
+    // (the worker thread did the read + decompress off this thread).
+    m_cache.Update(8);
+
     // Fixed camera (orbit params baked at Init; no input on the console).
     Vec3 dir = { cosf(m_pitch) * sinf(m_yaw), sinf(m_pitch), cosf(m_pitch) * cosf(m_yaw) };
     Vec3 at  = { m_target[0], m_target[1], m_target[2] };
@@ -267,7 +292,7 @@ void SceneRuntime::Render(float dt)
         m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
         for (size_t i = 0; i < m_draw_items.size(); ++i)
         {
-            RtMesh* gm = m_content.GetMesh(m_draw_items[i].model_path);
+            RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (!gm || gm->alpha == RtBlend)
                 continue; // blended meshes are pass 2
             if (gm->alpha == RtCutout)
@@ -290,23 +315,24 @@ void SceneRuntime::Render(float dt)
         m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
 
-        // Pass 2 — alpha-blended (glass, water). The depth TEST is disabled here:
-        // on Xenia, blended geometry fails the depth test even when it's the
-        // nearest object (it only appears with ZENABLE off). Blended meshes are
-        // drawn last, after all opaque depth, so they still layer on top correctly;
-        // the trade-off is they don't self-occlude against opaque geometry.
-        m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+        // Pass 2 — alpha-blended (glass, water), after all opaque depth. Depth TEST
+        // ON so opaque geometry in front correctly occludes it; depth WRITE OFF so
+        // the transparent surface doesn't populate the depth buffer. Verified in
+        // Xenia: the glass renders correctly and is occluded by nearer geometry (the
+        // old ZENABLE-off workaround was compensating for a non-existent quirk).
+        m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+        m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
         m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
         m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
         for (size_t i = 0; i < m_draw_items.size(); ++i)
         {
-            RtMesh* gm = m_content.GetMesh(m_draw_items[i].model_path);
+            RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (gm && gm->alpha == RtBlend)
                 DrawMesh(gm, m_draw_items[i].world, vp, std_mat);
         }
         m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-        m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+        m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
     }
 
     // --- Standalone custom-shader objects ---
@@ -377,7 +403,7 @@ void SceneRuntime::DrawShaderItem(const ShaderItem& item, RtShader& shader, cons
     }
     else if (s.geometry == RtShaderState::Model)
     {
-        RtMesh* gm = m_content.GetMesh(item.model_path);
+        RtMesh* gm = ResolveMesh(item.model_path);
         if (!gm)
             return;
         vb = gm->vb; ib = gm->ib; verts = gm->vertexCount; prims = gm->indexCount / 3;

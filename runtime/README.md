@@ -66,9 +66,14 @@ out as the runtime expects under `game:\`:
 game:\default.xex
 game:\game.proj            (optional; startupScene, else scenes\Main.scene)
 game:\scenes\*.scene
-game:\assets\...           (meshes, textures; no HLSL - stripped)
+game:\game.spak            (ALL meshes + textures, cooked + LZX-compressed - see STREAMING.md)
 game:\shaders\*.cso        (precompiled Xenos shaders) + *.dir (custom //@ state)
 ```
+
+Meshes and textures ship **only** inside `game.spak` (no raw `.mesh`/`.png` in the
+image); the runtime streams them from it. `deploy.ps1` cooks the pak automatically
+(building `tools\spakc` and enumerating the startup scene's meshes), so the deploy
+requires the XDK. See [STREAMING.md](STREAMING.md) for the streaming subsystem.
 
 Then launch it (Xenia mounts the folder holding the `.xex` as `game:\`):
 
@@ -122,11 +127,12 @@ launches draw immediately.
   classified with stb (no alpha → Opaque; see-through holes → Cutout; uniform
   translucency → Blend), matching the editor. Opaque + cutout draw first (cutout =
   alpha test on the diffuse alpha + alpha-to-coverage, depth-correct); blended
-  meshes (glass) draw last. Still deferred vs. the editor: the cutout
-  alpha-dilation that removes hair fringe (D3DX owns the texels here). **Xenia
-  depth quirk:** blended geometry fails the depth test even when it's the nearest
-  object, so the blend pass runs with the depth *test* off (drawn last, so it
-  still layers on top) — blended objects don't self-occlude against opaque.
+  meshes (glass) draw last with **depth test on, depth write off** — so opaque
+  geometry in front correctly occludes the glass, while the transparent surface
+  doesn't write depth. Still deferred vs. the editor: the cutout alpha-dilation
+  that removes hair fringe (D3DX owns the texels here), and back-to-front sorting
+  of blended meshes against each other (only matters with multiple overlapping
+  transparent objects; a single glass object is correct).
 - **MSAA + alpha-to-coverage via predicated tiling** (`XboxRenderer`). A 720p MSAA
   colour+depth surface overflows the 10MB EDRAM, so the scene is rendered once
   into a tile-sized MSAA target and the runtime replays it per screen tile (3
