@@ -34,13 +34,16 @@ namespace spak
     const unsigned int kTypeTex2D = 0x54583244; // 'TX2D' — XPR2 texture
     const unsigned int kTypeMesh  = 0x4D455348; // 'MESH' — VB + IB + texture refs
 
-    // Mesh payload (big-endian): a fixed 28-byte header, then vertexCount*44 bytes
-    // of native-endian vertices, then indexCount*4 bytes of native-endian u32
-    // indices. Diffuse/normal/spec are referenced by nameHash into TX2D entries.
-    //   u32 magic 'MSH1' | vertexCount | indexCount | alphaKind
-    //   u32 diffuseHash | normalHash | specHash
-    const unsigned int kMeshMagic       = 0x4D534831; // 'MSH1'
-    const unsigned int kMeshHeaderBytes = 28;         // 7 * u32
+    // Mesh payload (big-endian): a fixed 16-byte header, then one 24-byte record
+    // per material subset, then vertexCount*44 bytes of native-endian vertices,
+    // then indexCount*4 bytes of native-endian u32 indices. Each subset draws its
+    // index range with its own textures (referenced by nameHash into TX2D
+    // entries) and its own alphaKind.
+    //   u32 magic 'MSH2' | vertexCount | indexCount | subsetCount
+    //   per subset: u32 indexStart | indexCount | alphaKind | diffuseHash | normalHash | specHash
+    const unsigned int kMeshMagic       = 0x4D534832; // 'MSH2'
+    const unsigned int kMeshHeaderBytes = 16;         // 4 * u32
+    const unsigned int kMeshSubsetBytes = 24;         // 6 * u32
     const unsigned int kMeshVertexBytes = 44;         // MeshVertex (pos/nrm/tan/uv)
 
     // alphaKind values (match RtAlphaKind: Opaque/Cutout/Blend).

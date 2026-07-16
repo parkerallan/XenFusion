@@ -282,35 +282,17 @@ void SceneRuntime::Render(float dt)
         m_device->SetPixelShaderConstantF(1, camPos, 1);
         m_device->SetPixelShaderConstantF(2, ambient, 1);
 
-        // Pass 1 — opaque + cutout (both write depth). Cutout (hair cards, foliage)
-        // is a hard-edged mask: a plain alpha test on the diffuse's alpha drops the
-        // see-through texels while staying depth-correct with no sorting. (The
-        // editor also does alpha-to-coverage for smooth edges; the runtime has no
-        // MSAA target yet, so this is the hard-test fallback.)
+        // Pass 1 — opaque + cutout subsets (both write depth). Cutout (hair cards,
+        // foliage) is a masked alpha: the per-subset states (alpha test + Xenos
+        // alpha-to-coverage) are set inside DrawMesh, per material subset.
         m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
         m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
         for (size_t i = 0; i < m_draw_items.size(); ++i)
         {
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
-            if (!gm || gm->alpha == RtBlend)
-                continue; // blended meshes are pass 2
-            if (gm->alpha == RtCutout)
-            {
-                // Alpha test at the mask's mid-point drops the fully-transparent
-                // background AND the faint low-alpha haze between strands (the pale
-                // rim); alpha-to-coverage (Xenos native, needs the MSAA target)
-                // anti-aliases the remaining solid strand edges via MSAA coverage.
-                m_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-                m_device->SetRenderState(D3DRS_ALPHAREF, 170);
-                m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, TRUE);
-            }
-            else
-            {
-                m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-                m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
-            }
-            DrawMesh(gm, m_draw_items[i].world, vp, std_mat);
+            if (gm)
+                DrawMesh(gm, m_draw_items[i].world, vp, std_mat, false /*opaque+cutout*/);
         }
         m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
@@ -328,8 +310,8 @@ void SceneRuntime::Render(float dt)
         for (size_t i = 0; i < m_draw_items.size(); ++i)
         {
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
-            if (gm && gm->alpha == RtBlend)
-                DrawMesh(gm, m_draw_items[i].world, vp, std_mat);
+            if (gm)
+                DrawMesh(gm, m_draw_items[i].world, vp, std_mat, true /*blend*/);
         }
         m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -353,23 +335,57 @@ void SceneRuntime::Render(float dt)
     }
 }
 
-// Draw one standard-material mesh: upload its transform (via the constant table
-// so packing is correct) + textures, then the indexed draw. Render states
-// (alpha test / blend / depth) are set by the caller's pass.
-void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat)
+// Draw one standard-material mesh's subsets for a pass: upload its transform
+// (via the constant table so packing is correct), then per material subset bind
+// its textures, set its cutout states (opaque pass only), and draw its index
+// range. Pass-level states (blend / depth) are set by the caller.
+void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat, bool blendPass)
 {
+    // Skip the transform upload when nothing in this mesh belongs to the pass.
+    bool any = false;
+    for (size_t i = 0; i < gm->subsets.size(); ++i)
+        if ((gm->subsets[i].alpha == RtBlend) == blendPass) { any = true; break; }
+    if (!any)
+        return;
+
     const D3DMATRIX wvp = Multiply(world, vp);
     if (mat->vsConstants)
     {
         if (mat->hWVP)   mat->vsConstants->SetMatrix(m_device, mat->hWVP,   (const D3DXMATRIX*)&wvp);
         if (mat->hWorld) mat->vsConstants->SetMatrix(m_device, mat->hWorld, (const D3DXMATRIX*)&world);
     }
-    m_device->SetTexture(0, gm->diffuse  ? gm->diffuse  : m_def_white);
-    m_device->SetTexture(1, gm->normal   ? gm->normal   : m_def_normal);
-    m_device->SetTexture(2, gm->specular ? gm->specular : m_def_black);
     m_device->SetStreamSource(0, gm->vb, 0, 44);
     m_device->SetIndices(gm->ib);
-    m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gm->vertexCount, 0, gm->indexCount / 3);
+
+    for (size_t i = 0; i < gm->subsets.size(); ++i)
+    {
+        const RtSubset& s = gm->subsets[i];
+        if ((s.alpha == RtBlend) != blendPass)
+            continue;
+        if (!blendPass)
+        {
+            if (s.alpha == RtCutout)
+            {
+                // Alpha test at the mask's mid-point drops the fully-transparent
+                // background AND the faint low-alpha haze between strands (the pale
+                // rim); alpha-to-coverage (Xenos native) anti-aliases the remaining
+                // solid strand edges via MSAA coverage.
+                m_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_ALPHAREF, 170);
+                m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, TRUE);
+            }
+            else
+            {
+                m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
+            }
+        }
+        m_device->SetTexture(0, s.diffuse  ? s.diffuse  : m_def_white);
+        m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
+        m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
+        m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gm->vertexCount,
+                                       s.indexStart, s.indexCount / 3);
+    }
 }
 
 // Draw one standalone shader — geometry, transform, uniforms, parsed render
@@ -401,12 +417,14 @@ void SceneRuntime::DrawShaderItem(const ShaderItem& item, RtShader& shader, cons
         const float camObj4[4] = { camObj.x, camObj.y, camObj.z, 0.0f };
         m_device->SetPixelShaderConstantF(4, camObj4, 1); // gCamObj (PS c4)
     }
-    else if (s.geometry == RtShaderState::Model)
+    RtMesh* model_gm = NULL; // "model" geometry: drawn per material subset
+    if (s.geometry == RtShaderState::Model)
     {
-        RtMesh* gm = ResolveMesh(item.model_path);
-        if (!gm)
+        model_gm = ResolveMesh(item.model_path);
+        if (!model_gm)
             return;
-        vb = gm->vb; ib = gm->ib; verts = gm->vertexCount; prims = gm->indexCount / 3;
+        vb = model_gm->vb; ib = model_gm->ib;
+        verts = model_gm->vertexCount; prims = model_gm->indexCount / 3;
         for (DWORD t = 0; t < 3; ++t)
         {
             m_device->SetSamplerState(t, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
@@ -414,9 +432,6 @@ void SceneRuntime::DrawShaderItem(const ShaderItem& item, RtShader& shader, cons
             m_device->SetSamplerState(t, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
             m_device->SetSamplerState(t, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
         }
-        m_device->SetTexture(0, gm->diffuse  ? gm->diffuse  : m_def_white);
-        m_device->SetTexture(1, gm->normal   ? gm->normal   : m_def_normal);
-        m_device->SetTexture(2, gm->specular ? gm->specular : m_def_black);
     }
 
     // Parsed render states — flat, no switching.
@@ -450,5 +465,19 @@ void SceneRuntime::DrawShaderItem(const ShaderItem& item, RtShader& shader, cons
     m_device->SetPixelShaderConstantF(3, time4, 1); // gTime
     m_device->SetStreamSource(0, vb, 0, 44);
     m_device->SetIndices(ib);
-    m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);
+    if (model_gm)
+    {
+        // "model" geometry: one draw per material subset, its textures bound.
+        for (size_t i = 0; i < model_gm->subsets.size(); ++i)
+        {
+            const RtSubset& sub = model_gm->subsets[i];
+            m_device->SetTexture(0, sub.diffuse  ? sub.diffuse  : m_def_white);
+            m_device->SetTexture(1, sub.normal   ? sub.normal   : m_def_normal);
+            m_device->SetTexture(2, sub.specular ? sub.specular : m_def_black);
+            m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, verts,
+                                           sub.indexStart, sub.indexCount / 3);
+        }
+    }
+    else
+        m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);
 }

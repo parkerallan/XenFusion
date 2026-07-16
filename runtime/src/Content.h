@@ -5,28 +5,43 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
-// How a mesh's diffuse alpha is used (mirrors the editor's AlphaKind). The
-// runtime currently ships every mesh as Opaque; cutout/blend classification from
-// the texture is a follow-up (the editor derives it from the pixels at bake).
+// How a subset's diffuse alpha is used (mirrors the editor's AlphaKind),
+// classified from the texture's pixels (at cook for the pak, at load for loose
+// files).
 enum RtAlphaKind { RtOpaque, RtCutout, RtBlend };
 
+// One material's range within a mesh: draw indices [indexStart, indexStart +
+// indexCount) with its own textures and alpha mode. Texture ownership follows
+// the mesh's loader: Content-loaded meshes own them (Release() frees them);
+// StreamCache meshes borrow them from the texture cache (never freed here).
+struct RtSubset
+{
+    unsigned int       indexStart;
+    unsigned int       indexCount;
+    RtAlphaKind        alpha;
+    IDirect3DTexture9* diffuse;
+    IDirect3DTexture9* normal;
+    IDirect3DTexture9* specular;
+
+    RtSubset() : indexStart(0), indexCount(0), alpha(RtOpaque),
+                 diffuse(NULL), normal(NULL), specular(NULL) {}
+};
+
 // A mesh resident in GPU memory. Vertex layout matches the editor's MeshVertex
-// (pos/normal/tangent/uv, 44 bytes), drawn through a vertex declaration.
+// (pos/normal/tangent/uv, 44 bytes), drawn through a vertex declaration. One
+// shared VB/IB; each material subset draws its own index range.
 struct RtMesh
 {
     IDirect3DVertexBuffer9* vb;
     IDirect3DIndexBuffer9*  ib;
-    IDirect3DTexture9*      diffuse;
-    IDirect3DTexture9*      normal;
-    IDirect3DTexture9*      specular;
+    std::vector<RtSubset>   subsets;
     unsigned int            vertexCount;
     unsigned int            indexCount;
-    RtAlphaKind             alpha;
 
-    RtMesh() : vb(NULL), ib(NULL), diffuse(NULL), normal(NULL), specular(NULL),
-               vertexCount(0), indexCount(0), alpha(RtOpaque) {}
-    void Release();
+    RtMesh() : vb(NULL), ib(NULL), vertexCount(0), indexCount(0) {}
+    void Release(); // frees buffers + subset textures (Content-owned meshes only)
 };
 
 // A custom shader's render setup, from its own //@ header directives (same

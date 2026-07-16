@@ -592,22 +592,27 @@ void SceneRenderer::RenderGpu(float dt)
             m_device->SetPixelShaderConstantF(2, ambient, 1);
 
             const D3DMATRIX vp = Multiply(m_view, m_proj);
-            auto draw_mesh = [&](GpuMesh* gm, const DrawItem& item)
+            // Per-item transform + buffers, then each material subset binds its
+            // own textures and draws its index range (multi-material meshes).
+            auto set_item = [&](GpuMesh* gm, const DrawItem& item)
             {
                 const D3DMATRIX wvp = Multiply(item.world, vp);
                 m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
                 m_device->SetVertexShaderConstantF(4, &item.world.m[0][0], 4);
-                m_device->SetTexture(0, gm->diffuse  ? gm->diffuse  : m_def_white);
-                m_device->SetTexture(1, gm->normal   ? gm->normal   : m_def_normal);
-                m_device->SetTexture(2, gm->specular ? gm->specular : m_def_black);
                 m_device->SetStreamSource(0, gm->vb, 0, sizeof(MeshVertex));
                 m_device->SetIndices(gm->ib);
+            };
+            auto draw_subset = [&](GpuMesh* gm, const GpuSubset& s)
+            {
+                m_device->SetTexture(0, s.diffuse  ? s.diffuse  : m_def_white);
+                m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
+                m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
-                                               gm->vertexCount, 0, gm->indexCount / 3);
+                                               gm->vertexCount, s.indexStart, s.indexCount / 3);
             };
 
-            // Pass 1 - opaque + cutout (both write depth, no blending). Cutout
-            // (a hard-edged alpha mask: hair cards / foliage) uses the diffuse's
+            // Pass 1 - opaque + cutout subsets (both write depth, no blending).
+            // Cutout (a masked alpha: hair cards / foliage) uses the diffuse's
             // alpha: alpha-to-coverage when the GPU supports it, so the mask edge
             // is anti-aliased and depth-correct with no sorting; otherwise a hard
             // alpha test as a fallback.
@@ -618,27 +623,33 @@ void SceneRenderer::RenderGpu(float dt)
                 GpuMesh* gm = m_meshes.Get(item.model_path);
                 if (!gm)
                     continue;
-                if (gm->alpha == AlphaKind::Blend)
-                    continue; // smooth translucency -> pass 2
-                const bool cutout = gm->alpha == AlphaKind::Cutout;
-                if (cutout && m_hasA2C)
+                bool item_bound = false;
+                for (const GpuSubset& s : gm->subsets)
                 {
-                    // Alpha test at the mask's mid-point drops the fully-transparent
-                    // background AND the faint low-alpha haze between strands (which
-                    // otherwise renders as a pale veil/rim); A2C anti-aliases the
-                    // remaining solid strand edges via MSAA coverage.
-                    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-                    m_device->SetRenderState(D3DRS_ALPHAREF, 170);
-                    m_device->SetRenderState(m_a2cState, m_a2cOn);
+                    if (s.alpha == AlphaKind::Blend)
+                        continue; // smooth translucency -> pass 2
+                    if (!item_bound) { set_item(gm, item); item_bound = true; }
+                    const bool cutout = s.alpha == AlphaKind::Cutout;
+                    if (cutout && m_hasA2C)
+                    {
+                        // Alpha test at the mask's mid-point drops the fully-
+                        // transparent background AND the faint low-alpha haze
+                        // between strands (which otherwise renders as a pale
+                        // veil/rim); A2C anti-aliases the remaining solid strand
+                        // edges via MSAA coverage.
+                        m_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+                        m_device->SetRenderState(D3DRS_ALPHAREF, 170);
+                        m_device->SetRenderState(m_a2cState, m_a2cOn);
+                    }
+                    else
+                    {
+                        m_device->SetRenderState(D3DRS_ALPHATESTENABLE, cutout ? TRUE : FALSE);
+                        m_device->SetRenderState(D3DRS_ALPHAREF, 128);
+                    }
+                    draw_subset(gm, s);
+                    if (cutout && m_hasA2C)
+                        m_device->SetRenderState(m_a2cState, m_a2cOff);
                 }
-                else
-                {
-                    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, cutout ? TRUE : FALSE);
-                    m_device->SetRenderState(D3DRS_ALPHAREF, 128);
-                }
-                draw_mesh(gm, item);
-                if (cutout && m_hasA2C)
-                    m_device->SetRenderState(m_a2cState, m_a2cOff);
             }
             m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
 
@@ -650,8 +661,16 @@ void SceneRenderer::RenderGpu(float dt)
             for (const DrawItem& item : m_draw_items)
             {
                 GpuMesh* gm = m_meshes.Get(item.model_path);
-                if (gm && gm->alpha == AlphaKind::Blend)
-                    draw_mesh(gm, item);
+                if (!gm)
+                    continue;
+                bool item_bound = false;
+                for (const GpuSubset& s : gm->subsets)
+                {
+                    if (s.alpha != AlphaKind::Blend)
+                        continue;
+                    if (!item_bound) { set_item(gm, item); item_bound = true; }
+                    draw_subset(gm, s);
+                }
             }
             m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
             m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -745,13 +764,15 @@ void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& s
         const float camObj4[4] = { camObj.x, camObj.y, camObj.z, 0.0f };
         m_device->SetPixelShaderConstantF(4, camObj4, 1); // gCamObj (PS c4)
     }
-    else if (s.geometry == ShaderState::Model)
+    GpuMesh* model_gm = nullptr; // "model" geometry: drawn per material subset
+    if (s.geometry == ShaderState::Model)
     {
         // The shader is the mesh's material: draw the model, bind its textures.
-        GpuMesh* gm = m_meshes.Get(item.model_path);
-        if (!gm)
+        model_gm = m_meshes.Get(item.model_path);
+        if (!model_gm)
             return; // no mesh to draw on
-        vb = gm->vb; ib = gm->ib; verts = gm->vertexCount; prims = gm->indexCount / 3;
+        vb = model_gm->vb; ib = model_gm->ib;
+        verts = model_gm->vertexCount; prims = model_gm->indexCount / 3;
         for (DWORD t = 0; t < 3; ++t)
         {
             m_device->SetSamplerState(t, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
@@ -759,9 +780,6 @@ void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& s
             m_device->SetSamplerState(t, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
             m_device->SetSamplerState(t, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
         }
-        m_device->SetTexture(0, gm->diffuse  ? gm->diffuse  : m_def_white);
-        m_device->SetTexture(1, gm->normal   ? gm->normal   : m_def_normal);
-        m_device->SetTexture(2, gm->specular ? gm->specular : m_def_black);
     }
 
     // Parsed render states — flat, no switching.
@@ -791,7 +809,20 @@ void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& s
     m_device->SetPixelShaderConstantF(3, time4, 1); // gTime
     m_device->SetStreamSource(0, vb, 0, sizeof(MeshVertex));
     m_device->SetIndices(ib);
-    m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);
+    if (model_gm)
+    {
+        // "model" geometry: one draw per material subset, its textures bound.
+        for (const GpuSubset& sub : model_gm->subsets)
+        {
+            m_device->SetTexture(0, sub.diffuse  ? sub.diffuse  : m_def_white);
+            m_device->SetTexture(1, sub.normal   ? sub.normal   : m_def_normal);
+            m_device->SetTexture(2, sub.specular ? sub.specular : m_def_black);
+            m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, verts,
+                                           sub.indexStart, sub.indexCount / 3);
+        }
+    }
+    else
+        m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);
 }
 
 void SceneRenderer::BuildGrid()

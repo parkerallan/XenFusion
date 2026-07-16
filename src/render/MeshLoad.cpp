@@ -23,9 +23,9 @@ namespace
 
 namespace mesh
 {
-    bool LoadMeshBlob(IDirect3DDevice9* device, const fs::path& mesh_path, GpuMesh& out, MeshTextures& out_tex)
+    bool LoadMeshBlob(IDirect3DDevice9* device, const fs::path& mesh_path, GpuMesh& out, std::vector<MeshSubset>& out_subsets)
     {
-        out_tex = {};
+        out_subsets.clear();
         if (!device)
             return false;
 
@@ -46,9 +46,23 @@ namespace mesh
         if (!in)
             return false;
 
-        ReadStr(in, out_tex.diffuse);
-        ReadStr(in, out_tex.normal);
-        ReadStr(in, out_tex.specular);
+        // Per-material subsets: index range + texture paths.
+        uint32_t subset_count = 0;
+        in.read(reinterpret_cast<char*>(&subset_count), sizeof(subset_count));
+        if (!in || subset_count == 0 || subset_count > 1024)
+            return false;
+        for (uint32_t i = 0; i < subset_count; ++i)
+        {
+            MeshSubset s;
+            in.read(reinterpret_cast<char*>(&s.indexStart), sizeof(s.indexStart));
+            in.read(reinterpret_cast<char*>(&s.indexCount), sizeof(s.indexCount));
+            ReadStr(in, s.textures.diffuse);
+            ReadStr(in, s.textures.normal);
+            ReadStr(in, s.textures.specular);
+            if (!in || s.indexStart + s.indexCount > h.indexCount)
+                return false;
+            out_subsets.push_back(std::move(s));
+        }
 
         const UINT vb_bytes = (UINT)(vertices.size() * sizeof(MeshVertex));
         if (FAILED(device->CreateVertexBuffer(vb_bytes, 0, 0 /*non-FVF, uses a decl*/, D3DPOOL_MANAGED, &out.vb, nullptr)))

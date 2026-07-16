@@ -5,6 +5,7 @@
 #include <assimp/scene.h>
 
 #include <fstream>
+#include <map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -40,58 +41,74 @@ namespace mesh
             return false;
         }
 
-        std::vector<MeshVertex> vertices;
-        std::vector<uint32_t>   indices;
+        // One subset per source material: group the scene's meshes by material
+        // index so each material's triangles are a contiguous index range with
+        // its own texture set (e.g. hair = wispy strands + solid cap).
+        std::map<unsigned, std::vector<unsigned>> by_material; // material -> meshes
         for (unsigned m = 0; m < scene->mNumMeshes; ++m)
-        {
-            const aiMesh* am = scene->mMeshes[m];
-            const uint32_t base = (uint32_t)vertices.size();
+            by_material[scene->mMeshes[m]->mMaterialIndex].push_back(m);
 
-            for (unsigned v = 0; v < am->mNumVertices; ++v)
-            {
-                MeshVertex mv{};
-                mv.px = am->mVertices[v].x; mv.py = am->mVertices[v].y; mv.pz = am->mVertices[v].z;
-                if (am->mNormals)  { mv.nx = am->mNormals[v].x;  mv.ny = am->mNormals[v].y;  mv.nz = am->mNormals[v].z; }
-                if (am->mTangents) { mv.tx = am->mTangents[v].x; mv.ty = am->mTangents[v].y; mv.tz = am->mTangents[v].z; }
-                if (am->mTextureCoords[0]) { mv.u = am->mTextureCoords[0][v].x; mv.v = am->mTextureCoords[0][v].y; }
-                vertices.push_back(mv);
-            }
-            for (unsigned f = 0; f < am->mNumFaces; ++f)
-            {
-                const aiFace& face = am->mFaces[f];
-                for (unsigned i = 0; i < face.mNumIndices; ++i)
-                    indices.push_back(base + face.mIndices[i]);
-            }
-        }
-
-        if (vertices.empty() || indices.empty())
+        auto find_tex = [](const aiMaterial* mat, std::initializer_list<aiTextureType> types) -> std::string
         {
-            error = "model has no triangle geometry";
-            return false;
-        }
-
-        // Grab the first material's diffuse / normal / specular textures.
-        auto find_tex = [&](std::initializer_list<aiTextureType> types) -> std::string
-        {
-            for (unsigned m = 0; m < scene->mNumMeshes; ++m)
+            for (aiTextureType t : types)
             {
-                const aiMaterial* mat = scene->mMaterials[scene->mMeshes[m]->mMaterialIndex];
-                for (aiTextureType t : types)
+                aiString tex;
+                if (mat->GetTexture(t, 0, &tex) == AI_SUCCESS)
                 {
-                    aiString tex;
-                    if (mat->GetTexture(t, 0, &tex) == AI_SUCCESS)
-                    {
-                        std::string s = tex.C_Str();
-                        for (char& c : s) if (c == '\\') c = '/';
-                        return s;
-                    }
+                    std::string s = tex.C_Str();
+                    for (char& c : s) if (c == '\\') c = '/';
+                    return s;
                 }
             }
             return {};
         };
-        const std::string diffuse  = find_tex({aiTextureType_DIFFUSE, aiTextureType_BASE_COLOR});
-        const std::string normal   = find_tex({aiTextureType_NORMALS, aiTextureType_HEIGHT});
-        const std::string specular = find_tex({aiTextureType_SPECULAR});
+
+        std::vector<MeshVertex> vertices;
+        std::vector<uint32_t>   indices;
+        std::vector<MeshSubset> subsets;
+        for (const auto& [mat_index, mesh_list] : by_material)
+        {
+            MeshSubset subset;
+            subset.indexStart = (uint32_t)indices.size();
+
+            for (unsigned m : mesh_list)
+            {
+                const aiMesh* am = scene->mMeshes[m];
+                const uint32_t base = (uint32_t)vertices.size();
+
+                for (unsigned v = 0; v < am->mNumVertices; ++v)
+                {
+                    MeshVertex mv{};
+                    mv.px = am->mVertices[v].x; mv.py = am->mVertices[v].y; mv.pz = am->mVertices[v].z;
+                    if (am->mNormals)  { mv.nx = am->mNormals[v].x;  mv.ny = am->mNormals[v].y;  mv.nz = am->mNormals[v].z; }
+                    if (am->mTangents) { mv.tx = am->mTangents[v].x; mv.ty = am->mTangents[v].y; mv.tz = am->mTangents[v].z; }
+                    if (am->mTextureCoords[0]) { mv.u = am->mTextureCoords[0][v].x; mv.v = am->mTextureCoords[0][v].y; }
+                    vertices.push_back(mv);
+                }
+                for (unsigned f = 0; f < am->mNumFaces; ++f)
+                {
+                    const aiFace& face = am->mFaces[f];
+                    for (unsigned i = 0; i < face.mNumIndices; ++i)
+                        indices.push_back(base + face.mIndices[i]);
+                }
+            }
+
+            subset.indexCount = (uint32_t)indices.size() - subset.indexStart;
+            if (subset.indexCount == 0)
+                continue;
+
+            const aiMaterial* mat = scene->mMaterials[mat_index];
+            subset.textures.diffuse  = find_tex(mat, {aiTextureType_DIFFUSE, aiTextureType_BASE_COLOR});
+            subset.textures.normal   = find_tex(mat, {aiTextureType_NORMALS, aiTextureType_HEIGHT});
+            subset.textures.specular = find_tex(mat, {aiTextureType_SPECULAR});
+            subsets.push_back(std::move(subset));
+        }
+
+        if (vertices.empty() || indices.empty() || subsets.empty())
+        {
+            error = "model has no triangle geometry";
+            return false;
+        }
 
         MeshHeader h{};
         h.magic[0] = 'M'; h.magic[1] = '3'; h.magic[2] = '6'; h.magic[3] = '0';
@@ -108,9 +125,17 @@ namespace mesh
         out.write(reinterpret_cast<const char*>(&h), sizeof(h));
         out.write(reinterpret_cast<const char*>(vertices.data()), vertices.size() * sizeof(MeshVertex));
         out.write(reinterpret_cast<const char*>(indices.data()),  indices.size() * sizeof(uint32_t));
-        WriteStr(out, diffuse);
-        WriteStr(out, normal);
-        WriteStr(out, specular);
+
+        const uint32_t subset_count = (uint32_t)subsets.size();
+        out.write(reinterpret_cast<const char*>(&subset_count), sizeof(subset_count));
+        for (const MeshSubset& s : subsets)
+        {
+            out.write(reinterpret_cast<const char*>(&s.indexStart), sizeof(s.indexStart));
+            out.write(reinterpret_cast<const char*>(&s.indexCount), sizeof(s.indexCount));
+            WriteStr(out, s.textures.diffuse);
+            WriteStr(out, s.textures.normal);
+            WriteStr(out, s.textures.specular);
+        }
         return true;
     }
 }

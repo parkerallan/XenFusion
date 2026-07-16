@@ -244,6 +244,11 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     if (memcmp(&blob[0], "M360", 4) != 0)
     { fprintf(stderr, "spakc: bad mesh magic %s\n", meshRel.c_str()); return false; }
 
+    const unsigned int version = ReadU32LE(&blob[4]);
+    if (version != 4)
+    { fprintf(stderr, "spakc: mesh %s is format v%u (need v4) - open the project in the editor to re-bake it\n",
+              meshRel.c_str(), version); return false; }
+
     const unsigned int vcount = ReadU32LE(&blob[8]);
     const unsigned int icount = ReadU32LE(&blob[12]);
     const size_t vbytes = (size_t)vcount * spak::kMeshVertexBytes;
@@ -251,15 +256,35 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     if (vcount == 0 || icount == 0 || 16 + vbytes + ibytes > blob.size())
     { fprintf(stderr, "spakc: mesh empty/truncated %s\n", meshRel.c_str()); return false; }
 
-    // The 3 texture references follow the buffers (u32 LE length + bytes each).
+    // Material subset table follows the buffers: u32 count, then per subset
+    // u32 indexStart, u32 indexCount and 3 texture refs (u32 LE length + bytes).
     size_t off = 16 + vbytes + ibytes;
-    std::string texRel[3];
-    for (int s = 0; s < 3; ++s)
+    struct SubsetIn { unsigned int start, count; std::string tex[3]; };
+    std::vector<SubsetIn> subs;
     {
-        if (off + 4 > blob.size()) break;
-        unsigned int len = ReadU32LE(&blob[off]); off += 4;
-        if (len > 0 && len < 4096 && off + len <= blob.size())
-        { texRel[s].assign((const char*)&blob[off], len); off += len; }
+        if (off + 4 > blob.size())
+        { fprintf(stderr, "spakc: mesh missing subset table %s\n", meshRel.c_str()); return false; }
+        const unsigned int subsetCount = ReadU32LE(&blob[off]); off += 4;
+        if (subsetCount == 0 || subsetCount > 1024)
+        { fprintf(stderr, "spakc: mesh bad subset count %u %s\n", subsetCount, meshRel.c_str()); return false; }
+        for (unsigned int i = 0; i < subsetCount; ++i)
+        {
+            SubsetIn si; si.start = 0; si.count = 0;
+            if (off + 8 > blob.size())
+            { fprintf(stderr, "spakc: mesh subset truncated %s\n", meshRel.c_str()); return false; }
+            si.start = ReadU32LE(&blob[off]); off += 4;
+            si.count = ReadU32LE(&blob[off]); off += 4;
+            for (int s = 0; s < 3; ++s)
+            {
+                if (off + 4 > blob.size()) break;
+                unsigned int len = ReadU32LE(&blob[off]); off += 4;
+                if (len > 0 && len < 4096 && off + len <= blob.size())
+                { si.tex[s].assign((const char*)&blob[off], len); off += len; }
+            }
+            if ((size_t)si.start + si.count > icount)
+            { fprintf(stderr, "spakc: mesh subset range out of bounds %s\n", meshRel.c_str()); return false; }
+            subs.push_back(si);
+        }
     }
 
     const std::string meshDir = DirOf(meshAbs);
@@ -271,41 +296,53 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     // DXT block-quantises a normal map's smooth gradients into a visible grid.
     const bool  slotSRGB[3]   = { false, false, false };
     const char* slotFormat[3] = { "D3DFMT_DXT5", "D3DFMT_A8R8G8B8", "D3DFMT_A8R8G8B8" };
-    unsigned int texHash[3] = { 0, 0, 0 };
-    std::string diffuseAbs;
-    for (int s = 0; s < 3; ++s)
+
+    // Cook each subset's textures (deduped across subsets/meshes via `seen`) and
+    // classify each subset's alpha from its own diffuse.
+    std::vector<unsigned int> subHash(subs.size() * 3, 0);
+    std::vector<unsigned int> subAlpha(subs.size(), spak::kAlphaOpaque);
+    unsigned int texTotal = 0;
+    for (size_t i = 0; i < subs.size(); ++i)
     {
-        if (texRel[s].empty()) continue;
-        const std::string texAbs = AbsFrom(meshDir, texRel[s]);
-        std::string key = texAbs;
-        for (size_t i = 0; i < key.size(); ++i) key[i] = (char)tolower((unsigned char)key[i]);
-        const unsigned int h = spak::NameHash(key.c_str());
-        texHash[s] = AddTexture(entries, seen, texAbs, texRel[s], h, slotSRGB[s], slotFormat[s]);
-        if (s == 0) diffuseAbs = texAbs;
+        for (int s = 0; s < 3; ++s)
+        {
+            if (subs[i].tex[s].empty()) continue;
+            const std::string texAbs = AbsFrom(meshDir, subs[i].tex[s]);
+            std::string key = texAbs;
+            for (size_t c = 0; c < key.size(); ++c) key[c] = (char)tolower((unsigned char)key[c]);
+            const unsigned int h = spak::NameHash(key.c_str());
+            subHash[i * 3 + s] = AddTexture(entries, seen, texAbs, subs[i].tex[s], h, slotSRGB[s], slotFormat[s]);
+            if (subHash[i * 3 + s] != 0) ++texTotal;
+            if (s == 0)
+                subAlpha[i] = ClassifyAlpha(texAbs);
+        }
     }
 
-    const unsigned int alpha = diffuseAbs.empty() ? spak::kAlphaOpaque : ClassifyAlpha(diffuseAbs);
-
-    // MESH payload: header (BE) + native-BE VB + native-BE IB.
+    // MESH payload: header (BE) + per-subset records + native-BE VB + native-BE IB.
     Entry e;
     e.hash = spak::NameHash(meshRel.c_str());
     e.type = spak::kTypeMesh;
     PushU32BE(e.payload, spak::kMeshMagic);
     PushU32BE(e.payload, vcount);
     PushU32BE(e.payload, icount);
-    PushU32BE(e.payload, alpha);
-    PushU32BE(e.payload, texHash[0]);
-    PushU32BE(e.payload, texHash[1]);
-    PushU32BE(e.payload, texHash[2]);
+    PushU32BE(e.payload, (unsigned int)subs.size());
+    for (size_t i = 0; i < subs.size(); ++i)
+    {
+        PushU32BE(e.payload, subs[i].start);
+        PushU32BE(e.payload, subs[i].count);
+        PushU32BE(e.payload, subAlpha[i]);
+        PushU32BE(e.payload, subHash[i * 3 + 0]);
+        PushU32BE(e.payload, subHash[i * 3 + 1]);
+        PushU32BE(e.payload, subHash[i * 3 + 2]);
+    }
     PushSwappedWords(e.payload, &blob[16], vbytes);
     PushSwappedWords(e.payload, &blob[16 + vbytes], ibytes);
-    e.sysMemSize = spak::kMeshHeaderBytes;
+    e.sysMemSize = spak::kMeshHeaderBytes + (unsigned int)subs.size() * spak::kMeshSubsetBytes;
     e.vidMemSize = (unsigned int)(vbytes + ibytes);
     entries.push_back(e);
 
-    printf("       mesh %s  v=%u i=%u alpha=%u tex=%u\n",
-           meshRel.c_str(), vcount, icount, alpha,
-           (texHash[0] != 0) + (texHash[1] != 0) + (texHash[2] != 0));
+    printf("       mesh %s  v=%u i=%u subsets=%u tex=%u\n",
+           meshRel.c_str(), vcount, icount, (unsigned int)subs.size(), texTotal);
     return true;
 }
 

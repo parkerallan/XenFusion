@@ -46,14 +46,13 @@ private:
 
     struct CacheMesh
     {
-        RtMesh           mesh;
-        unsigned int     texHash[3];
+        RtMesh                    mesh;
+        std::vector<unsigned int> texHash; // 3 per subset (diffuse/normal/spec)
         int              state;
         const SpakEntry* entry;
         unsigned int     bytes;   // resident size, for the budget
         unsigned int     lastUse; // frame last requested (LRU)
-        CacheMesh() : state(StLoading), entry(NULL), bytes(0), lastUse(0)
-        { texHash[0] = texHash[1] = texHash[2] = 0; }
+        CacheMesh() : state(StLoading), entry(NULL), bytes(0), lastUse(0) {}
     };
     struct CacheTex
     {

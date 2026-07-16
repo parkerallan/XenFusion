@@ -121,11 +121,11 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
         }
     }
 
-    // Load the blob + its textures (diffuse / normal / specular).
+    // Load the blob + each material subset's textures (diffuse / normal / specular).
     auto try_load = [&](GpuMesh& g)
     {
-        MeshTextures mt;
-        if (mesh::LoadMeshBlob(m_device, baked, g, mt) && g.vb)
+        std::vector<MeshSubset> subsets;
+        if (mesh::LoadMeshBlob(m_device, baked, g, subsets) && g.vb)
         {
             auto load = [&](const std::string& rel, AlphaKind* alpha = nullptr) -> IDirect3DTexture9*
             {
@@ -134,9 +134,16 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
                 if (!t) applog::Warn("Texture not found for " + model_path + ": " + rel);
                 return t;
             };
-            g.diffuse  = load(mt.diffuse, &g.alpha); // transparency mode comes from the diffuse's alpha
-            g.normal   = load(mt.normal);
-            g.specular = load(mt.specular);
+            for (const MeshSubset& s : subsets)
+            {
+                GpuSubset gs;
+                gs.indexStart = s.indexStart;
+                gs.indexCount = s.indexCount;
+                gs.diffuse  = load(s.textures.diffuse, &gs.alpha); // transparency mode from the diffuse's alpha
+                gs.normal   = load(s.textures.normal);
+                gs.specular = load(s.textures.specular);
+                g.subsets.push_back(gs);
+            }
         }
     };
 

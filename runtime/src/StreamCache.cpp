@@ -302,45 +302,66 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
     const unsigned char* p = &blob[0];
     if (endian::LoadU32BE(p + 0) != spak::kMeshMagic)
         return;
-    const unsigned int vcount = endian::LoadU32BE(p + 4);
-    const unsigned int icount = endian::LoadU32BE(p + 8);
-    const unsigned int alpha  = endian::LoadU32BE(p + 12);
-    cm.texHash[0] = endian::LoadU32BE(p + 16);
-    cm.texHash[1] = endian::LoadU32BE(p + 20);
-    cm.texHash[2] = endian::LoadU32BE(p + 24);
-    if (vcount == 0 || icount == 0)
+    const unsigned int vcount      = endian::LoadU32BE(p + 4);
+    const unsigned int icount      = endian::LoadU32BE(p + 8);
+    const unsigned int subsetCount = endian::LoadU32BE(p + 12);
+    if (vcount == 0 || icount == 0 || subsetCount == 0 || subsetCount > 1024)
         return;
 
-    const size_t vbytes = (size_t)vcount * spak::kMeshVertexBytes;
-    const size_t ibytes = (size_t)icount * 4;
-    if (spak::kMeshHeaderBytes + vbytes + ibytes > blob.size())
+    const size_t subBytes = (size_t)subsetCount * spak::kMeshSubsetBytes;
+    const size_t vbytes   = (size_t)vcount * spak::kMeshVertexBytes;
+    const size_t ibytes   = (size_t)icount * 4;
+    if (spak::kMeshHeaderBytes + subBytes + vbytes + ibytes > blob.size())
         return;
+
+    // Per-material subsets: index range + alpha mode + texture hashes.
+    cm.texHash.assign((size_t)subsetCount * 3, 0);
+    for (unsigned int i = 0; i < subsetCount; ++i)
+    {
+        const unsigned char* sp = p + spak::kMeshHeaderBytes + (size_t)i * spak::kMeshSubsetBytes;
+        RtSubset sub;
+        sub.indexStart = endian::LoadU32BE(sp + 0);
+        sub.indexCount = endian::LoadU32BE(sp + 4);
+        const unsigned int alpha = endian::LoadU32BE(sp + 8);
+        sub.alpha = (alpha == spak::kAlphaCutout) ? RtCutout
+                  : (alpha == spak::kAlphaBlend)  ? RtBlend : RtOpaque;
+        cm.texHash[(size_t)i * 3 + 0] = endian::LoadU32BE(sp + 12);
+        cm.texHash[(size_t)i * 3 + 1] = endian::LoadU32BE(sp + 16);
+        cm.texHash[(size_t)i * 3 + 2] = endian::LoadU32BE(sp + 20);
+        if ((size_t)sub.indexStart + sub.indexCount > icount)
+        { cm.mesh.subsets.clear(); return; }
+        cm.mesh.subsets.push_back(sub);
+    }
+
+    const size_t bufOff = spak::kMeshHeaderBytes + subBytes;
 
     // Payload VB/IB are already native-endian (baked big-endian) — copy straight in.
     if (FAILED(m_device->CreateVertexBuffer((UINT)vbytes, 0, 0, D3DPOOL_MANAGED, &cm.mesh.vb, NULL)))
+    {
+        cm.mesh.subsets.clear();
         return;
+    }
     {
         void* dst = NULL;
         cm.mesh.vb->Lock(0, 0, &dst, 0);
-        memcpy(dst, p + spak::kMeshHeaderBytes, vbytes);
+        memcpy(dst, p + bufOff, vbytes);
         cm.mesh.vb->Unlock();
     }
     if (FAILED(m_device->CreateIndexBuffer((UINT)ibytes, 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &cm.mesh.ib, NULL)))
     {
         cm.mesh.vb->Release(); cm.mesh.vb = NULL;
+        cm.mesh.subsets.clear();
         return;
     }
     {
         void* dst = NULL;
         cm.mesh.ib->Lock(0, 0, &dst, 0);
-        memcpy(dst, p + spak::kMeshHeaderBytes + vbytes, ibytes);
+        memcpy(dst, p + bufOff + vbytes, ibytes);
         cm.mesh.ib->Unlock();
     }
 
     cm.mesh.vertexCount = vcount;
     cm.mesh.indexCount  = icount;
-    cm.mesh.alpha       = (alpha == spak::kAlphaCutout) ? RtCutout
-                        : (alpha == spak::kAlphaBlend)  ? RtBlend : RtOpaque;
     // Texture pointers resolved lazily by RefreshMeshTextures (they may still be loading).
 }
 
@@ -370,9 +391,13 @@ IDirect3DTexture9* StreamCache::GetTextureByHash(unsigned int hash)
 
 void StreamCache::RefreshMeshTextures(CacheMesh& cm)
 {
-    cm.mesh.diffuse  = GetTextureByHash(cm.texHash[0]);
-    cm.mesh.normal   = GetTextureByHash(cm.texHash[1]);
-    cm.mesh.specular = GetTextureByHash(cm.texHash[2]);
+    for (size_t i = 0; i < cm.mesh.subsets.size() && i * 3 + 2 < cm.texHash.size(); ++i)
+    {
+        RtSubset& s = cm.mesh.subsets[i];
+        s.diffuse  = GetTextureByHash(cm.texHash[i * 3 + 0]);
+        s.normal   = GetTextureByHash(cm.texHash[i * 3 + 1]);
+        s.specular = GetTextureByHash(cm.texHash[i * 3 + 2]);
+    }
 }
 
 RtMesh* StreamCache::GetMesh(const std::string& relPath, bool* inPak)

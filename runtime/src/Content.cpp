@@ -65,9 +65,14 @@ namespace
 // ---------------------------------------------------------------------------
 void RtMesh::Release()
 {
-    if (specular) { specular->Release(); specular = NULL; }
-    if (normal)   { normal->Release();   normal = NULL; }
-    if (diffuse)  { diffuse->Release();  diffuse = NULL; }
+    for (size_t i = 0; i < subsets.size(); ++i)
+    {
+        RtSubset& s = subsets[i];
+        if (s.specular) { s.specular->Release(); s.specular = NULL; }
+        if (s.normal)   { s.normal->Release();   s.normal = NULL; }
+        if (s.diffuse)  { s.diffuse->Release();  s.diffuse = NULL; }
+    }
+    subsets.clear();
     if (ib) { ib->Release(); ib = NULL; }
     if (vb) { vb->Release(); vb = NULL; }
     vertexCount = indexCount = 0;
@@ -84,12 +89,14 @@ void RtShader::Release()
 // Mesh blob loading (the editor's "M360" format, read little-endian)
 //
 // Layout: MeshHeader { char magic[4]; u32 version; u32 vertexCount; u32 indexCount }
-// then vertexCount * 44-byte vertices, indexCount * u32 indices, then three
-// length-prefixed strings (diffuse / normal / specular, relative to the .mesh).
+// then vertexCount * 44-byte vertices, indexCount * u32 indices, then a u32
+// subset count followed by one record per material: u32 indexStart, u32
+// indexCount, then three length-prefixed strings (diffuse / normal / specular,
+// relative to the .mesh).
 // ---------------------------------------------------------------------------
 namespace
 {
-    const unsigned int kMeshVersion = 3;   // must match the editor's MESH_VERSION
+    const unsigned int kMeshVersion = 4;   // must match the editor's MESH_VERSION
     const unsigned int kVertexBytes = 44;  // MeshVertex
 
     // Advance a cursor over a length-prefixed (u32 LE) string.
@@ -225,19 +232,43 @@ RtMesh* Content::GetMesh(const std::string& relPath)
     mesh.vertexCount = vcount;
     mesh.indexCount  = icount;
 
-    // Texture references (relative to the mesh file's directory).
-    std::string texDiffuse = ReadStr(p, size, off);
-    std::string texNormal  = ReadStr(p, size, off);
-    std::string texSpec    = ReadStr(p, size, off);
+    // Material subsets: index range + texture references (relative to the mesh
+    // file's directory); each subset's alpha mode comes from its own diffuse.
     const std::string meshDir = DirOf(abs);
-    if (!texDiffuse.empty())
+    unsigned int subsetCount = 0;
+    if (off + 4 <= size) { subsetCount = endian::LoadU32LE(p + off); off += 4; }
+    if (subsetCount == 0 || subsetCount > 1024)
     {
-        const std::string dabs = Join(meshDir, texDiffuse);
-        mesh.diffuse = LoadTexture(m_device, dabs);
-        mesh.alpha   = ClassifyAlpha(dabs); // transparency mode from the diffuse's alpha
+        Log("mesh: bad subset table ", relPath);
+        mesh.Release();
+        m_meshes[relPath] = mesh;
+        return NULL;
     }
-    if (!texNormal.empty())  mesh.normal   = LoadTexture(m_device, Join(meshDir, texNormal));
-    if (!texSpec.empty())    mesh.specular = LoadTexture(m_device, Join(meshDir, texSpec));
+    for (unsigned int i = 0; i < subsetCount; ++i)
+    {
+        RtSubset sub;
+        if (off + 8 > size)
+        {
+            Log("mesh: subset truncated ", relPath);
+            mesh.Release();
+            m_meshes[relPath] = mesh;
+            return NULL;
+        }
+        sub.indexStart = endian::LoadU32LE(p + off); off += 4;
+        sub.indexCount = endian::LoadU32LE(p + off); off += 4;
+        std::string texDiffuse = ReadStr(p, size, off);
+        std::string texNormal  = ReadStr(p, size, off);
+        std::string texSpec    = ReadStr(p, size, off);
+        if (!texDiffuse.empty())
+        {
+            const std::string dabs = Join(meshDir, texDiffuse);
+            sub.diffuse = LoadTexture(m_device, dabs);
+            sub.alpha   = ClassifyAlpha(dabs); // transparency mode from the diffuse's alpha
+        }
+        if (!texNormal.empty()) sub.normal   = LoadTexture(m_device, Join(meshDir, texNormal));
+        if (!texSpec.empty())   sub.specular = LoadTexture(m_device, Join(meshDir, texSpec));
+        mesh.subsets.push_back(sub);
+    }
 
     m_meshes[relPath] = mesh;
     return &m_meshes[relPath];

@@ -41,7 +41,8 @@ private:
     };
 
     void BuildDrawLists();
-    void DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat);
+    void DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat,
+                  bool blendPass); // false = opaque+cutout subsets, true = blend subsets
     void DrawShaderItem(const ShaderItem& item, RtShader& shader, const D3DMATRIX& viewProj);
     IDirect3DTexture9* SolidTexture(D3DCOLOR argb);
     bool BuildGeometry();
