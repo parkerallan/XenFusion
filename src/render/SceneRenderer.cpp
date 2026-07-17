@@ -353,7 +353,16 @@ void SceneRenderer::RenderUi(EngineState& state)
         state.compile_shaders_requested = false;
     }
 
-    // Capture the models + standalone shaders to draw from the selected scene.
+    // Capture the models + standalone shaders to draw from the selected scene,
+    // plus the active "Camera" attribute (first wins) for the look-through view
+    // and the scene lights (first directional + first four point lights).
+    bool  have_cam = false;
+    float cam_pos[3] = {}, cam_rot[3] = {};
+    float cam_fov = 45.0f, cam_near = 0.5f, cam_far = 100.0f;
+    bool  have_dir = false;
+    int   point_count = 0;
+    std::memset(m_point_pos, 0, sizeof(m_point_pos));
+    std::memset(m_point_col, 0, sizeof(m_point_col));
     m_draw_items.clear();
     m_shader_items.clear();
     if (SceneFile* scene = state.SelectedScene())
@@ -372,6 +381,34 @@ void SceneRenderer::RenderUi(EngineState& state)
                     model_path = a.model_path;
                 else if (a.type == "Shader" && !a.shader_path.empty() && shader_path.empty())
                     shader_path = a.shader_path;
+                else if (a.type == "Camera" && a.cam_active && !have_cam)
+                {
+                    for (int k = 0; k < 3; ++k) { cam_pos[k] = o.position[k]; cam_rot[k] = o.rotation[k]; }
+                    cam_fov = a.cam_fov; cam_near = a.cam_near; cam_far = a.cam_far;
+                    have_cam = true;
+                }
+                else if (a.type == "Directional Light" && !have_dir)
+                {
+                    // Direction = the object's forward (+Z through its rotation).
+                    const float d2r = 3.14159265f / 180.0f;
+                    const D3DMATRIX r = Multiply(Multiply(RotationX(o.rotation[0] * d2r),
+                                                          RotationY(o.rotation[1] * d2r)),
+                                                 RotationZ(o.rotation[2] * d2r));
+                    m_light_dir[0] = r._31; m_light_dir[1] = r._32; m_light_dir[2] = r._33;
+                    for (int k = 0; k < 3; ++k) m_light_col[k] = a.light_color[k] * a.light_intensity;
+                    have_dir = true;
+                }
+                else if (a.type == "Point Light" && point_count < 4)
+                {
+                    const float range = (std::max)(a.light_range, 0.1f);
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        m_point_pos[point_count][k] = o.position[k];
+                        m_point_col[point_count][k] = a.light_color[k] * a.light_intensity;
+                    }
+                    m_point_pos[point_count][3] = 1.0f / (range * range);
+                    ++point_count;
+                }
             }
 
             // A "//@geometry model" shader takes over the mesh, replacing the
@@ -395,6 +432,18 @@ void SceneRenderer::RenderUi(EngineState& state)
             if (!model_path.empty() && !shader_owns_mesh)
                 m_draw_items.push_back({model_path, ComposeWorld(o), selected});
         }
+    }
+
+    // No directional light authored: keep the legacy fixed sun — white when the
+    // scene has no lights at all (old scenes render unchanged), black when point
+    // lights exist (the author owns the lighting; only c0's direction, which
+    // custom shaders read, stays meaningful).
+    if (!have_dir)
+    {
+        const Vec3 ld = Normalize({-0.4f, -1.0f, -0.5f});
+        m_light_dir[0] = ld.x; m_light_dir[1] = ld.y; m_light_dir[2] = ld.z;
+        const float w = (point_count == 0) ? 1.0f : 0.0f;
+        m_light_col[0] = m_light_col[1] = m_light_col[2] = w;
     }
 
     // Focus-key ("F") target: the selected object.
@@ -427,15 +476,42 @@ void SceneRenderer::RenderUi(EngineState& state)
         m_renderRequested = true; // tell RenderGpu to fill it this frame
         HandleCameraInput();      // must follow the Image item (uses IsItemHovered)
 
+        // Look-through toggle (only offered while the scene has an active camera).
+        if (have_cam)
+        {
+            ImGui::SetCursorScreenPos(ImVec2(p0.x + 8.0f, p0.y + 8.0f));
+            ImGui::Checkbox("Camera view", &m_look_through);
+        }
+
         // Camera matrices (also used by RenderGpu, so they stay in sync).
-        Vec3 cdir = { std::cos(m_pitch) * std::sin(m_yaw), std::sin(m_pitch),
-                      std::cos(m_pitch) * std::cos(m_yaw) };
-        Vec3 cat  = { m_target[0], m_target[1], m_target[2] };
-        Vec3 ceye = { cat.x + cdir.x * m_distance, cat.y + cdir.y * m_distance,
-                      cat.z + cdir.z * m_distance };
-        m_eye[0] = ceye.x; m_eye[1] = ceye.y; m_eye[2] = ceye.z;
-        m_view = LookAtLH(ceye, cat, {0.0f, 1.0f, 0.0f});
-        m_proj = PerspectiveFovLH(3.14159265f / 4.0f, (float)m_width / (float)m_height, 0.1f, 200.0f);
+        if (have_cam && m_look_through)
+        {
+            // Through the active scene camera: basis from the object's rotation
+            // (same Rot(x,y,z) order as ComposeWorld; rotation 0 looks down +Z),
+            // projection from its fov/near/far — matching the 360 runtime.
+            const float d2r = 3.14159265f / 180.0f;
+            const D3DMATRIX rot = Multiply(Multiply(RotationX(cam_rot[0] * d2r),
+                                                    RotationY(cam_rot[1] * d2r)),
+                                           RotationZ(cam_rot[2] * d2r));
+            Vec3 fwd = { rot._31, rot._32, rot._33 };
+            Vec3 up  = { rot._21, rot._22, rot._23 };
+            Vec3 eye = { cam_pos[0], cam_pos[1], cam_pos[2] };
+            m_eye[0] = eye.x; m_eye[1] = eye.y; m_eye[2] = eye.z;
+            m_view = LookAtLH(eye, {eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z}, up);
+            m_proj = PerspectiveFovLH(cam_fov * d2r, (float)m_width / (float)m_height,
+                                      cam_near, cam_far);
+        }
+        else
+        {
+            Vec3 cdir = { std::cos(m_pitch) * std::sin(m_yaw), std::sin(m_pitch),
+                          std::cos(m_pitch) * std::cos(m_yaw) };
+            Vec3 cat  = { m_target[0], m_target[1], m_target[2] };
+            Vec3 ceye = { cat.x + cdir.x * m_distance, cat.y + cdir.y * m_distance,
+                          cat.z + cdir.z * m_distance };
+            m_eye[0] = ceye.x; m_eye[1] = ceye.y; m_eye[2] = ceye.z;
+            m_view = LookAtLH(ceye, cat, {0.0f, 1.0f, 0.0f});
+            m_proj = PerspectiveFovLH(3.14159265f / 4.0f, (float)m_width / (float)m_height, 0.1f, 200.0f);
+        }
 
         // Translation gizmo for the selected object.
         if (SceneObject* sel = state.SelectedObject())
@@ -583,13 +659,14 @@ void SceneRenderer::RenderGpu(float dt)
             }
 
             // Pixel-shader constants: light direction, camera position, ambient.
-            const Vec3  ld = Normalize({-0.4f, -1.0f, -0.5f});
-            const float light_dir[4] = { ld.x, ld.y, ld.z, 0.0f };
             const float cam_pos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
             const float ambient[4]   = { 0.22f, 0.22f, 0.25f, 0.0f };
-            m_device->SetPixelShaderConstantF(0, light_dir, 1);
+            m_device->SetPixelShaderConstantF(0, m_light_dir, 1);
             m_device->SetPixelShaderConstantF(1, cam_pos, 1);
             m_device->SetPixelShaderConstantF(2, ambient, 1);
+            m_device->SetPixelShaderConstantF(6, m_light_col, 1);
+            m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
+            m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
 
             const D3DMATRIX vp = Multiply(m_view, m_proj);
             // Per-item transform + buffers, then each material subset binds its
@@ -799,8 +876,7 @@ void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& s
 
     // Frame inputs any custom shader may use (same registers as the standard
     // material), so a "model" shader can light/texture the mesh like standard.
-    const Vec3  ld = Normalize({ -0.4f, -1.0f, -0.5f });
-    const float lightDir[4] = { ld.x, ld.y, ld.z, 0.0f };
+    const float* lightDir   = m_light_dir; // the scene's directional light
     const float camPos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
     const float ambient[4]  = { 0.22f, 0.22f, 0.25f, 0.0f };
     const float time4[4]    = { m_time, 0.0f, 0.0f, 0.0f };

@@ -6,6 +6,8 @@
 // Register layout (kept in sync with SceneRenderer.cpp / SceneRuntime.cpp):
 //   VS  c0 = gWVP (world*view*proj)   c4 = gWorld
 //   PS  c0 = light dir   c1 = camera pos   c2 = ambient   c5 = bump scale
+//       c6 = light color (directional rgb * intensity)
+//       c7-c10 = point light pos + 1/range^2   c11-c14 = point light rgb * intensity
 //       s0 = diffuse   s1 = normal (alpha = height field)   s2 = specular
 // (PS c3/c4 stay free: the custom-shader convention claims them for gTime/gCamObj.)
 
@@ -30,6 +32,9 @@ float3 gLightDir  : register(c0);
 float3 gCameraPos : register(c1);
 float3 gAmbient   : register(c2);
 float  gBumpScale : register(c5); // max UV offset over the full height range; 0 = no height field
+float3 gLightColor : register(c6);  // directional rgb * intensity (white = legacy sun)
+float4 gPointPos[4] : register(c7); // xyz = world position, w = 1 / range^2
+float3 gPointCol[4] : register(c11);// rgb * intensity; zero = unused slot
 sampler2D sDiffuse  : register(s0);
 sampler2D sNormal   : register(s1);
 sampler2D sSpecular : register(s2);
@@ -71,6 +76,20 @@ float4 PSMain(VSOut i) : COLOR
 
     float4 dtex = tex2D(sDiffuse, uv);
     float3 spec = tex2D(sSpecular, uv).rgb;
-    float3 color = dtex.rgb * (gAmbient + ndl) + spec * pow(ndh, 40.0);
+
+    // Directional light (diffuse + specular) plus up to four point lights
+    // (diffuse only — the 360-era forward trade-off). Point falloff fades
+    // smoothly to zero at range: (1 - (d/range)^2)^2, with w = 1/range^2.
+    // The max() keeps rsqrt finite at the light's own position; unused slots
+    // upload zero color and contribute nothing.
+    float3 diffuse = gLightColor * ndl;
+    [unroll] for (int k = 0; k < 4; ++k)
+    {
+        float3 pl  = gPointPos[k].xyz - i.wpos;
+        float  d2  = max(dot(pl, pl), 1e-4);
+        float  att = saturate(1.0 - d2 * gPointPos[k].w);
+        diffuse += gPointCol[k] * (saturate(dot(n, pl * rsqrt(d2))) * (att * att));
+    }
+    float3 color = dtex.rgb * (gAmbient + diffuse) + spec * (gLightColor * pow(ndh, 40.0));
     return float4(color, dtex.a); // transparency from the diffuse's alpha
 }

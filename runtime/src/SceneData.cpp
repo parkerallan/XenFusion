@@ -266,6 +266,22 @@ namespace scenedata
                     if (t && t->type == JValue::Str) at.type = t->str;
                     if (m && m->type == JValue::Str) at.model_path = m->str;
                     if (s && s->type == JValue::Str) at.shader_path = s->str;
+                    const JValue* fov = ja.Find("fov");
+                    const JValue* zn  = ja.Find("near");
+                    const JValue* zf  = ja.Find("far");
+                    const JValue* act = ja.Find("active");
+                    if (fov && fov->type == JValue::Number) at.cam_fov  = (float)fov->num;
+                    if (zn  && zn->type  == JValue::Number) at.cam_near = (float)zn->num;
+                    if (zf  && zf->type  == JValue::Number) at.cam_far  = (float)zf->num;
+                    if (act && act->type == JValue::Bool)   at.cam_active = act->b;
+                    const JValue* col = ja.Find("color");
+                    const JValue* lin = ja.Find("intensity");
+                    const JValue* rng = ja.Find("range");
+                    at.light_color[0] = NumAt(col, 0, 1.0f);
+                    at.light_color[1] = NumAt(col, 1, 1.0f);
+                    at.light_color[2] = NumAt(col, 2, 1.0f);
+                    if (lin && lin->type == JValue::Number) at.light_intensity = (float)lin->num;
+                    if (rng && rng->type == JValue::Number) at.light_range     = (float)rng->num;
                     o.attributes.push_back(at);
                 }
             }

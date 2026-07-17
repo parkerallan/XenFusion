@@ -9,13 +9,30 @@
 #include <vector>
 
 // A component-style attribute attached to an object. Types: "3D Model" (holds a
-// model asset path) and "Shader" (holds a custom .hlsl path, replacing the
-// built-in material for that object). Serialized into the scene JSON.
+// model asset path), "Shader" (holds a custom .hlsl path, replacing the
+// built-in material for that object), and "Camera" (projection params; the
+// object's transform places and aims it). Serialized into the scene JSON.
 struct ObjectAttribute
 {
     std::string type = "3D Model";
     std::string model_path;  // for "3D Model": path to the model asset
     std::string shader_path; // for "Shader": path to a custom .hlsl asset
+
+    // For "Camera". Rotation (0,0,0) looks down +Z; at most one camera per
+    // scene is active — it drives the runtime view (defaults match the old
+    // fixed-camera projection).
+    float cam_fov    = 45.0f; // vertical FOV, degrees
+    float cam_near   = 0.5f;
+    float cam_far    = 100.0f;
+    bool  cam_active = false;
+
+    // For "Directional Light" / "Point Light" (color * intensity lights the
+    // standard material). Directional: direction = object rotation (+Z forward,
+    // like the camera), first light in scene order wins. Point: position =
+    // object position, fades to zero at range, first four win.
+    float light_color[3]  = {1.0f, 1.0f, 1.0f};
+    float light_intensity = 1.0f;
+    float light_range     = 15.0f; // "Point Light" only
 };
 
 // A single object within a scene. Objects are not files — they live inside a
@@ -42,8 +59,9 @@ struct SceneFile
 // Editor color theme.
 enum class Theme
 {
-    Light, // ImGui light theme
-    Gray,  // light-based, shifted toward gray
+    Light,   // ImGui light theme
+    Gray,    // light-based, shifted toward gray
+    Classic, // ImGui classic theme
 };
 
 // Central editor state. Every panel takes a reference to this and reads/writes
@@ -64,7 +82,6 @@ struct EngineState
     bool show_log_panel       = true;
     bool show_performance_panel = true;
     bool show_editor_panel    = true;
-    bool show_imgui_demo      = false;
     bool show_style_editor    = false;
     bool compile_shaders_requested = false; // compile all project shaders next frame
     bool build_run_requested       = false; // build the .xex + launch it in Xenia

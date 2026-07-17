@@ -68,11 +68,29 @@ private:
     IDirect3DIndexBuffer9*       m_cube_ib;
 
     // Fixed orbit camera (the editor's default framing; no input on the console).
+    // Used only when the scene has no active "Camera" attribute.
     float m_yaw;
     float m_pitch;
     float m_distance;
     float m_target[3];
     float m_eye[3];
+
+    // Active scene camera ("Camera" attribute with active=true, first wins),
+    // captured in BuildDrawLists. Overrides the fixed orbit framing.
+    bool  m_has_cam;
+    float m_cam_pos[3];
+    float m_cam_rot[3];
+    float m_cam_fov;  // vertical FOV, degrees
+    float m_cam_near;
+    float m_cam_far;
+
+    // Scene lights captured in BuildDrawLists — ready-made PS constant payloads
+    // (c0 / c6 / c7-c10 / c11-c14), mirroring the editor's SceneRenderer. The
+    // legacy fixed sun is used when the scene has no light attributes at all.
+    float m_light_dir[4];
+    float m_light_col[4];
+    float m_point_pos[4][4]; // xyz + w = 1/range^2
+    float m_point_col[4][4]; // rgb * intensity; zero = unused slot
 
     float m_time;
 

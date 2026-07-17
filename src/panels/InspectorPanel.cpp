@@ -163,6 +163,48 @@ void InspectorPanel::Render(EngineState& state)
                 ImGui::EndDragDropTarget();
             }
         }
+        else if (attr.type == "Camera")
+        {
+            // Edits mark the scene dirty every tick; the file is written once,
+            // when the drag ends (the gizmo's commit-on-release pattern).
+            bool edited = false, commit = false;
+            edited |= ImGui::DragFloat("FOV",  &attr.cam_fov, 0.5f, 1.0f, 179.0f, "%.1f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Near", &attr.cam_near, 0.05f, 0.01f, 1000.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Far",  &attr.cam_far, 1.0f, 1.0f, 10000.0f, "%.0f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (ImGui::Checkbox("Active", &attr.cam_active))
+            {
+                // One active camera per scene: activating this one clears the rest.
+                if (attr.cam_active && scene)
+                    for (SceneObject& other : scene->objects)
+                        for (ObjectAttribute& oa : other.attributes)
+                            if (&oa != &attr && oa.type == "Camera")
+                                oa.cam_active = false;
+                edited = commit = true;
+            }
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
+        else if (attr.type == "Directional Light" || attr.type == "Point Light")
+        {
+            const bool is_point = (attr.type == "Point Light");
+            ImGui::TextDisabled(is_point ? "Position uses the object position."
+                                         : "Direction uses the object rotation.");
+            bool edited = false, commit = false;
+            edited |= ImGui::ColorEdit3("Color", attr.light_color);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Intensity", &attr.light_intensity, 0.05f, 0.0f, 100.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (is_point)
+            {
+                edited |= ImGui::DragFloat("Range", &attr.light_range, 0.1f, 0.1f, 1000.0f, "%.1f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
 
         ImGui::PopID();
     }
@@ -182,6 +224,27 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Shader";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Camera"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Camera";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Directional Light"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Directional Light";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Point Light"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Point Light";
             obj->attributes.push_back(attr);
             save();
         }

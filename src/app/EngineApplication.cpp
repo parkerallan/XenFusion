@@ -61,9 +61,9 @@ bool EngineApplication::Init()
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L,
                        ::GetModuleHandleW(nullptr), nullptr, nullptr, nullptr,
-                       nullptr, L"Engine360Window", nullptr };
+                       nullptr, L"XenFusionWindow", nullptr };
     ::RegisterClassExW(&wc);
-    window_ = ::CreateWindowW(wc.lpszClassName, L"360 Engine",
+    window_ = ::CreateWindowW(wc.lpszClassName, L"XenFusion",
                               WS_OVERLAPPEDWINDOW, 100, 100, 1440, 900,
                               nullptr, nullptr, wc.hInstance, nullptr);
     if (!window_)
@@ -72,7 +72,7 @@ bool EngineApplication::Init()
     if (!renderer_.Init(window_))
     {
         ::MessageBoxW(nullptr, L"Failed to create the Direct3D 9 device.",
-                      L"360 Engine", MB_OK | MB_ICONERROR);
+                      L"XenFusion", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -109,7 +109,7 @@ bool EngineApplication::Init()
     QueryPerformanceCounter(&qpc_last_);
 
     project::LoadRecents(state_);
-    state_.AddLog("360 Engine started (Direct3D 9 backend)");
+    state_.AddLog("XenFusion started (Direct3D 9 backend)");
 
     // Startup launcher: show recent projects when nothing is open.
     if (!state_.HasProject())
@@ -249,16 +249,26 @@ void EngineApplication::RenderUI()
     RenderImportModal();
     RenderRecentModal();
 
-    if (state_.show_imgui_demo)
-        ImGui::ShowDemoWindow(&state_.show_imgui_demo);
-
     // Live theme editor. ShowStyleEditor() draws into the current window, so we
     // wrap it. Its Colors tab has an "Export" button that copies the changed
     // ImGuiCol_ entries to the clipboard — paste those into ApplyStyle().
     if (state_.show_style_editor)
     {
         if (ImGui::Begin("Style Editor", &state_.show_style_editor))
+        {
+            // Engine themes. The stock selector further down only lists ImGui's
+            // built-in palettes; this one applies (and persists) ours.
+            static const char* kThemes[] = { "Light", "Gray (default)", "Classic" };
+            int cur = (int)state_.theme;
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("Engine theme", &cur, kThemes, IM_ARRAYSIZE(kThemes)))
+            {
+                state_.theme = (Theme)cur;
+                ApplyStyle();
+            }
+            ImGui::Separator();
             ImGui::ShowStyleEditor();
+        }
         ImGui::End();
     }
 
@@ -345,7 +355,6 @@ void EngineApplication::RenderMainMenuBar()
         ImGui::MenuItem("Performance", nullptr, &state_.show_performance_panel);
         ImGui::Separator();
         ImGui::MenuItem("Style Editor", nullptr, &state_.show_style_editor);
-        ImGui::MenuItem("ImGui Demo",   nullptr, &state_.show_imgui_demo);
         ImGui::EndMenu();
     }
 
@@ -597,9 +606,10 @@ void EngineApplication::ApplyStyle()
     // Base colors from the selected theme.
     switch (state_.theme)
     {
-    case Theme::Gray:  ApplyGrayTheme();         break;
-    case Theme::Light:
-    default:           ImGui::StyleColorsLight(); break;
+    case Theme::Gray:    ApplyGrayTheme();           break;
+    case Theme::Light:   ImGui::StyleColorsLight();  break;
+    case Theme::Classic:
+    default:             ImGui::StyleColorsClassic(); break;
     }
 
     // Shared sizing / borders for every theme.
@@ -727,6 +737,6 @@ void EngineApplication::Shutdown()
         ::DestroyWindow(window_);
         window_ = nullptr;
     }
-    ::UnregisterClassW(L"Engine360Window", ::GetModuleHandleW(nullptr));
+    ::UnregisterClassW(L"XenFusionWindow", ::GetModuleHandleW(nullptr));
     g_app = nullptr;
 }

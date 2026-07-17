@@ -1,4 +1,4 @@
-# 360engine runtime (Xbox 360 game)
+# XenFusion runtime (Xbox 360 game)
 
 This is the **shipping game runtime** — the code that is built into the Xbox 360
 title and runs on the console / Xenia. It is a stripped-down version of the

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(engine360 LANGUAGES CXX)
+project(XenFusion LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -109,7 +109,7 @@ set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/src/shaders)
 # ---------------------------------------------------------------------------
 # The engine executable.
 # ---------------------------------------------------------------------------
-add_executable(engine360
+add_executable(XenFusion
     src/app/main.cpp
     src/app/EngineApplication.cpp
     src/app/Settings.cpp
@@ -137,32 +137,32 @@ add_executable(engine360
     src/panels/PerformancePanel.cpp
     src/panels/EditorPanel.cpp
 )
-target_include_directories(engine360 PRIVATE src third_party)
+target_include_directories(XenFusion PRIVATE src third_party)
 # Lets the editor's "Build and Run XEX" locate the console runtime project +
 # build_run.ps1 during development (the runtime is a sibling of the editor source).
-target_compile_definitions(engine360 PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
+target_compile_definitions(XenFusion PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
-target_link_libraries(engine360 PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp Ole32 Shell32)
+target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp Ole32 Shell32)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
-set_target_properties(engine360 PROPERTIES
-    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:engine360>"
+set_target_properties(XenFusion PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:XenFusion>"
 )
 
 # Ship the icon font next to the exe so it can be loaded at runtime.
-add_custom_command(TARGET engine360 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:engine360>/fonts"
+add_custom_command(TARGET XenFusion POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:XenFusion>/fonts"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/third_party/fonts/fa-solid-900.ttf"
-        "$<TARGET_FILE_DIR:engine360>/fonts/fa-solid-900.ttf"
+        "$<TARGET_FILE_DIR:XenFusion>/fonts/fa-solid-900.ttf"
     VERBATIM
 )
 
 # Ship the engine's built-in shader source in <exe>/shaders. At runtime the
 # engine compiles it into each project's own shaders/ folder (with the customs).
-add_custom_command(TARGET engine360 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:engine360>/shaders"
+add_custom_command(TARGET XenFusion POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:XenFusion>/shaders"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SHADER_SRC_DIR}/standard.hlsl" "$<TARGET_FILE_DIR:engine360>/shaders/standard.hlsl"
+        "${SHADER_SRC_DIR}/standard.hlsl" "$<TARGET_FILE_DIR:XenFusion>/shaders/standard.hlsl"
     VERBATIM
 )

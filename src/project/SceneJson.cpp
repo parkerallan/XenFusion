@@ -31,6 +31,20 @@ namespace project
                 ja["type"]        = a.type;
                 ja["model_path"]  = a.model_path;
                 ja["shader_path"] = a.shader_path;
+                if (a.type == "Camera")
+                {
+                    ja["fov"]    = a.cam_fov;
+                    ja["near"]   = a.cam_near;
+                    ja["far"]    = a.cam_far;
+                    ja["active"] = a.cam_active;
+                }
+                else if (a.type == "Directional Light" || a.type == "Point Light")
+                {
+                    ja["color"]     = {a.light_color[0], a.light_color[1], a.light_color[2]};
+                    ja["intensity"] = a.light_intensity;
+                    if (a.type == "Point Light")
+                        ja["range"] = a.light_range;
+                }
                 jo["attributes"].push_back(ja);
             }
             j["objects"].push_back(jo);
@@ -80,6 +94,18 @@ namespace project
                         a.type        = ja.value("type", std::string("3D Model"));
                         a.model_path  = ja.value("model_path", std::string());
                         a.shader_path = ja.value("shader_path", std::string());
+                        a.cam_fov     = ja.value("fov", 45.0f);
+                        a.cam_near    = ja.value("near", 0.5f);
+                        a.cam_far     = ja.value("far", 100.0f);
+                        a.cam_active  = ja.value("active", false);
+                        if (ja.contains("color") && ja["color"].is_array() && ja["color"].size() == 3)
+                        {
+                            a.light_color[0] = ja["color"][0].get<float>();
+                            a.light_color[1] = ja["color"][1].get<float>();
+                            a.light_color[2] = ja["color"][2].get<float>();
+                        }
+                        a.light_intensity = ja.value("intensity", 1.0f);
+                        a.light_range     = ja.value("range", 15.0f);
                         o.attributes.push_back(a);
                     }
                 }

@@ -39,6 +39,10 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     m_yaw = 0.6f; m_pitch = 0.5f; m_distance = 20.0f;
     m_target[0] = m_target[1] = m_target[2] = 0.0f;
     m_eye[0] = m_eye[1] = m_eye[2] = 0.0f;
+    m_has_cam = false;
+    m_cam_pos[0] = m_cam_pos[1] = m_cam_pos[2] = 0.0f;
+    m_cam_rot[0] = m_cam_rot[1] = m_cam_rot[2] = 0.0f;
+    m_cam_fov = 45.0f; m_cam_near = 0.5f; m_cam_far = 100.0f;
     m_time = 0.0f;
 
     m_content.Init(device, contentRoot);
@@ -183,6 +187,14 @@ void SceneRuntime::BuildDrawLists()
 {
     m_draw_items.clear();
     m_shader_items.clear();
+    m_has_cam = false;
+
+    bool have_dir = false;
+    int  point_count = 0;
+    memset(m_light_dir, 0, sizeof(m_light_dir));
+    memset(m_light_col, 0, sizeof(m_light_col));
+    memset(m_point_pos, 0, sizeof(m_point_pos));
+    memset(m_point_col, 0, sizeof(m_point_col));
 
     for (size_t i = 0; i < m_scene.objects.size(); ++i)
     {
@@ -198,6 +210,36 @@ void SceneRuntime::BuildDrawLists()
                 model_path = at.model_path;
             else if (at.type == "Shader" && !at.shader_path.empty() && shader_path.empty())
                 shader_path = at.shader_path;
+            else if (at.type == "Camera" && at.cam_active && !m_has_cam)
+            {
+                for (int k = 0; k < 3; ++k) { m_cam_pos[k] = o.position[k]; m_cam_rot[k] = o.rotation[k]; }
+                m_cam_fov  = at.cam_fov;
+                m_cam_near = at.cam_near;
+                m_cam_far  = at.cam_far;
+                m_has_cam  = true;
+            }
+            else if (at.type == "Directional Light" && !have_dir)
+            {
+                // Direction = the object's forward (+Z through its rotation).
+                const float d2r = kPi / 180.0f;
+                const D3DMATRIX r = Multiply(Multiply(RotationX(o.rotation[0] * d2r),
+                                                      RotationY(o.rotation[1] * d2r)),
+                                             RotationZ(o.rotation[2] * d2r));
+                m_light_dir[0] = r._31; m_light_dir[1] = r._32; m_light_dir[2] = r._33;
+                for (int k = 0; k < 3; ++k) m_light_col[k] = at.light_color[k] * at.light_intensity;
+                have_dir = true;
+            }
+            else if (at.type == "Point Light" && point_count < 4)
+            {
+                const float range = at.light_range > 0.1f ? at.light_range : 0.1f;
+                for (int k = 0; k < 3; ++k)
+                {
+                    m_point_pos[point_count][k] = o.position[k];
+                    m_point_col[point_count][k] = at.light_color[k] * at.light_intensity;
+                }
+                m_point_pos[point_count][3] = 1.0f / (range * range);
+                ++point_count;
+            }
         }
 
         bool shader_owns_mesh = false;
@@ -221,6 +263,19 @@ void SceneRuntime::BuildDrawLists()
             m_draw_items.push_back(di);
         }
     }
+
+    // No directional light authored: keep the legacy fixed sun — white when the
+    // scene has no lights at all (old scenes render unchanged), black when point
+    // lights exist (the author owns the lighting; only c0's direction, which
+    // custom shaders read, stays meaningful).
+    if (!have_dir)
+    {
+        Vec3 lraw = { -0.4f, -1.0f, -0.5f };
+        Vec3 ln = Normalize(lraw);
+        m_light_dir[0] = ln.x; m_light_dir[1] = ln.y; m_light_dir[2] = ln.z;
+        const float w = (point_count == 0) ? 1.0f : 0.0f;
+        m_light_col[0] = m_light_col[1] = m_light_col[2] = w;
+    }
 }
 
 void SceneRuntime::Render(float dt)
@@ -234,19 +289,39 @@ void SceneRuntime::Render(float dt)
     // (the worker thread did the read + decompress off this thread).
     m_cache.Update(8);
 
-    // Fixed camera (orbit params baked at Init; no input on the console).
-    Vec3 dir = { cosf(m_pitch) * sinf(m_yaw), sinf(m_pitch), cosf(m_pitch) * cosf(m_yaw) };
-    Vec3 at  = { m_target[0], m_target[1], m_target[2] };
-    Vec3 eye = { at.x + dir.x * m_distance, at.y + dir.y * m_distance, at.z + dir.z * m_distance };
-    m_eye[0] = eye.x; m_eye[1] = eye.y; m_eye[2] = eye.z;
-    Vec3 up = { 0.0f, 1.0f, 0.0f };
-    const D3DMATRIX view = LookAtLH(eye, at, up);
-    const D3DMATRIX proj = PerspectiveFovLH(kPi / 4.0f, 16.0f / 9.0f, 0.5f, 100.0f);
-    const D3DMATRIX vp   = Multiply(view, proj);
+    // View through the scene's active "Camera" attribute when it has one, else
+    // the fixed orbit framing baked at Init (no input on the console either way).
+    D3DMATRIX view, proj;
+    if (m_has_cam)
+    {
+        // Basis from the camera object's rotation (same Rot(x,y,z) order as
+        // ComposeWorld; rotation 0 looks down +Z), matching the editor's
+        // look-through view.
+        const float d2r = kPi / 180.0f;
+        const D3DMATRIX rot = Multiply(Multiply(RotationX(m_cam_rot[0] * d2r),
+                                                RotationY(m_cam_rot[1] * d2r)),
+                                       RotationZ(m_cam_rot[2] * d2r));
+        Vec3 fwd = { rot._31, rot._32, rot._33 };
+        Vec3 up  = { rot._21, rot._22, rot._23 };
+        Vec3 eye = { m_cam_pos[0], m_cam_pos[1], m_cam_pos[2] };
+        Vec3 at  = { eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z };
+        m_eye[0] = eye.x; m_eye[1] = eye.y; m_eye[2] = eye.z;
+        view = LookAtLH(eye, at, up);
+        proj = PerspectiveFovLH(m_cam_fov * d2r, 16.0f / 9.0f, m_cam_near, m_cam_far);
+    }
+    else
+    {
+        Vec3 dir = { cosf(m_pitch) * sinf(m_yaw), sinf(m_pitch), cosf(m_pitch) * cosf(m_yaw) };
+        Vec3 at  = { m_target[0], m_target[1], m_target[2] };
+        Vec3 eye = { at.x + dir.x * m_distance, at.y + dir.y * m_distance, at.z + dir.z * m_distance };
+        m_eye[0] = eye.x; m_eye[1] = eye.y; m_eye[2] = eye.z;
+        Vec3 up = { 0.0f, 1.0f, 0.0f };
+        view = LookAtLH(eye, at, up);
+        proj = PerspectiveFovLH(kPi / 4.0f, 16.0f / 9.0f, 0.5f, 100.0f);
+    }
+    const D3DMATRIX vp = Multiply(view, proj);
 
-    Vec3 lraw = { -0.4f, -1.0f, -0.5f };
-    Vec3 ln = Normalize(lraw);
-    const float lightDir[4] = { ln.x, ln.y, ln.z, 0.0f };
+    const float* lightDir   = m_light_dir; // scene lights captured in BuildDrawLists
     const float camPos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
     const float ambient[4]  = { 0.22f, 0.22f, 0.25f, 0.0f };
 
@@ -281,6 +356,9 @@ void SceneRuntime::Render(float dt)
         m_device->SetPixelShaderConstantF(0, lightDir, 1);
         m_device->SetPixelShaderConstantF(1, camPos, 1);
         m_device->SetPixelShaderConstantF(2, ambient, 1);
+        m_device->SetPixelShaderConstantF(6, m_light_col, 1);
+        m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
+        m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
 
         // Pass 1 — opaque + cutout subsets (both write depth). Cutout (hair cards,
         // foliage) is a masked alpha: the per-subset states (alpha test + Xenos
@@ -448,9 +526,7 @@ void SceneRuntime::DrawShaderItem(const ShaderItem& item, RtShader& shader, cons
     m_device->SetRenderState(D3DRS_ZWRITEENABLE, s.zWrite);
     m_device->SetRenderState(D3DRS_CULLMODE,     s.cull);
 
-    Vec3 lraw = { -0.4f, -1.0f, -0.5f };
-    Vec3 ln = Normalize(lraw);
-    const float lightDir[4] = { ln.x, ln.y, ln.z, 0.0f };
+    const float* lightDir   = m_light_dir; // the scene's directional light
     const float camPos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
     const float ambient[4]  = { 0.22f, 0.22f, 0.25f, 0.0f };
     const float time4[4]    = { m_time, 0.0f, 0.0f, 0.0f };

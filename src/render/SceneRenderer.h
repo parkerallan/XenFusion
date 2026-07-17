@@ -90,6 +90,10 @@ private:
     int   m_width  = 0;
     int   m_height = 0;
 
+    // Look-through: view the scene through the active "Camera" attribute
+    // instead of the orbit camera (viewport toggle; editor-only state).
+    bool m_look_through = false;
+
     // Orbit camera.
     float m_yaw       = 0.6f;  // azimuth (radians)
     float m_pitch     = 0.5f;  // elevation (radians)
@@ -106,6 +110,14 @@ private:
     D3DMATRIX m_view = {};
     D3DMATRIX m_proj = {};
     float     m_eye[3] = {0.0f, 0.0f, 0.0f};
+
+    // Scene lights captured in RenderUi, uploaded in RenderGpu — ready-made PS
+    // constant payloads (c0 / c6 / c7-c10 / c11-c14). The legacy fixed sun is
+    // used when the scene has no light attributes at all.
+    float m_light_dir[4]    = {0.0f, 0.0f, 0.0f, 0.0f};
+    float m_light_col[4]    = {1.0f, 1.0f, 1.0f, 0.0f};
+    float m_point_pos[4][4] = {}; // xyz + w = 1/range^2
+    float m_point_col[4][4] = {}; // rgb * intensity; zero = unused slot
 
     // Shader-based material pipeline (diffuse / normal / specular).
     IDirect3DVertexShader9*      m_vs        = nullptr;
