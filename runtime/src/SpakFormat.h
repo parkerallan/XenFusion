@@ -46,10 +46,15 @@ namespace spak
     const unsigned int kMeshSubsetBytes = 24;         // 6 * u32
     const unsigned int kMeshVertexBytes = 44;         // MeshVertex (pos/nrm/tan/uv)
 
-    // alphaKind values (match RtAlphaKind: Opaque/Cutout/Blend).
+    // alphaKind values (match RtAlphaKind: Opaque/Cutout/Blend). The low byte is
+    // the kind; the byte above carries per-subset flags (record stays 24 bytes —
+    // the xex and the pak always deploy together, so no magic bump).
     const unsigned int kAlphaOpaque = 0;
     const unsigned int kAlphaCutout = 1;
     const unsigned int kAlphaBlend  = 2;
+    const unsigned int kAlphaKindMask  = 0xFFu;
+    const unsigned int kAlphaHeightBit = 0x100u; // normal map's alpha carries a
+                                                 // height field (0.5 = neutral)
 
     // flags word: bit0 = payload is compressed; bits1..3 = codec id (below).
     const unsigned int kFlagCompressed = 0x1u;

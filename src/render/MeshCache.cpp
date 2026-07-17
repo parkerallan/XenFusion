@@ -127,10 +127,10 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
         std::vector<MeshSubset> subsets;
         if (mesh::LoadMeshBlob(m_device, baked, g, subsets) && g.vb)
         {
-            auto load = [&](const std::string& rel, AlphaKind* alpha = nullptr) -> IDirect3DTexture9*
+            auto load = [&](const std::string& rel, AlphaKind* alpha = nullptr, bool* height = nullptr) -> IDirect3DTexture9*
             {
                 if (rel.empty()) return nullptr;
-                IDirect3DTexture9* t = mesh::LoadTexture(m_device, baked.parent_path() / rel, alpha);
+                IDirect3DTexture9* t = mesh::LoadTexture(m_device, baked.parent_path() / rel, alpha, height);
                 if (!t) applog::Warn("Texture not found for " + model_path + ": " + rel);
                 return t;
             };
@@ -140,7 +140,7 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
                 gs.indexStart = s.indexStart;
                 gs.indexCount = s.indexCount;
                 gs.diffuse  = load(s.textures.diffuse, &gs.alpha); // transparency mode from the diffuse's alpha
-                gs.normal   = load(s.textures.normal);
+                gs.normal   = load(s.textures.normal, nullptr, &gs.normalHasHeight); // bump offset from the normal's alpha
                 gs.specular = load(s.textures.specular);
                 g.subsets.push_back(gs);
             }

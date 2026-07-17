@@ -8,10 +8,12 @@
 
 namespace mesh
 {
-    IDirect3DTexture9* LoadTexture(IDirect3DDevice9* device, const std::filesystem::path& path, AlphaKind* out_alpha)
+    IDirect3DTexture9* LoadTexture(IDirect3DDevice9* device, const std::filesystem::path& path, AlphaKind* out_alpha, bool* out_height)
     {
         if (out_alpha)
             *out_alpha = AlphaKind::Opaque;
+        if (out_height)
+            *out_height = false;
         if (!device)
             return nullptr;
 
@@ -45,6 +47,24 @@ namespace mesh
                 *out_alpha = AlphaKind::Cutout;
             else
                 *out_alpha = AlphaKind::Blend;
+        }
+
+        // Does the alpha channel carry a height field (bump offset — normal
+        // maps pack it in their alpha, 0.5 = neutral)? Only if it actually
+        // varies: a normal map without an alpha channel (or with a blank one)
+        // carries no relief, and treating its uniform alpha as height would
+        // shift every texture of the material by a constant UV offset.
+        if (out_height && channels == 4)
+        {
+            unsigned char amin = 255, amax = 0;
+            const int total = w * h;
+            for (int i = 0; i < total; ++i)
+            {
+                unsigned char a = pixels[i * 4 + 3];
+                if (a < amin) amin = a;
+                if (a > amax) amax = a;
+            }
+            *out_height = (amax - amin) >= 8;
         }
 
         // Alpha dilation for cutout masks. The fully-transparent texels usually

@@ -323,8 +323,10 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
         sub.indexStart = endian::LoadU32BE(sp + 0);
         sub.indexCount = endian::LoadU32BE(sp + 4);
         const unsigned int alpha = endian::LoadU32BE(sp + 8);
-        sub.alpha = (alpha == spak::kAlphaCutout) ? RtCutout
-                  : (alpha == spak::kAlphaBlend)  ? RtBlend : RtOpaque;
+        const unsigned int kind  = alpha & spak::kAlphaKindMask;
+        sub.alpha = (kind == spak::kAlphaCutout) ? RtCutout
+                  : (kind == spak::kAlphaBlend)  ? RtBlend : RtOpaque;
+        sub.normalHasHeight = (alpha & spak::kAlphaHeightBit) != 0;
         cm.texHash[(size_t)i * 3 + 0] = endian::LoadU32BE(sp + 12);
         cm.texHash[(size_t)i * 3 + 1] = endian::LoadU32BE(sp + 16);
         cm.texHash[(size_t)i * 3 + 2] = endian::LoadU32BE(sp + 20);

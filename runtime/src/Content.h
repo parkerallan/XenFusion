@@ -21,11 +21,13 @@ struct RtSubset
     unsigned int       indexStart;
     unsigned int       indexCount;
     RtAlphaKind        alpha;
+    bool               normalHasHeight; // normal map's alpha carries a height
+                                        // field (0.5 = neutral) — bump offset
     IDirect3DTexture9* diffuse;
     IDirect3DTexture9* normal;
     IDirect3DTexture9* specular;
 
-    RtSubset() : indexStart(0), indexCount(0), alpha(RtOpaque),
+    RtSubset() : indexStart(0), indexCount(0), alpha(RtOpaque), normalHasHeight(false),
                  diffuse(NULL), normal(NULL), specular(NULL) {}
 };
 

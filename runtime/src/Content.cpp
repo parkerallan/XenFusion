@@ -149,6 +149,33 @@ namespace
         stbi_image_free(px);
         return kind;
     }
+
+    // Does a normal map's alpha carry a height field (bump offset, 0.5 =
+    // neutral)? Mirrors the editor/cooker check: only if the alpha actually
+    // varies — a normal map without an alpha channel (stb reports the file's
+    // channel count) or with a blank one carries no relief.
+    bool NormalAlphaHasHeight(const std::string& path)
+    {
+        int w = 0, h = 0, ch = 0;
+        unsigned char* px = stbi_load(path.c_str(), &w, &h, &ch, 4); // force RGBA
+        if (!px)
+            return false;
+        bool varies = false;
+        if (ch == 4)
+        {
+            unsigned char amin = 255, amax = 0;
+            const int total = w * h;
+            for (int i = 0; i < total; ++i)
+            {
+                unsigned char a = px[i * 4 + 3];
+                if (a < amin) amin = a;
+                if (a > amax) amax = a;
+            }
+            varies = (amax - amin) >= 8;
+        }
+        stbi_image_free(px);
+        return varies;
+    }
 }
 
 RtMesh* Content::GetMesh(const std::string& relPath)
@@ -265,7 +292,12 @@ RtMesh* Content::GetMesh(const std::string& relPath)
             sub.diffuse = LoadTexture(m_device, dabs);
             sub.alpha   = ClassifyAlpha(dabs); // transparency mode from the diffuse's alpha
         }
-        if (!texNormal.empty()) sub.normal   = LoadTexture(m_device, Join(meshDir, texNormal));
+        if (!texNormal.empty())
+        {
+            const std::string nabs = Join(meshDir, texNormal);
+            sub.normal          = LoadTexture(m_device, nabs);
+            sub.normalHasHeight = NormalAlphaHasHeight(nabs); // bump offset from the normal's alpha
+        }
         if (!texSpec.empty())   sub.specular = LoadTexture(m_device, Join(meshDir, texSpec));
         mesh.subsets.push_back(sub);
     }

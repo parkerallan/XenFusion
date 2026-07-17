@@ -3,10 +3,11 @@
 // Shader Model 3.0 — the same source targets the Xbox 360's Xenos GPU (compiled
 // offline by the XDK there; by fxc at build time / d3dcompiler at runtime here).
 //
-// Register layout (kept in sync with SceneRenderer.cpp):
+// Register layout (kept in sync with SceneRenderer.cpp / SceneRuntime.cpp):
 //   VS  c0 = gWVP (world*view*proj)   c4 = gWorld
-//   PS  c0 = light dir   c1 = camera pos   c2 = ambient
-//       s0 = diffuse   s1 = normal   s2 = specular
+//   PS  c0 = light dir   c1 = camera pos   c2 = ambient   c5 = bump scale
+//       s0 = diffuse   s1 = normal (alpha = height field)   s2 = specular
+// (PS c3/c4 stay free: the custom-shader convention claims them for gTime/gCamObj.)
 
 float4x4 gWVP   : register(c0);
 float4x4 gWorld : register(c4);
@@ -28,6 +29,7 @@ VSOut VSMain(VSIn i)
 float3 gLightDir  : register(c0);
 float3 gCameraPos : register(c1);
 float3 gAmbient   : register(c2);
+float  gBumpScale : register(c5); // max UV offset over the full height range; 0 = no height field
 sampler2D sDiffuse  : register(s0);
 sampler2D sNormal   : register(s1);
 sampler2D sSpecular : register(s2);
@@ -37,17 +39,38 @@ float4 PSMain(VSOut i) : COLOR
     float3 N = normalize(i.wn);
     float3 T = normalize(i.wt);
     float3 B = cross(N, T);
-    float3 nt = tex2D(sNormal, i.uv).xyz * 2.0 - 1.0;   // tangent-space normal
+    float3 V = normalize(gCameraPos - i.wpos);
+
+    // Bump offset: the normal map's alpha is a height field (0.5 = neutral, the
+    // Substance export convention: white = raised, black = recessed). A single
+    // tap shifts the UVs along the tangent-space view ray — no ray march, so it
+    // cannot band or staircase. The renderers upload gBumpScale = 0 for subsets
+    // without a height field, making the offset exactly (0,0) — the cutout
+    // alpha then samples the same texel it always did. The saturate() fades the
+    // effect out below ~15° viewing angles — a single tap has no occlusion
+    // information, so at grazing incidence it can only smear texels — and takes
+    // it to zero on back faces (culling is off, and Assimp's left-handed import
+    // flips authored quad normals, so back-face views are common).
+    // Two taps: the first offset is corrected by re-reading the height at the
+    // offset position (averaged to damp overshoot) — this keeps steep height
+    // edges from striping/smearing, where a lone tap pairs a pixel with a
+    // wildly wrong texel. Still fixed cost: no loop, no divergent flow.
+    float3 vts  = float3(dot(V, T), dot(V, B), dot(V, N));
+    float2 vuv  = gBumpScale * saturate(vts.z * 4.0) * vts.xy / (abs(vts.z) + 0.42);
+    float  hgt  = tex2D(sNormal, i.uv).a;
+    float  hgt2 = tex2D(sNormal, i.uv + (hgt - 0.5) * vuv).a;
+    float2 uv   = i.uv + ((hgt + hgt2) * 0.5 - 0.5) * vuv;
+
+    float3 nt = tex2D(sNormal, uv).xyz * 2.0 - 1.0;   // tangent-space normal
     float3 n  = normalize(nt.x * T + nt.y * B + nt.z * N);
 
     float3 L   = -normalize(gLightDir);
     float  ndl = saturate(dot(n, L));
-    float3 V   = normalize(gCameraPos - i.wpos);
     float3 H   = normalize(L + V);
     float  ndh = saturate(dot(n, H));
 
-    float4 dtex = tex2D(sDiffuse, i.uv);
-    float3 spec = tex2D(sSpecular, i.uv).rgb;
+    float4 dtex = tex2D(sDiffuse, uv);
+    float3 spec = tex2D(sSpecular, uv).rgb;
     float3 color = dtex.rgb * (gAmbient + ndl) + spec * pow(ndh, 40.0);
     return float4(color, dtex.a); // transparency from the diffuse's alpha
 }

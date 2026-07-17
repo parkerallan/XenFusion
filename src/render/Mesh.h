@@ -66,6 +66,8 @@ struct GpuSubset
     IDirect3DTexture9* normal   = nullptr;
     IDirect3DTexture9* specular = nullptr;
     AlphaKind          alpha    = AlphaKind::Opaque;
+    bool               normalHasHeight = false; // normal map's alpha carries a
+                                                // height field (0.5 = neutral)
 };
 
 // A mesh in GPU memory (D3DPOOL_MANAGED — survives device resets). One shared
@@ -109,8 +111,12 @@ namespace mesh
 
     // Load an image file into a D3D9 texture (stb_image). If out_alpha is given,
     // it reports how the alpha channel should be used (Opaque / Cutout / Blend),
-    // classified from the pixel data — see AlphaKind.
+    // classified from the pixel data — see AlphaKind. If out_height is given
+    // (normal maps), it reports whether the alpha channel carries a height field
+    // for bump offset: true only when the alpha actually varies — a plain normal
+    // map (no alpha, or a blank one) reads false and gets zero UV offset.
     IDirect3DTexture9* LoadTexture(IDirect3DDevice9* device,
                                    const std::filesystem::path& path,
-                                   AlphaKind* out_alpha = nullptr);
+                                   AlphaKind* out_alpha = nullptr,
+                                   bool* out_height = nullptr);
 }

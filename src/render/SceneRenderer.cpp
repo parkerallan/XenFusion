@@ -602,8 +602,15 @@ void SceneRenderer::RenderGpu(float dt)
                 m_device->SetStreamSource(0, gm->vb, 0, sizeof(MeshVertex));
                 m_device->SetIndices(gm->ib);
             };
+            // Bump-offset strength: max UV shift across the height field packed
+            // in a normal map's alpha (tune by eye; keep in sync with
+            // SceneRuntime.cpp). Subsets without a height field upload exactly
+            // 0, so their UVs — and the cutout alpha they feed — are untouched.
+            const float kBumpScale = 0.08f;
             auto draw_subset = [&](GpuMesh* gm, const GpuSubset& s)
             {
+                const float bump[4] = { s.normalHasHeight ? kBumpScale : 0.0f, 0.0f, 0.0f, 0.0f };
+                m_device->SetPixelShaderConstantF(5, bump, 1);
                 m_device->SetTexture(0, s.diffuse  ? s.diffuse  : m_def_white);
                 m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
                 m_device->SetTexture(2, s.specular ? s.specular : m_def_black);

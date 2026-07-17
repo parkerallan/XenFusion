@@ -200,6 +200,32 @@ unsigned int ClassifyAlpha(const std::string& absPng)
     return spak::kAlphaBlend;
 }
 
+// Does a normal map's alpha carry a height field (bump offset, 0.5 = neutral)?
+// Mirrors the editor's check: only if the alpha actually varies — a normal map
+// without an alpha channel (stb reports the file's channel count) or with a
+// blank one carries no relief.
+bool NormalAlphaHasHeight(const std::string& absPng)
+{
+    int w = 0, h = 0, ch = 0;
+    unsigned char* px = stbi_load(absPng.c_str(), &w, &h, &ch, 4);
+    if (!px) return false;
+    bool varies = false;
+    if (ch == 4)
+    {
+        unsigned char amin = 255, amax = 0;
+        const int total = w * h;
+        for (int i = 0; i < total; ++i)
+        {
+            unsigned char a = px[i * 4 + 3];
+            if (a < amin) amin = a;
+            if (a > amax) amax = a;
+        }
+        varies = (amax - amin) >= 8;
+    }
+    stbi_image_free(px);
+    return varies;
+}
+
 // ---- entries + writer -----------------------------------------------------
 struct Entry
 {
@@ -315,6 +341,8 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
             if (subHash[i * 3 + s] != 0) ++texTotal;
             if (s == 0)
                 subAlpha[i] = ClassifyAlpha(texAbs);
+            if (s == 1 && NormalAlphaHasHeight(texAbs))
+                subAlpha[i] |= spak::kAlphaHeightBit; // bump offset from the normal's alpha
         }
     }
 
