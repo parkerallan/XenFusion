@@ -30,13 +30,25 @@ void __cdecl main()
         return;
     }
 
-    // Vsync (PresentationInterval ONE) paces us to ~60fps; use a fixed timestep
-    // for the animated custom shaders (gTime) rather than a wall clock.
-    const float dt = 1.0f / 60.0f;
+    // Real per-frame delta from the CPU timebase — the same wall-clock dt the
+    // editor uses (QueryPerformanceCounter). We can't assume vsync paces us to
+    // 60fps: Xenia (and an uncapped console) present faster, and a fixed 1/60
+    // would then advance animated shaders (gTime) and the physics step faster
+    // than real time. First frame / hitches clamp to 1/60.
+    LARGE_INTEGER qpcFreq, qpcLast, qpcNow;
+    QueryPerformanceFrequency(&qpcFreq);
+    QueryPerformanceCounter(&qpcLast);
     for (;;)
     {
         if (renderer.BeginFrame())
         {
+            QueryPerformanceCounter(&qpcNow);
+            float dt = (float)((double)(qpcNow.QuadPart - qpcLast.QuadPart) /
+                               (double)qpcFreq.QuadPart);
+            qpcLast = qpcNow;
+            if (dt < 0.0f || dt > 0.25f)
+                dt = 1.0f / 60.0f; // first frame / hitch
+
             scene.Render(dt);
             renderer.EndFrame();
         }

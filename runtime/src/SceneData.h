@@ -27,6 +27,23 @@ struct RtAttribute
     float light_intensity;
     float light_range; // "Point Light" only
 
+    // For "Rigid Body" (Bullet). The object transform is the initial pose; scale
+    // stays authored (colliders are sized by phys_size, not the object scale).
+    int   phys_kind;        // 0=Static, 1=Dynamic, 2=Kinematic
+    int   phys_shape;       // 0=Box, 1=Sphere
+    float phys_size[3];     // Box half-extents / Sphere radius (x)
+    float phys_mass;
+    float phys_lin_damping;
+    float phys_ang_damping;
+    float phys_restitution;
+    float phys_friction;
+    bool  phys_gravity;
+    float phys_gravity_scale;
+
+    // For "Trigger Volume" (overlap-report only).
+    int   trig_shape;       // 0=Box, 1=Sphere
+    float trig_size[3];
+
     RtAttribute()
     {
         cam_fov    = 45.0f;
@@ -36,6 +53,18 @@ struct RtAttribute
         light_color[0] = light_color[1] = light_color[2] = 1.0f;
         light_intensity = 1.0f;
         light_range     = 15.0f;
+        phys_kind = 0;
+        phys_shape = 0;
+        phys_size[0] = phys_size[1] = phys_size[2] = 0.5f;
+        phys_mass = 1.0f;
+        phys_lin_damping = 0.0f;
+        phys_ang_damping = 0.0f;
+        phys_restitution = 0.0f;
+        phys_friction = 0.5f;
+        phys_gravity = true;
+        phys_gravity_scale = 1.0f;
+        trig_shape = 0;
+        trig_size[0] = trig_size[1] = trig_size[2] = 0.5f;
     }
 };
 

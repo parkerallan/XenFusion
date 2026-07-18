@@ -33,6 +33,39 @@ namespace
         }
         return t;
     }
+
+    // Read CPU-side collision geometry from a baked GpuMesh by locking its managed
+    // vertex/index buffers (positions = first 3 floats of each MeshVertex). Indices
+    // are only needed for exact (triangle-mesh) colliders. One-time cost at Play.
+    bool ExtractMeshGeometry(GpuMesh* gm, std::vector<float>& pos,
+                             std::vector<unsigned int>& idx, bool wantIndices)
+    {
+        if (!gm || !gm->vb || gm->vertexCount == 0)
+            return false;
+        void* vp = nullptr;
+        if (FAILED(gm->vb->Lock(0, 0, &vp, D3DLOCK_READONLY)))
+            return false;
+        const unsigned char* base = static_cast<const unsigned char*>(vp);
+        pos.resize((std::size_t)gm->vertexCount * 3);
+        for (uint32_t v = 0; v < gm->vertexCount; ++v)
+        {
+            const float* fp = reinterpret_cast<const float*>(base + (std::size_t)v * sizeof(MeshVertex));
+            pos[v * 3 + 0] = fp[0]; pos[v * 3 + 1] = fp[1]; pos[v * 3 + 2] = fp[2];
+        }
+        gm->vb->Unlock();
+
+        if (wantIndices && gm->ib && gm->indexCount > 0)
+        {
+            void* ip = nullptr;
+            if (SUCCEEDED(gm->ib->Lock(0, 0, &ip, D3DLOCK_READONLY)))
+            {
+                const unsigned int* src = static_cast<const unsigned int*>(ip);
+                idx.assign(src, src + gm->indexCount);
+                gm->ib->Unlock();
+            }
+        }
+        return true;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +398,7 @@ void SceneRenderer::RenderUi(EngineState& state)
     std::memset(m_point_col, 0, sizeof(m_point_col));
     m_draw_items.clear();
     m_shader_items.clear();
+    m_phys_debug.clear(); // rebuilt from the scene each frame (authoring wireframes)
     if (SceneFile* scene = state.SelectedScene())
     {
         for (int i = 0; i < (int)scene->objects.size(); ++i)
@@ -409,6 +443,26 @@ void SceneRenderer::RenderUi(EngineState& state)
                     m_point_pos[point_count][3] = 1.0f / (range * range);
                     ++point_count;
                 }
+                else if (a.type == "Rigid Body" || a.type == "Trigger Volume")
+                {
+                    // Collider wireframe, shown always (not just while playing) so
+                    // colliders can be sized against the mesh. Uses the authored
+                    // transform; RenderGpu overrides with the simulated pose while
+                    // playing. Rotation+translation only (collider ignores scale).
+                    const bool trig = (a.type == "Trigger Volume");
+                    PhysDebug pd;
+                    pd.shape = trig ? a.trig_shape : a.phys_shape;
+                    const float* sz = trig ? a.trig_size : a.phys_size;
+                    pd.half[0] = sz[0]; pd.half[1] = sz[1]; pd.half[2] = sz[2];
+                    pd.object_index = i;
+                    pd.trigger = trig;
+                    const float d2r = 3.14159265f / 180.0f;
+                    const D3DMATRIX rot = Multiply(Multiply(RotationX(o.rotation[0] * d2r),
+                                                            RotationY(o.rotation[1] * d2r)),
+                                                   RotationZ(o.rotation[2] * d2r));
+                    pd.base = Multiply(rot, Translation(o.position[0], o.position[1], o.position[2]));
+                    m_phys_debug.push_back(pd);
+                }
             }
 
             // A "//@geometry model" shader takes over the mesh, replacing the
@@ -430,7 +484,32 @@ void SceneRenderer::RenderUi(EngineState& state)
             }
 
             if (!model_path.empty() && !shader_owns_mesh)
-                m_draw_items.push_back({model_path, ComposeWorld(o), selected});
+            {
+                DrawItem di;
+                di.model_path   = model_path;
+                di.world        = ComposeWorld(o);
+                di.selected     = selected;
+                di.object_index = i;
+                di.scale[0] = o.scale[0]; di.scale[1] = o.scale[1]; di.scale[2] = o.scale[2];
+                m_draw_items.push_back(di);
+            }
+        }
+    }
+
+    // Physics preview: build the Bullet world on the Play rising edge, tear it
+    // down on Stop (or when the scene selection goes away). The button that
+    // toggles state.physics_playing is drawn in the viewport overlay below.
+    {
+        SceneFile* pscene = state.SelectedScene();
+        if (state.physics_playing && pscene)
+        {
+            if (!m_phys_on)
+                StartPhysics(*pscene);
+        }
+        else if (m_phys_on)
+        {
+            StopPhysics();
+            state.physics_playing = false;
         }
     }
 
@@ -476,10 +555,15 @@ void SceneRenderer::RenderUi(EngineState& state)
         m_renderRequested = true; // tell RenderGpu to fill it this frame
         HandleCameraInput();      // must follow the Image item (uses IsItemHovered)
 
+        // Play/Stop the physics preview (top-left overlay).
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + 8.0f, p0.y + 8.0f));
+        if (ImGui::Button(state.physics_playing ? "Stop" : "Play"))
+            state.physics_playing = !state.physics_playing;
+
         // Look-through toggle (only offered while the scene has an active camera).
         if (have_cam)
         {
-            ImGui::SetCursorScreenPos(ImVec2(p0.x + 8.0f, p0.y + 8.0f));
+            ImGui::SetCursorScreenPos(ImVec2(p0.x + 8.0f, p0.y + 40.0f));
             ImGui::Checkbox("Camera view", &m_look_through);
         }
 
@@ -606,6 +690,45 @@ void SceneRenderer::RenderGpu(float dt)
         return;
 
     m_time += dt; // drives animated custom shaders (gTime)
+
+    // Physics preview: step Bullet, then override this frame's draw items with the
+    // simulated poses (world = Scale * pose, keeping authored scale). Trigger
+    // enter/exit events go to the Log. Same code the 360 runtime runs.
+    if (m_phys_on)
+    {
+        m_phys.Step(dt);
+        m_phys.ReadPoses(m_phys_poses);
+        for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
+        {
+            const phys::Pose& p = m_phys_poses[pi];
+            D3DMATRIX pose;
+            std::memcpy(&pose.m[0][0], p.matrix, sizeof(float) * 16);
+            for (size_t di = 0; di < m_draw_items.size(); ++di)
+            {
+                if (m_draw_items[di].object_index != p.objectIndex)
+                    continue;
+                const float* s = m_draw_items[di].scale;
+                m_draw_items[di].world = Multiply(Scaling(s[0], s[1], s[2]), pose);
+            }
+        }
+
+        std::vector<phys::TriggerEvent> events;
+        m_phys.DrainTriggerEvents(events);
+        for (size_t ei = 0; ei < events.size(); ++ei)
+        {
+            const phys::TriggerEvent& e = events[ei];
+            const int names = (int)m_phys_names.size();
+            std::string tn = (e.triggerObjectIndex >= 0 && e.triggerObjectIndex < names &&
+                              !m_phys_names[e.triggerObjectIndex].empty())
+                                 ? m_phys_names[e.triggerObjectIndex]
+                                 : ("object " + std::to_string(e.triggerObjectIndex));
+            std::string on = (e.otherObjectIndex >= 0 && e.otherObjectIndex < names &&
+                              !m_phys_names[e.otherObjectIndex].empty())
+                                 ? m_phys_names[e.otherObjectIndex]
+                                 : ("object " + std::to_string(e.otherObjectIndex));
+            applog::Info("Trigger \"" + tn + (e.entered ? "\" entered by \"" : "\" exited by \"") + on + "\"");
+        }
+    }
 
     // Redirect rendering to the offscreen target, remembering the back buffer.
     IDirect3DSurface9* prevRt    = nullptr;
@@ -805,6 +928,48 @@ void SceneRenderer::RenderGpu(float dt)
             m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         }
 
+        // --- Physics collider wireframes (green rigid, cyan trigger) ---
+        // Drawn whenever the scene has colliders — during authoring (from the
+        // authored transform, so you can size them against the mesh) and while
+        // playing (RenderGpu's pose override makes them track the simulation).
+        if (!m_phys_debug.empty())
+        {
+            std::vector<Vertex> lines;
+            lines.reserve(m_phys_debug.size() * 48);
+            for (size_t i = 0; i < m_phys_debug.size(); ++i)
+            {
+                const PhysDebug& pd = m_phys_debug[i];
+                // Simulated pose if this object has one, else the authored base.
+                D3DMATRIX m = pd.base;
+                for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
+                    if (m_phys_poses[pi].objectIndex == pd.object_index)
+                    {
+                        std::memcpy(&m.m[0][0], m_phys_poses[pi].matrix, sizeof(float) * 16);
+                        break;
+                    }
+                const D3DCOLOR col = pd.trigger ? D3DCOLOR_ARGB(255, 90, 200, 230)
+                                                : D3DCOLOR_ARGB(255, 90, 220, 110);
+                AppendColliderWire(pd, m, col, lines);
+            }
+            if (!lines.empty())
+            {
+                D3DMATRIX ident = Identity();
+                m_device->SetVertexShader(nullptr);
+                m_device->SetPixelShader(nullptr);
+                m_device->SetTransform(D3DTS_WORLD, &ident);
+                m_device->SetTransform(D3DTS_VIEW, &m_view);
+                m_device->SetTransform(D3DTS_PROJECTION, &m_proj);
+                m_device->SetRenderState(D3DRS_LIGHTING, FALSE);
+                m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+                m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+                m_device->SetTexture(0, nullptr);
+                m_device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+                m_device->DrawPrimitiveUP(D3DPT_LINELIST, (UINT)(lines.size() / 2),
+                                          lines.data(), sizeof(Vertex));
+            }
+        }
+
         m_device->EndScene();
     }
 
@@ -932,6 +1097,211 @@ void SceneRenderer::BuildGrid()
 
     m_grid.push_back({0.0f, 0.0f, 0.0f, yAxis});
     m_grid.push_back({0.0f, extent * 0.5f, 0.0f, yAxis});
+}
+
+// --- Physics preview ---------------------------------------------------------
+
+void SceneRenderer::StartPhysics(const SceneFile& scene)
+{
+    std::vector<phys::BodyDesc> descs;
+    m_phys_names.assign(scene.objects.size(), std::string());
+
+    // Heap-owned mesh geometry kept alive until Build() copies what it needs.
+    std::vector<std::vector<float>*>        geomPos;
+    std::vector<std::vector<unsigned int>*> geomIdx;
+
+    for (int i = 0; i < (int)scene.objects.size(); ++i)
+    {
+        const SceneObject& o = scene.objects[i];
+        m_phys_names[i] = o.name;
+
+        // The object's 3D Model, used by mesh-shape colliders.
+        std::string model_path;
+        for (const ObjectAttribute& ma : o.attributes)
+            if (ma.type == "3D Model" && !ma.model_path.empty()) { model_path = ma.model_path; break; }
+
+        for (const ObjectAttribute& a : o.attributes)
+        {
+            const bool rigid = (a.type == "Rigid Body");
+            const bool trig  = (a.type == "Trigger Volume");
+            if (!rigid && !trig)
+                continue;
+
+            phys::BodyDesc d;
+            d.objectIndex = i;
+            for (int k = 0; k < 3; ++k) { d.pos[k] = o.position[k]; d.rotEulerDeg[k] = o.rotation[k]; }
+            if (rigid)
+            {
+                d.isTrigger  = false;
+                d.kind       = a.phys_kind;
+                d.shape      = a.phys_shape;
+                for (int k = 0; k < 3; ++k) d.halfExtents[k] = a.phys_size[k];
+                d.mass        = a.phys_mass;
+                d.linDamping  = a.phys_lin_damping;
+                d.angDamping  = a.phys_ang_damping;
+                d.restitution  = a.phys_restitution;
+                d.friction     = a.phys_friction;
+                d.gravity      = a.phys_gravity;
+                d.gravityScale = a.phys_gravity_scale;
+            }
+            else
+            {
+                d.isTrigger = true;
+                d.kind      = phys::BodyDesc::Static;
+                d.shape     = a.trig_shape;
+                for (int k = 0; k < 3; ++k) d.halfExtents[k] = a.trig_size[k];
+            }
+
+            // Mesh colliders: pull CPU geometry from the (baked) GpuMesh.
+            if (d.shape == phys::BodyDesc::MeshConvex || d.shape == phys::BodyDesc::MeshExact)
+            {
+                const bool exact = (d.shape == phys::BodyDesc::MeshExact);
+                GpuMesh* gm = model_path.empty() ? 0 : m_meshes.Get(model_path);
+                std::vector<float>*        pv = new std::vector<float>();
+                std::vector<unsigned int>* iv = new std::vector<unsigned int>();
+                if (ExtractMeshGeometry(gm, *pv, *iv, exact) && !pv->empty())
+                {
+                    // Bake the object's scale into the collision vertices so the
+                    // collider matches the SCALED visual mesh (primitives are sized
+                    // explicitly instead; the body transform carries no scale).
+                    for (std::size_t vi = 0; vi + 2 < pv->size(); vi += 3)
+                    {
+                        (*pv)[vi + 0] *= o.scale[0];
+                        (*pv)[vi + 1] *= o.scale[1];
+                        (*pv)[vi + 2] *= o.scale[2];
+                    }
+                    geomPos.push_back(pv);
+                    geomIdx.push_back(iv);
+                    d.meshVerts     = &(*pv)[0];
+                    d.meshVertCount = (int)(pv->size() / 3);
+                    if (exact && !iv->empty())
+                    {
+                        d.meshIndices    = &(*iv)[0];
+                        d.meshIndexCount = (int)iv->size();
+                    }
+                }
+                else
+                {
+                    delete pv; delete iv; // PhysicsWorld falls back to a box
+                    applog::Warn("Physics: mesh collider on \"" + o.name +
+                                 "\" has no baked mesh; using a box");
+                }
+            }
+
+            descs.push_back(d);
+        }
+    }
+
+    m_phys.Build(descs);
+
+    for (std::size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
+    for (std::size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
+
+    m_phys_poses.clear();
+    m_phys_on = true;
+    applog::Info("Physics: play (" + std::to_string((int)descs.size()) + " bodies)");
+}
+
+void SceneRenderer::StopPhysics()
+{
+    m_phys.Clear();
+    m_phys_poses.clear();
+    m_phys_on = false;
+    applog::Info("Physics: stop");
+    // m_phys_debug is rebuilt from the scene each RenderUi (authoring wireframes).
+}
+
+void SceneRenderer::AppendColliderWire(const PhysDebug& pd, const D3DMATRIX& m,
+                                       D3DCOLOR col, std::vector<Vertex>& out) const
+{
+    // Local point (row vector) * m -> world.
+    struct L
+    {
+        static Vertex P(float x, float y, float z, const D3DMATRIX& m, D3DCOLOR c)
+        {
+            Vertex v;
+            v.x = x * m._11 + y * m._21 + z * m._31 + m._41;
+            v.y = x * m._12 + y * m._22 + z * m._32 + m._42;
+            v.z = x * m._13 + y * m._23 + z * m._33 + m._43;
+            v.color = c;
+            return v;
+        }
+    };
+
+    if (pd.shape >= 4) // Mesh (convex/exact): the mesh itself is the visual
+        return;
+
+    const int seg = 20;
+    const float TAU = 6.28318531f, PI = 3.14159265f;
+
+    if (pd.shape == 1) // Sphere: three axis-aligned circles of radius half[0]
+    {
+        const float r = pd.half[0];
+        for (int plane = 0; plane < 3; ++plane)
+            for (int s = 0; s < seg; ++s)
+            {
+                const float a0 = (float)s / seg * TAU;
+                const float a1 = (float)(s + 1) / seg * TAU;
+                const float c0 = std::cos(a0) * r, s0 = std::sin(a0) * r;
+                const float c1 = std::cos(a1) * r, s1 = std::sin(a1) * r;
+                float p0[3] = {0, 0, 0}, p1[3] = {0, 0, 0};
+                if      (plane == 0) { p0[0] = c0; p0[1] = s0; p1[0] = c1; p1[1] = s1; } // XY
+                else if (plane == 1) { p0[1] = c0; p0[2] = s0; p1[1] = c1; p1[2] = s1; } // YZ
+                else                 { p0[0] = c0; p0[2] = s0; p1[0] = c1; p1[2] = s1; } // XZ
+                out.push_back(L::P(p0[0], p0[1], p0[2], m, col));
+                out.push_back(L::P(p1[0], p1[1], p1[2], m, col));
+            }
+    }
+    else if (pd.shape == 2 || pd.shape == 3) // Capsule / Cylinder (Y-up)
+    {
+        const float r = pd.half[0];   // radius
+        const float h = pd.half[1];   // half-height of the cylindrical section
+        // Two rings (XZ plane) at y = +h and y = -h.
+        for (int ring = 0; ring < 2; ++ring)
+        {
+            const float y = (ring == 0) ? h : -h;
+            for (int s = 0; s < seg; ++s)
+            {
+                const float a0 = (float)s / seg * TAU, a1 = (float)(s + 1) / seg * TAU;
+                out.push_back(L::P(std::cos(a0) * r, y, std::sin(a0) * r, m, col));
+                out.push_back(L::P(std::cos(a1) * r, y, std::sin(a1) * r, m, col));
+            }
+        }
+        // Four vertical connectors.
+        const float dx[4] = {r, -r, 0, 0}, dz[4] = {0, 0, r, -r};
+        for (int i = 0; i < 4; ++i)
+        {
+            out.push_back(L::P(dx[i],  h, dz[i], m, col));
+            out.push_back(L::P(dx[i], -h, dz[i], m, col));
+        }
+        if (pd.shape == 2) // Capsule: hemispherical end caps (XY + ZY arcs)
+        {
+            const int hs = seg / 2;
+            for (int s = 0; s < hs; ++s)
+            {
+                const float a0 = (float)s / hs * PI, a1 = (float)(s + 1) / hs * PI;
+                const float c0 = std::cos(a0) * r, n0 = std::sin(a0) * r;
+                const float c1 = std::cos(a1) * r, n1 = std::sin(a1) * r;
+                out.push_back(L::P(c0,  h + n0, 0, m, col)); out.push_back(L::P(c1,  h + n1, 0, m, col)); // top XY
+                out.push_back(L::P(0,   h + n0, c0, m, col)); out.push_back(L::P(0,   h + n1, c1, m, col)); // top ZY
+                out.push_back(L::P(c0, -h - n0, 0, m, col)); out.push_back(L::P(c1, -h - n1, 0, m, col)); // bot XY
+                out.push_back(L::P(0,  -h - n0, c0, m, col)); out.push_back(L::P(0,  -h - n1, c1, m, col)); // bot ZY
+            }
+        }
+    }
+    else // Box: 12 edges of the half-extent box
+    {
+        const float hx = pd.half[0], hy = pd.half[1], hz = pd.half[2];
+        const float cx[8] = {-hx, hx, hx, -hx, -hx, hx, hx, -hx};
+        const float cy[8] = {-hy, -hy, hy, hy, -hy, -hy, hy, hy};
+        const float cz[8] = {-hz, -hz, -hz, -hz, hz, hz, hz, hz};
+        const int e[12][2] = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
+        for (int i = 0; i < 12; ++i)
+        {
+            out.push_back(L::P(cx[e[i][0]], cy[e[i][0]], cz[e[i][0]], m, col));
+            out.push_back(L::P(cx[e[i][1]], cy[e[i][1]], cz[e[i][1]], m, col));
+        }
+    }
 }
 
 bool SceneRenderer::EnsureTarget(int width, int height)

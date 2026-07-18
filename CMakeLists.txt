@@ -99,6 +99,13 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(assimp)
 
 # ---------------------------------------------------------------------------
+# Bullet Physics (vendored 2.82) — compiled into a static "bullet" target used
+# by the editor's physics preview. The same source is compiled by the Xbox 360
+# runtime (runtime/game360.vcxproj). See third_party/bullet/README.md.
+# ---------------------------------------------------------------------------
+include(${CMAKE_SOURCE_DIR}/CMakeLists.bullet.cmake)
+
+# ---------------------------------------------------------------------------
 # Shaders. The engine ships standard.hlsl next to the exe (below). At runtime it
 # compiles standard.hlsl AND the project's custom shaders into ONE folder that
 # the project owns — <project>/shaders/ — so a shipped game has a complete,
@@ -124,6 +131,7 @@ add_executable(XenFusion
     src/render/Shader.cpp
     src/render/ShaderCache.cpp
     src/render/ShaderCompiler.cpp
+    src/physics/PhysicsWorld.cpp
     src/platform/Dialogs.cpp
     src/project/ProjectIO.cpp
     src/project/SceneJson.cpp
@@ -142,7 +150,7 @@ target_include_directories(XenFusion PRIVATE src third_party)
 # build_run.ps1 during development (the runtime is a sibling of the editor source).
 target_compile_definitions(XenFusion PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
-target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp Ole32 Shell32)
+target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp bullet Ole32 Shell32)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
 set_target_properties(XenFusion PROPERTIES

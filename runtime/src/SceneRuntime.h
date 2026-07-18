@@ -3,6 +3,7 @@
 #include "Content.h"
 #include "SceneData.h"
 #include "StreamCache.h"
+#include "physics/PhysicsWorld.h"
 
 #include <xtl.h>
 
@@ -30,6 +31,8 @@ private:
     {
         std::string model_path;
         D3DMATRIX   world;
+        int         object_index; // for physics pose override
+        float       scale[3];     // authored scale (collider is sized separately)
     };
     struct ShaderItem
     {
@@ -41,6 +44,11 @@ private:
     };
 
     void BuildDrawLists();
+    void BuildPhysics(); // create the Bullet world from Rigid Body / Trigger attributes
+    // Extract CPU collision geometry (positions, + indices for exact) for a mesh
+    // collider straight from the pak's MSH2 blob. Native-endian on the console.
+    bool LoadPakMeshGeometry(const std::string& relPath, std::vector<float>& pos,
+                             std::vector<unsigned int>& idx, bool wantIndices);
     void DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat,
                   bool blendPass); // false = opaque+cutout subsets, true = blend subsets
     void DrawShaderItem(const ShaderItem& item, RtShader& shader, const D3DMATRIX& viewProj);
@@ -100,4 +108,9 @@ private:
     // Streaming: the pak is opened once and driven through the residency cache.
     StreamPak   m_pak;
     StreamCache m_cache;
+
+    // Physics (Bullet) — same wrapper the editor preview uses. Built in Init from
+    // the scene's Rigid Body / Trigger attributes, stepped each Render(dt).
+    phys::PhysicsWorld      m_phys;
+    std::vector<phys::Pose> m_phys_poses;
 };

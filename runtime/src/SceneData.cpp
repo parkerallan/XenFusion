@@ -282,6 +282,40 @@ namespace scenedata
                     at.light_color[2] = NumAt(col, 2, 1.0f);
                     if (lin && lin->type == JValue::Number) at.light_intensity = (float)lin->num;
                     if (rng && rng->type == JValue::Number) at.light_range     = (float)rng->num;
+
+                    // "Rigid Body" / "Trigger Volume" physics fields.
+                    const JValue* pk  = ja.Find("kind");
+                    const JValue* psh = ja.Find("shape");
+                    const JValue* psz = ja.Find("size");
+                    const JValue* pm  = ja.Find("mass");
+                    const JValue* pld = ja.Find("linDamping");
+                    const JValue* pad = ja.Find("angDamping");
+                    const JValue* pre = ja.Find("restitution");
+                    const JValue* pfr = ja.Find("friction");
+                    const JValue* pg  = ja.Find("gravity");
+                    const JValue* pgs = ja.Find("gravityScale");
+                    if (at.type == "Rigid Body")
+                    {
+                        if (pk  && pk->type  == JValue::Number) at.phys_kind  = (int)pk->num;
+                        if (psh && psh->type == JValue::Number) at.phys_shape = (int)psh->num;
+                        at.phys_size[0] = NumAt(psz, 0, at.phys_size[0]);
+                        at.phys_size[1] = NumAt(psz, 1, at.phys_size[1]);
+                        at.phys_size[2] = NumAt(psz, 2, at.phys_size[2]);
+                        if (pm  && pm->type  == JValue::Number) at.phys_mass        = (float)pm->num;
+                        if (pld && pld->type == JValue::Number) at.phys_lin_damping = (float)pld->num;
+                        if (pad && pad->type == JValue::Number) at.phys_ang_damping = (float)pad->num;
+                        if (pre && pre->type == JValue::Number) at.phys_restitution = (float)pre->num;
+                        if (pfr && pfr->type == JValue::Number) at.phys_friction    = (float)pfr->num;
+                        if (pg  && pg->type  == JValue::Bool)   at.phys_gravity     = pg->b;
+                        if (pgs && pgs->type == JValue::Number) at.phys_gravity_scale = (float)pgs->num;
+                    }
+                    else if (at.type == "Trigger Volume")
+                    {
+                        if (psh && psh->type == JValue::Number) at.trig_shape = (int)psh->num;
+                        at.trig_size[0] = NumAt(psz, 0, at.trig_size[0]);
+                        at.trig_size[1] = NumAt(psz, 1, at.trig_size[1]);
+                        at.trig_size[2] = NumAt(psz, 2, at.trig_size[2]);
+                    }
                     o.attributes.push_back(at);
                 }
             }

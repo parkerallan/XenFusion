@@ -205,6 +205,87 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
+        else if (attr.type == "Rigid Body")
+        {
+            bool edited = false, commit = false;
+            const char* kinds = "Static\0Dynamic\0Kinematic\0";
+            if (ImGui::Combo("Body", &attr.phys_kind, kinds)) { edited = commit = true; }
+            const char* shapes = "Box\0Sphere\0Capsule\0Cylinder\0Mesh (convex)\0Mesh (exact)\0";
+            if (ImGui::Combo("Shape", &attr.phys_shape, shapes)) { edited = commit = true; }
+            if (attr.phys_shape == 0) // Box
+            {
+                edited |= ImGui::DragFloat3("Half-extents", attr.phys_size, 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else if (attr.phys_shape == 1) // Sphere
+            {
+                edited |= ImGui::DragFloat("Radius", &attr.phys_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else if (attr.phys_shape == 2 || attr.phys_shape == 3) // Capsule / Cylinder
+            {
+                edited |= ImGui::DragFloat("Radius", &attr.phys_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Half-height", &attr.phys_size[1], 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else // Mesh (convex = 4, exact = 5): geometry comes from the 3D Model
+            {
+                ImGui::TextDisabled("Uses this object's 3D Model mesh.");
+                if (attr.phys_shape == 5 && attr.phys_kind == 1) // exact + dynamic
+                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                                       "Exact mesh is static-only; this body won't move.");
+            }
+            if (attr.phys_kind == 1) // Dynamic
+            {
+                edited |= ImGui::DragFloat("Mass", &attr.phys_mass, 0.05f, 0.001f, 10000.0f, "%.3f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Linear damping",  &attr.phys_lin_damping, 0.005f, 0.0f, 1.0f, "%.3f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Angular damping", &attr.phys_ang_damping, 0.005f, 0.0f, 1.0f, "%.3f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                if (ImGui::Checkbox("Gravity", &attr.phys_gravity)) { edited = commit = true; }
+                if (attr.phys_gravity)
+                {
+                    edited |= ImGui::DragFloat("Gravity scale", &attr.phys_gravity_scale, 0.02f, -10.0f, 10.0f, "%.2f");
+                    commit |= ImGui::IsItemDeactivatedAfterEdit();
+                }
+            }
+            // Contact material: applies to every body (a bouncy floor needs
+            // restitution too; Bullet combines the two bodies' values on contact).
+            edited |= ImGui::DragFloat("Bounciness", &attr.phys_restitution, 0.005f, 0.0f, 1.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Friction", &attr.phys_friction, 0.005f, 0.0f, 2.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
+        else if (attr.type == "Trigger Volume")
+        {
+            ImGui::TextDisabled("Reports overlaps; no physical response.");
+            bool edited = false, commit = false;
+            const char* shapes = "Box\0Sphere\0Capsule\0Cylinder\0";
+            if (ImGui::Combo("Shape", &attr.trig_shape, shapes)) { edited = commit = true; }
+            if (attr.trig_shape == 0) // Box
+            {
+                edited |= ImGui::DragFloat3("Half-extents", attr.trig_size, 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else if (attr.trig_shape == 1) // Sphere
+            {
+                edited |= ImGui::DragFloat("Radius", &attr.trig_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else // Capsule / Cylinder (Y-up): radius + half-height
+            {
+                edited |= ImGui::DragFloat("Radius", &attr.trig_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Half-height", &attr.trig_size[1], 0.02f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
 
         ImGui::PopID();
     }
@@ -245,6 +326,20 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Point Light";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Rigid Body"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Rigid Body";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Trigger Volume"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Trigger Volume";
             obj->attributes.push_back(attr);
             save();
         }

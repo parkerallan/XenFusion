@@ -45,6 +45,24 @@ namespace project
                     if (a.type == "Point Light")
                         ja["range"] = a.light_range;
                 }
+                else if (a.type == "Rigid Body")
+                {
+                    ja["kind"]        = a.phys_kind;
+                    ja["shape"]       = a.phys_shape;
+                    ja["size"]        = {a.phys_size[0], a.phys_size[1], a.phys_size[2]};
+                    ja["mass"]        = a.phys_mass;
+                    ja["linDamping"]  = a.phys_lin_damping;
+                    ja["angDamping"]  = a.phys_ang_damping;
+                    ja["restitution"] = a.phys_restitution;
+                    ja["friction"]    = a.phys_friction;
+                    ja["gravity"]     = a.phys_gravity;
+                    ja["gravityScale"]= a.phys_gravity_scale;
+                }
+                else if (a.type == "Trigger Volume")
+                {
+                    ja["shape"] = a.trig_shape;
+                    ja["size"]  = {a.trig_size[0], a.trig_size[1], a.trig_size[2]};
+                }
                 jo["attributes"].push_back(ja);
             }
             j["objects"].push_back(jo);
@@ -106,6 +124,34 @@ namespace project
                         }
                         a.light_intensity = ja.value("intensity", 1.0f);
                         a.light_range     = ja.value("range", 15.0f);
+
+                        auto readSize = [&](float* dst)
+                        {
+                            if (ja.contains("size") && ja["size"].is_array() && ja["size"].size() == 3)
+                            {
+                                dst[0] = ja["size"][0].get<float>();
+                                dst[1] = ja["size"][1].get<float>();
+                                dst[2] = ja["size"][2].get<float>();
+                            }
+                        };
+                        if (a.type == "Rigid Body")
+                        {
+                            a.phys_kind        = ja.value("kind", 0);
+                            a.phys_shape       = ja.value("shape", 0);
+                            readSize(a.phys_size);
+                            a.phys_mass        = ja.value("mass", 1.0f);
+                            a.phys_lin_damping = ja.value("linDamping", 0.0f);
+                            a.phys_ang_damping = ja.value("angDamping", 0.0f);
+                            a.phys_restitution = ja.value("restitution", 0.0f);
+                            a.phys_friction    = ja.value("friction", 0.5f);
+                            a.phys_gravity     = ja.value("gravity", true);
+                            a.phys_gravity_scale = ja.value("gravityScale", 1.0f);
+                        }
+                        else if (a.type == "Trigger Volume")
+                        {
+                            a.trig_shape = ja.value("shape", 0);
+                            readSize(a.trig_size);
+                        }
                         o.attributes.push_back(a);
                     }
                 }

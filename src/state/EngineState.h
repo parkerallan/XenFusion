@@ -33,6 +33,24 @@ struct ObjectAttribute
     float light_color[3]  = {1.0f, 1.0f, 1.0f};
     float light_intensity = 1.0f;
     float light_range     = 15.0f; // "Point Light" only
+
+    // For "Rigid Body" (simulated by Bullet in the editor preview and on the
+    // console). The object's transform is the initial pose; scale stays authored
+    // (the collider is sized by phys_size below, not the object scale).
+    int   phys_kind        = 0;    // 0=Static, 1=Dynamic, 2=Kinematic
+    int   phys_shape       = 0;    // 0=Box, 1=Sphere
+    float phys_size[3]     = {0.5f, 0.5f, 0.5f}; // Box half-extents / Sphere radius (x)
+    float phys_mass        = 1.0f; // Dynamic only
+    float phys_lin_damping = 0.0f;
+    float phys_ang_damping = 0.0f;
+    float phys_restitution = 0.0f; // bounciness, 0 = dead .. 1 = fully elastic
+    float phys_friction    = 0.5f; // contact friction
+    bool  phys_gravity     = true; // false = this body ignores world gravity
+    float phys_gravity_scale = 1.0f; // world-gravity multiplier (2 = falls faster)
+
+    // For "Trigger Volume" (overlap-report only, no physical response).
+    int   trig_shape       = 0;    // 0=Box, 1=Sphere
+    float trig_size[3]     = {0.5f, 0.5f, 0.5f}; // Box half-extents / Sphere radius (x)
 };
 
 // A single object within a scene. Objects are not files — they live inside a
@@ -115,6 +133,11 @@ struct EngineState
 
     // --- Viewport ---
     float clear_color[4] = {0.094f, 0.094f, 0.106f, 1.0f};
+
+    // Physics preview: when true, the viewport steps the Bullet simulation and
+    // overrides object transforms for rendering (the saved scene is untouched).
+    // Transient — never serialized.
+    bool physics_playing = false;
 
     // --- Toolchain (console build) paths, chosen via the folder picker ---
     std::string toolchain_xdk;      // Xbox 360 SDK (XDK) root -> passed to the build as XEDK

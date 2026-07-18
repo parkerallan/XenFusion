@@ -1,6 +1,7 @@
 #include "SceneRuntime.h"
 #include "Endian.h"
 #include "RtMath.h"
+#include "SpakFormat.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -81,7 +82,142 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
         OutputDebugStringA("scene: failed to load startup scene\n");
 
     BuildDrawLists();
+    BuildPhysics();
     return true;
+}
+
+// Create the Bullet world from the scene's Rigid Body / Trigger attributes. The
+// same neutral descriptors the editor builds, so the console simulates identically.
+bool SceneRuntime::LoadPakMeshGeometry(const std::string& relPath, std::vector<float>& pos,
+                                       std::vector<unsigned int>& idx, bool wantIndices)
+{
+    if (relPath.empty() || !m_pak.IsOpen())
+        return false;
+    const unsigned int hash = spak::NameHash(relPath.c_str());
+    const SpakEntry* e = m_pak.Find(hash);
+    if (!e || e->type != spak::kTypeMesh)
+        return false;
+
+    std::vector<BYTE> blob;
+    if (!m_pak.ReadBlob(e, blob) || blob.size() < spak::kMeshHeaderBytes)
+        return false;
+
+    const unsigned char* p = &blob[0];
+    if (endian::LoadU32BE(p + 0) != spak::kMeshMagic)
+        return false;
+    const unsigned int vcount      = endian::LoadU32BE(p + 4);
+    const unsigned int icount      = endian::LoadU32BE(p + 8);
+    const unsigned int subsetCount = endian::LoadU32BE(p + 12);
+    const size_t subBytes = (size_t)subsetCount * spak::kMeshSubsetBytes;
+    const size_t vbytes   = (size_t)vcount * spak::kMeshVertexBytes;
+    const size_t ibytes   = (size_t)icount * 4;
+    if ((size_t)spak::kMeshHeaderBytes + subBytes + vbytes + ibytes > blob.size())
+        return false;
+    const size_t bufOff = (size_t)spak::kMeshHeaderBytes + subBytes;
+
+    // VB/IB are baked big-endian = native on the console — copy straight out.
+    pos.resize((size_t)vcount * 3);
+    for (unsigned int v = 0; v < vcount; ++v)
+        memcpy(&pos[(size_t)v * 3], p + bufOff + (size_t)v * spak::kMeshVertexBytes, sizeof(float) * 3);
+    if (wantIndices && icount > 0)
+    {
+        idx.resize(icount);
+        memcpy(&idx[0], p + bufOff + vbytes, ibytes);
+    }
+    return true;
+}
+
+void SceneRuntime::BuildPhysics()
+{
+    std::vector<phys::BodyDesc> descs;
+
+    // Heap-owned mesh geometry kept alive until Build() copies what it needs.
+    std::vector<std::vector<float>*>        geomPos;
+    std::vector<std::vector<unsigned int>*> geomIdx;
+
+    for (size_t i = 0; i < m_scene.objects.size(); ++i)
+    {
+        const RtObject& o = m_scene.objects[i];
+
+        // The object's 3D Model, used by mesh-shape colliders.
+        std::string model_path;
+        for (size_t a = 0; a < o.attributes.size(); ++a)
+            if (o.attributes[a].type == "3D Model" && !o.attributes[a].model_path.empty())
+            { model_path = o.attributes[a].model_path; break; }
+
+        for (size_t a = 0; a < o.attributes.size(); ++a)
+        {
+            const RtAttribute& at = o.attributes[a];
+            const bool rigid = (at.type == "Rigid Body");
+            const bool trig  = (at.type == "Trigger Volume");
+            if (!rigid && !trig)
+                continue;
+
+            phys::BodyDesc d;
+            d.objectIndex = (int)i;
+            for (int k = 0; k < 3; ++k) { d.pos[k] = o.position[k]; d.rotEulerDeg[k] = o.rotation[k]; }
+            if (rigid)
+            {
+                d.isTrigger  = false;
+                d.kind       = at.phys_kind;
+                d.shape      = at.phys_shape;
+                for (int k = 0; k < 3; ++k) d.halfExtents[k] = at.phys_size[k];
+                d.mass        = at.phys_mass;
+                d.linDamping  = at.phys_lin_damping;
+                d.angDamping  = at.phys_ang_damping;
+                d.restitution  = at.phys_restitution;
+                d.friction     = at.phys_friction;
+                d.gravity      = at.phys_gravity;
+                d.gravityScale = at.phys_gravity_scale;
+            }
+            else
+            {
+                d.isTrigger = true;
+                d.kind      = phys::BodyDesc::Static;
+                d.shape     = at.trig_shape;
+                for (int k = 0; k < 3; ++k) d.halfExtents[k] = at.trig_size[k];
+            }
+
+            // Mesh colliders: pull CPU geometry from the pak blob.
+            if (d.shape == phys::BodyDesc::MeshConvex || d.shape == phys::BodyDesc::MeshExact)
+            {
+                const bool exact = (d.shape == phys::BodyDesc::MeshExact);
+                std::vector<float>*        pv = new std::vector<float>();
+                std::vector<unsigned int>* iv = new std::vector<unsigned int>();
+                if (LoadPakMeshGeometry(model_path, *pv, *iv, exact) && !pv->empty())
+                {
+                    // Bake the object's scale into the collision vertices so the
+                    // collider matches the SCALED visual mesh (see the editor path).
+                    for (size_t vi = 0; vi + 2 < pv->size(); vi += 3)
+                    {
+                        (*pv)[vi + 0] *= o.scale[0];
+                        (*pv)[vi + 1] *= o.scale[1];
+                        (*pv)[vi + 2] *= o.scale[2];
+                    }
+                    geomPos.push_back(pv);
+                    geomIdx.push_back(iv);
+                    d.meshVerts     = &(*pv)[0];
+                    d.meshVertCount = (int)(pv->size() / 3);
+                    if (exact && !iv->empty())
+                    {
+                        d.meshIndices    = &(*iv)[0];
+                        d.meshIndexCount = (int)iv->size();
+                    }
+                }
+                else
+                {
+                    delete pv; delete iv; // PhysicsWorld falls back to a box
+                }
+            }
+
+            descs.push_back(d);
+        }
+    }
+
+    m_phys.Build(descs);
+
+    for (size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
+    for (size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
 }
 
 // Streamed mesh first (game.spak via the async residency cache); fall back to the
@@ -260,6 +396,8 @@ void SceneRuntime::BuildDrawLists()
             DrawItem di;
             di.model_path = model_path;
             di.world = ComposeWorld(o.position, o.rotation, o.scale);
+            di.object_index = (int)i;
+            for (int k = 0; k < 3; ++k) di.scale[k] = o.scale[k];
             m_draw_items.push_back(di);
         }
     }
@@ -288,6 +426,37 @@ void SceneRuntime::Render(float dt)
     // Register a budgeted batch of finished streaming loads into live resources
     // (the worker thread did the read + decompress off this thread).
     m_cache.Update(8);
+
+    // Physics: step Bullet, then override the draw items whose objects are
+    // simulated (world = Scale * pose). Same code path as the editor preview.
+    if (!m_phys.Empty())
+    {
+        m_phys.Step(dt);
+        m_phys.ReadPoses(m_phys_poses);
+        for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
+        {
+            const phys::Pose& p = m_phys_poses[pi];
+            D3DMATRIX pose;
+            memcpy(&pose.m[0][0], p.matrix, sizeof(float) * 16);
+            for (size_t di = 0; di < m_draw_items.size(); ++di)
+            {
+                if (m_draw_items[di].object_index != p.objectIndex)
+                    continue;
+                const float* s = m_draw_items[di].scale;
+                m_draw_items[di].world = Multiply(Scaling(s[0], s[1], s[2]), pose);
+            }
+        }
+
+        std::vector<phys::TriggerEvent> events;
+        m_phys.DrainTriggerEvents(events);
+        for (size_t ei = 0; ei < events.size(); ++ei)
+        {
+            char buf[128];
+            sprintf(buf, "trigger %d %s object %d\n", events[ei].triggerObjectIndex,
+                    events[ei].entered ? "entered by" : "exited by", events[ei].otherObjectIndex);
+            OutputDebugStringA(buf);
+        }
+    }
 
     // View through the scene's active "Camera" attribute when it has one, else
     // the fixed orbit framing baked at Init (no input on the console either way).

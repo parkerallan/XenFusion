@@ -2,6 +2,7 @@
 
 #include "render/MeshCache.h"
 #include "render/ShaderCache.h"
+#include "physics/PhysicsWorld.h"
 
 #include <d3d9.h>
 
@@ -10,6 +11,7 @@
 #include <vector>
 
 struct EngineState;
+struct SceneFile;
 
 // Standalone scene renderer, owned and driven by the editor's Viewport panel
 // (mirrors the Vulkan engine's SceneViewportRenderer owned by WorkspacePanel).
@@ -48,6 +50,8 @@ private:
         std::string model_path;
         D3DMATRIX   world;
         bool        selected = false;
+        int         object_index = -1;      // for physics pose override
+        float       scale[3] = {1.0f, 1.0f, 1.0f};
     };
 
     // A custom-shader object. Drawn on built-in geometry (quad/volume) at its
@@ -137,6 +141,34 @@ private:
     bool m_gizmo_editing = false; // gizmo drag in progress (commit on release)
 
     std::vector<Vertex> m_grid;
+
+    // --- Physics preview (Bullet) ---
+    // Built on the Play rising edge from the scene's Rigid Body / Trigger
+    // attributes, stepped in RenderGpu; poses override the draw items and the
+    // debug wireframes for the frame. Stopped restores authored transforms
+    // (the scene is never mutated).
+    void StartPhysics(const SceneFile& scene);
+    void StopPhysics();
+
+    struct PhysDebug
+    {
+        int       shape;        // 0=Box, 1=Sphere
+        float     half[3];      // collider half-extents / radius
+        int       object_index; // pose lookup
+        bool      trigger;      // color: rigid vs trigger
+        D3DMATRIX base;         // authored rotation+translation (no scale)
+    };
+
+    // Append the collider's wireframe (box edges / sphere circles), transformed
+    // by m (row-vector rotation+translation), to a fixed-function line list.
+    void AppendColliderWire(const PhysDebug& pd, const D3DMATRIX& m,
+                            D3DCOLOR col, std::vector<Vertex>& out) const;
+
+    phys::PhysicsWorld           m_phys;
+    bool                         m_phys_on = false;
+    std::vector<phys::Pose>      m_phys_poses;
+    std::vector<std::string>     m_phys_names;   // object names, for trigger logs
+    std::vector<PhysDebug>       m_phys_debug;
 
     // Models to draw this frame (captured in RenderUi) + the mesh cache that
     // bakes/loads them.
