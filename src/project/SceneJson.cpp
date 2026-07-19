@@ -38,6 +38,26 @@ namespace project
                     ja["near"]   = a.cam_near;
                     ja["far"]    = a.cam_far;
                     ja["active"] = a.cam_active;
+                    ja["camType"] = a.cam_type;
+                    if (a.cam_type == 1) // Follow
+                    {
+                        ja["followTarget"]    = a.cam_follow_target;
+                        ja["followOffset"]    = {a.cam_follow_offset[0], a.cam_follow_offset[1], a.cam_follow_offset[2]};
+                        ja["followOrbit"]     = {a.cam_follow_orbit[0], a.cam_follow_orbit[1], a.cam_follow_orbit[2]};
+                        ja["followRotOffset"] = {a.cam_follow_rot_offset[0], a.cam_follow_rot_offset[1], a.cam_follow_rot_offset[2]};
+                        ja["followLock"]      = a.cam_follow_lock;
+                        ja["followSmoothing"] = a.cam_follow_smoothing;
+                    }
+                    else if (a.cam_type == 2) // Track
+                    {
+                        json pts = json::array();
+                        for (std::size_t p = 0; p + 2 < a.cam_track_points.size(); p += 3)
+                            pts.push_back({a.cam_track_points[p], a.cam_track_points[p + 1], a.cam_track_points[p + 2]});
+                        ja["trackPoints"]    = pts;
+                        ja["trackSpeed"]     = a.cam_track_speed;
+                        ja["trackAccel"]     = a.cam_track_accel;
+                        ja["trackRotOffset"] = {a.cam_track_rot_offset[0], a.cam_track_rot_offset[1], a.cam_track_rot_offset[2]};
+                    }
                 }
                 else if (a.type == "Directional Light" || a.type == "Point Light")
                 {
@@ -118,6 +138,26 @@ namespace project
                         a.cam_near    = ja.value("near", 0.5f);
                         a.cam_far     = ja.value("far", 100.0f);
                         a.cam_active  = ja.value("active", false);
+                        a.cam_type    = ja.value("camType", 0);
+                        a.cam_follow_target    = ja.value("followTarget", std::string());
+                        a.cam_follow_lock      = ja.value("followLock", false);
+                        a.cam_follow_smoothing = ja.value("followSmoothing", 0.0f);
+                        a.cam_track_speed      = ja.value("trackSpeed", 5.0f);
+                        a.cam_track_accel      = ja.value("trackAccel", 0.0f);
+                        auto readA3 = [&](const char* key, float* dst)
+                        {
+                            if (ja.contains(key) && ja[key].is_array() && ja[key].size() == 3)
+                                for (int k = 0; k < 3; ++k) dst[k] = ja[key][k].get<float>();
+                        };
+                        readA3("followOffset", a.cam_follow_offset);
+                        readA3("followOrbit", a.cam_follow_orbit);
+                        readA3("followRotOffset", a.cam_follow_rot_offset);
+                        readA3("trackRotOffset", a.cam_track_rot_offset);
+                        if (ja.contains("trackPoints") && ja["trackPoints"].is_array())
+                            for (const json& jp : ja["trackPoints"])
+                                if (jp.is_array() && jp.size() == 3)
+                                    for (int k = 0; k < 3; ++k)
+                                        a.cam_track_points.push_back(jp[k].get<float>());
                         if (ja.contains("color") && ja["color"].is_array() && ja["color"].size() == 3)
                         {
                             a.light_color[0] = ja["color"][0].get<float>();

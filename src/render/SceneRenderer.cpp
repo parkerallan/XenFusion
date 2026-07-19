@@ -196,6 +196,25 @@ namespace
         return r;
     }
 
+    // World point -> viewport screen position through a view*proj matrix
+    // (row-vector). False when behind the camera or outside D3D depth [0,1].
+    bool ProjectToScreen(const D3DMATRIX& vp, const float* w,
+                         const ImVec2& mn, const ImVec2& mx, ImVec2& out)
+    {
+        const float cx = w[0]*vp._11 + w[1]*vp._21 + w[2]*vp._31 + vp._41;
+        const float cy = w[0]*vp._12 + w[1]*vp._22 + w[2]*vp._32 + vp._42;
+        const float cz = w[0]*vp._13 + w[1]*vp._23 + w[2]*vp._33 + vp._43;
+        const float cw = w[0]*vp._14 + w[1]*vp._24 + w[2]*vp._34 + vp._44;
+        if (cw <= 0.0001f)
+            return false;
+        const float nz = cz / cw;
+        if (nz < 0.0f || nz > 1.0f)
+            return false;
+        out.x = mn.x + ((cx / cw) * 0.5f + 0.5f) * (mx.x - mn.x);
+        out.y = mn.y + (1.0f - ((cy / cw) * 0.5f + 0.5f)) * (mx.y - mn.y);
+        return true;
+    }
+
     // Transform a point (row vector, w = 1) by a matrix.
     Vec3 TransformPoint(const Vec3& p, const D3DMATRIX& m)
     {
@@ -397,6 +416,16 @@ void SceneRenderer::RenderUi(EngineState& state)
     bool  have_cam = false;
     float cam_pos[3] = {}, cam_rot[3] = {};
     float cam_fov = 45.0f, cam_near = 0.5f, cam_far = 100.0f;
+    const ObjectAttribute* cam_attr = nullptr; // the active camera (Follow/Track params)
+    int   cam_object = -1;
+
+    // Changing the selected object drops any track-point selection/preview.
+    if (state.selected_object != m_last_selected_object)
+    {
+        m_last_selected_object = state.selected_object;
+        state.selected_track_point_index = -1;
+        m_track_preview = false;
+    }
     bool  have_dir = false;
     int   point_count = 0;
     std::memset(m_point_pos, 0, sizeof(m_point_pos));
@@ -424,6 +453,8 @@ void SceneRenderer::RenderUi(EngineState& state)
                 {
                     for (int k = 0; k < 3; ++k) { cam_pos[k] = o.position[k]; cam_rot[k] = o.rotation[k]; }
                     cam_fov = a.cam_fov; cam_near = a.cam_near; cam_far = a.cam_far;
+                    cam_attr = &a;
+                    cam_object = i;
                     have_cam = true;
                 }
                 else if (a.type == "Directional Light" && !have_dir)
@@ -584,23 +615,78 @@ void SceneRenderer::RenderUi(EngineState& state)
         // Camera matrices (also used by RenderGpu, so they stay in sync).
         if (have_cam && m_look_through)
         {
-            // Through the active scene camera: basis from the object's rotation
-            // (same Rot(x,y,z) order as ComposeWorld; rotation 0 looks down +Z),
-            // projection from its fov/near/far — matching the 360 runtime.
+            // Through the active scene camera via the shared resolver (same math
+            // as the 360 runtime). Track advances while the toggle is on and
+            // restarts with it; follow smoothing eases across frames. Live
+            // physics poses (last step) stand in for authored transforms.
+            if (m_cam_key != cam_object)
+            {
+                m_cam_key = cam_object;
+                m_track_dist = m_track_speed = 0.0f;
+                m_follow_smooth.Reset();
+            }
+            auto find_pose = [&](int idx) -> const phys::Pose*
+            {
+                if (!m_phys_on) return nullptr;
+                for (const phys::Pose& p : m_phys_poses)
+                    if (p.objectIndex == idx) return &p;
+                return nullptr;
+            };
+
+            camr::View v;
+            if (const phys::Pose* cp = find_pose(cam_object))
+            {
+                // The camera object itself is simulated: basis from its pose.
+                const float* m = cp->matrix;
+                v.pos[0] = m[12]; v.pos[1] = m[13]; v.pos[2] = m[14];
+                v.fwd[0] = m[8];  v.fwd[1] = m[9];  v.fwd[2] = m[10];
+                v.up[0]  = m[4];  v.up[1]  = m[5];  v.up[2]  = m[6];
+            }
+            else
+                camr::ResolveFixed(cam_pos, cam_rot, v);
+
+            SceneFile* scene = state.SelectedScene();
+            if (cam_attr->cam_type == camr::CamFollow && scene &&
+                !cam_attr->cam_follow_target.empty())
+            {
+                int target = -1;
+                for (int i = 0; i < (int)scene->objects.size(); ++i)
+                    if (scene->objects[i].name == cam_attr->cam_follow_target) { target = i; break; }
+                if (target >= 0)
+                {
+                    float tpos[3];
+                    if (const phys::Pose* tp = find_pose(target))
+                    { tpos[0] = tp->matrix[12]; tpos[1] = tp->matrix[13]; tpos[2] = tp->matrix[14]; }
+                    else
+                        for (int k = 0; k < 3; ++k) tpos[k] = scene->objects[target].position[k];
+                    camr::ResolveFollow(cam_pos, cam_rot, tpos,
+                                        cam_attr->cam_follow_offset, cam_attr->cam_follow_orbit,
+                                        cam_attr->cam_follow_rot_offset, cam_attr->cam_follow_lock, v);
+                    camr::SmoothFollow(v, m_follow_smooth, cam_attr->cam_follow_smoothing,
+                                       ImGui::GetIO().DeltaTime);
+                }
+            }
+            else if (cam_attr->cam_type == camr::CamTrack && cam_attr->cam_track_points.size() >= 6)
+            {
+                const float* pts = cam_attr->cam_track_points.data();
+                const int    n   = (int)(cam_attr->cam_track_points.size() / 3);
+                const float total = camr::TrackTotalLength(pts, n);
+                camr::AdvanceTrack(m_track_dist, m_track_speed, cam_attr->cam_track_speed,
+                                   cam_attr->cam_track_accel, ImGui::GetIO().DeltaTime, total);
+                camr::ResolveTrack(pts, n, m_track_dist, cam_attr->cam_track_rot_offset, v);
+            }
+
             const float d2r = 3.14159265f / 180.0f;
-            const D3DMATRIX rot = Multiply(Multiply(RotationX(cam_rot[0] * d2r),
-                                                    RotationY(cam_rot[1] * d2r)),
-                                           RotationZ(cam_rot[2] * d2r));
-            Vec3 fwd = { rot._31, rot._32, rot._33 };
-            Vec3 up  = { rot._21, rot._22, rot._23 };
-            Vec3 eye = { cam_pos[0], cam_pos[1], cam_pos[2] };
-            m_eye[0] = eye.x; m_eye[1] = eye.y; m_eye[2] = eye.z;
-            m_view = LookAtLH(eye, {eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z}, up);
+            m_eye[0] = v.pos[0]; m_eye[1] = v.pos[1]; m_eye[2] = v.pos[2];
+            m_view = LookAtLH({v.pos[0], v.pos[1], v.pos[2]},
+                              {v.pos[0] + v.fwd[0], v.pos[1] + v.fwd[1], v.pos[2] + v.fwd[2]},
+                              {v.up[0], v.up[1], v.up[2]});
             m_proj = PerspectiveFovLH(cam_fov * d2r, (float)m_width / (float)m_height,
                                       cam_near, cam_far);
         }
         else
         {
+            m_cam_key = -1; // restart track/smoothing next time look-through engages
             Vec3 cdir = { std::cos(m_pitch) * std::sin(m_yaw), std::sin(m_pitch),
                           std::cos(m_pitch) * std::cos(m_yaw) };
             Vec3 cat  = { m_target[0], m_target[1], m_target[2] };
@@ -611,12 +697,136 @@ void SceneRenderer::RenderUi(EngineState& state)
             m_proj = PerspectiveFovLH(3.14159265f / 4.0f, (float)m_width / (float)m_height, 0.1f, 200.0f);
         }
 
-        // Translation gizmo for the selected object.
-        if (SceneObject* sel = state.SelectedObject())
+        // Track camera path editing: when the selected object has a Track
+        // camera, draw its spline + point handles and let a selected point be
+        // gizmo-dragged instead of the object (the Vulkan editor's flow).
+        SceneObject*     sel        = state.SelectedObject();
+        ObjectAttribute* track_attr = nullptr;
+        int              track_attr_index = -1;
+        if (sel)
+            for (int ai = 0; ai < (int)sel->attributes.size(); ++ai)
+                if (sel->attributes[ai].type == "Camera" && sel->attributes[ai].cam_type == camr::CamTrack)
+                { track_attr = &sel->attributes[ai]; track_attr_index = ai; break; }
+
+        int tp_count = track_attr ? (int)(track_attr->cam_track_points.size() / 3) : 0;
+        if (state.selected_track_point_index >= tp_count)
+            state.selected_track_point_index = -1; // point was removed in the Inspector
+        const bool track_point_editing = track_attr && state.selected_track_point_index >= 0;
+
+        if (track_attr && tp_count >= 2)
+        {
+            // Substitute the mid-drag preview point so the spline follows the gizmo.
+            std::vector<float> pts(track_attr->cam_track_points);
+            if (m_track_preview && m_track_preview_object == state.selected_object &&
+                m_track_preview_attr == track_attr_index && m_track_preview_index < tp_count)
+                for (int k = 0; k < 3; ++k)
+                    pts[m_track_preview_index * 3 + k] = m_track_preview_point[k];
+
+            const D3DMATRIX vpm = Multiply(m_view, m_proj);
+            const ImVec2 mn = p0, mx = ImVec2(p0.x + avail.x, p0.y + avail.y);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+
+            // Path spline: 96 segments through the same arc-length sampler the
+            // runtime rides (blue, like the reference editor).
+            const float total = camr::TrackTotalLength(pts.data(), tp_count);
+            const int   kSegs = 96;
+            float prevPos[3], tanUnused[3];
+            camr::SampleTrackAtDistance(pts.data(), tp_count, 0.0f, prevPos, tanUnused);
+            ImVec2 prevScr;
+            bool   prevOk = ProjectToScreen(vpm, prevPos, mn, mx, prevScr);
+            for (int seg = 1; seg <= kSegs; ++seg)
+            {
+                float curPos[3];
+                camr::SampleTrackAtDistance(pts.data(), tp_count, total * (float)seg / (float)kSegs,
+                                            curPos, tanUnused);
+                ImVec2 curScr;
+                const bool curOk = ProjectToScreen(vpm, curPos, mn, mx, curScr);
+                if (prevOk && curOk)
+                    dl->AddLine(prevScr, curScr, IM_COL32(120, 200, 255, 230), 2.0f);
+                prevScr = curScr;
+                prevOk  = curOk;
+            }
+
+            // Point handles: hover within 12px, click to select (unless the
+            // gizmo owns the mouse), 6px filled circle + dark outline.
+            ImGuiIO& io = ImGui::GetIO();
+            const bool over_viewport = io.MousePos.x >= mn.x && io.MousePos.x <= mx.x &&
+                                       io.MousePos.y >= mn.y && io.MousePos.y <= mx.y;
+            const bool gizmo_busy = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
+            int hovered_point = -1;
+            std::vector<ImVec2> scr(tp_count);
+            std::vector<bool>   ok(tp_count);
+            for (int p = 0; p < tp_count; ++p)
+            {
+                ok[p] = ProjectToScreen(vpm, &pts[p * 3], mn, mx, scr[p]);
+                if (ok[p] && hovered_point < 0)
+                {
+                    const float dx = io.MousePos.x - scr[p].x, dy = io.MousePos.y - scr[p].y;
+                    if (dx * dx + dy * dy <= 12.0f * 12.0f)
+                        hovered_point = p;
+                }
+            }
+            if (over_viewport && !gizmo_busy && hovered_point >= 0 &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                state.selected_track_point_index = hovered_point;
+            for (int p = 0; p < tp_count; ++p)
+            {
+                if (!ok[p]) continue;
+                const ImU32 col = (p == state.selected_track_point_index) ? IM_COL32(255, 220, 120, 255)
+                                : (p == hovered_point)                    ? IM_COL32(200, 235, 255, 255)
+                                                                          : IM_COL32(120, 200, 255, 255);
+                dl->AddCircleFilled(scr[p], 6.0f, col, 16);
+                dl->AddCircle(scr[p], 7.5f, IM_COL32(20, 30, 40, 200), 16, 1.5f);
+            }
+        }
+
+        // Translation gizmo: the selected track point when one is picked,
+        // otherwise the selected object.
+        if (sel)
         {
             ImGuizmo::SetOrthographic(false);
             ImGuizmo::SetDrawlist();
             ImGuizmo::SetRect(p0.x, p0.y, avail.x, avail.y);
+        }
+        if (track_point_editing)
+        {
+            const int idx = state.selected_track_point_index;
+            float cur[3];
+            for (int k = 0; k < 3; ++k) cur[k] = track_attr->cam_track_points[idx * 3 + k];
+            if (m_track_preview && m_track_preview_object == state.selected_object &&
+                m_track_preview_attr == track_attr_index && m_track_preview_index == idx)
+                for (int k = 0; k < 3; ++k) cur[k] = m_track_preview_point[k];
+
+            D3DMATRIX pm = Identity();
+            pm._41 = cur[0]; pm._42 = cur[1]; pm._43 = cur[2];
+            ImGuizmo::Manipulate(&m_view.m[0][0], &m_proj.m[0][0],
+                                 ImGuizmo::TRANSLATE, ImGuizmo::WORLD, &pm.m[0][0]);
+            if (ImGuizmo::IsUsing())
+            {
+                // Accumulate into the preview; the scene stays untouched mid-drag.
+                m_track_preview        = true;
+                m_track_preview_object = state.selected_object;
+                m_track_preview_attr   = track_attr_index;
+                m_track_preview_index  = idx;
+                m_track_preview_point[0] = pm._41;
+                m_track_preview_point[1] = pm._42;
+                m_track_preview_point[2] = pm._43;
+            }
+            else if (m_track_preview)
+            {
+                // Drag ended: commit the point once and save the scene.
+                for (int k = 0; k < 3; ++k)
+                    track_attr->cam_track_points[m_track_preview_index * 3 + k] = m_track_preview_point[k];
+                if (SceneFile* s = state.SelectedScene())
+                {
+                    s->dirty = true;
+                    project::SaveScene(*s);
+                }
+                m_track_preview = false;
+            }
+        }
+        else if (sel)
+        {
             D3DMATRIX model = ComposeWorld(*sel);
             ImGuizmo::Manipulate(&m_view.m[0][0], &m_proj.m[0][0],
                                  ImGuizmo::TRANSLATE, ImGuizmo::WORLD, &model.m[0][0]);

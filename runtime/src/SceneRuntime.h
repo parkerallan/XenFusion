@@ -3,6 +3,7 @@
 #include "Content.h"
 #include "SceneData.h"
 #include "StreamCache.h"
+#include "camera/CameraResolve.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
@@ -95,14 +96,22 @@ private:
     float m_target[3];
     float m_eye[3];
 
-    // Active scene camera ("Camera" attribute with active=true, first wins),
-    // captured in BuildDrawLists. Overrides the fixed orbit framing.
+    // Active scene camera ("Camera" attribute with active=true, first wins).
+    // BuildDrawLists records WHICH camera (object/attribute index + target
+    // object index); Render resolves the view per frame through the shared
+    // camera/CameraResolve.h so Follow/Track see live physics/script motion.
     bool  m_has_cam;
-    float m_cam_pos[3];
-    float m_cam_rot[3];
+    int   m_cam_object;      // index into m_scene.objects
+    int   m_cam_attr;        // index into that object's attributes
+    int   m_cam_target;      // follow target object index (-1 = none)
     float m_cam_fov;  // vertical FOV, degrees
     float m_cam_near;
     float m_cam_far;
+
+    // Per-frame camera state: track advancement + follow smoothing.
+    float m_track_dist;
+    float m_track_speed;
+    camr::FollowSmooth m_follow_smooth;
 
     // Scene lights captured in BuildDrawLists — ready-made PS constant payloads
     // (c0 / c6 / c7-c10 / c11-c14), mirroring the editor's SceneRenderer. The

@@ -276,6 +276,40 @@ namespace scenedata
                     if (zn  && zn->type  == JValue::Number) at.cam_near = (float)zn->num;
                     if (zf  && zf->type  == JValue::Number) at.cam_far  = (float)zf->num;
                     if (act && act->type == JValue::Bool)   at.cam_active = act->b;
+                    const JValue* cty = ja.Find("camType");
+                    const JValue* ftg = ja.Find("followTarget");
+                    const JValue* flk = ja.Find("followLock");
+                    const JValue* fsm = ja.Find("followSmoothing");
+                    const JValue* tsp = ja.Find("trackSpeed");
+                    const JValue* tac = ja.Find("trackAccel");
+                    if (cty && cty->type == JValue::Number) at.cam_type = (int)cty->num;
+                    if (ftg && ftg->type == JValue::Str)    at.cam_follow_target = ftg->str;
+                    if (flk && flk->type == JValue::Bool)   at.cam_follow_lock = flk->b;
+                    if (fsm && fsm->type == JValue::Number) at.cam_follow_smoothing = (float)fsm->num;
+                    if (tsp && tsp->type == JValue::Number) at.cam_track_speed = (float)tsp->num;
+                    if (tac && tac->type == JValue::Number) at.cam_track_accel = (float)tac->num;
+                    const JValue* fof = ja.Find("followOffset");
+                    const JValue* fob = ja.Find("followOrbit");
+                    const JValue* fro = ja.Find("followRotOffset");
+                    const JValue* tro = ja.Find("trackRotOffset");
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        at.cam_follow_offset[k]     = NumAt(fof, k, at.cam_follow_offset[k]);
+                        at.cam_follow_orbit[k]      = NumAt(fob, k, at.cam_follow_orbit[k]);
+                        at.cam_follow_rot_offset[k] = NumAt(fro, k, at.cam_follow_rot_offset[k]);
+                        at.cam_track_rot_offset[k]  = NumAt(tro, k, at.cam_track_rot_offset[k]);
+                    }
+                    // trackPoints is an array of [x,y,z] arrays -> flat triplets.
+                    const JValue* tpt = ja.Find("trackPoints");
+                    if (tpt && tpt->type == JValue::Array)
+                        for (size_t tp = 0; tp < tpt->arr.size(); ++tp)
+                        {
+                            const JValue& jp = tpt->arr[tp];
+                            if (jp.type != JValue::Array || jp.arr.size() != 3)
+                                continue;
+                            for (int k = 0; k < 3; ++k)
+                                at.cam_track_points.push_back(NumAt(&jp, k, 0.0f));
+                        }
                     const JValue* col = ja.Find("color");
                     const JValue* lin = ja.Find("intensity");
                     const JValue* rng = ja.Find("range");

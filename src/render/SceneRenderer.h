@@ -2,6 +2,7 @@
 
 #include "render/MeshCache.h"
 #include "render/ShaderCache.h"
+#include "camera/CameraResolve.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
@@ -109,6 +110,24 @@ private:
     // Look-through: view the scene through the active "Camera" attribute
     // instead of the orbit camera (viewport toggle; editor-only state).
     bool m_look_through = false;
+
+    // Follow/Track look-through state (shared resolver camr::*): the track
+    // camera advances while look-through is on and resets with it; follow
+    // smoothing eases across frames. Keyed to the active camera object index
+    // so switching cameras restarts cleanly.
+    int               m_cam_key       = -1;
+    float             m_track_dist    = 0.0f;
+    float             m_track_speed   = 0.0f;
+    camr::FollowSmooth m_follow_smooth;
+
+    // Track-point gizmo: preview-then-commit while dragging a control point of
+    // the selected object's Track camera (mirrors the object gizmo pattern).
+    bool  m_track_preview        = false;
+    int   m_track_preview_object = -1; // object index the preview belongs to
+    int   m_track_preview_attr   = -1; // attribute index of the Track camera
+    int   m_track_preview_index  = -1; // control point index
+    float m_track_preview_point[3] = {0.0f, 0.0f, 0.0f};
+    int   m_last_selected_object = -1; // to reset point selection on change
 
     // Orbit camera.
     float m_yaw       = 0.6f;  // azimuth (radians)

@@ -42,9 +42,10 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     m_target[0] = m_target[1] = m_target[2] = 0.0f;
     m_eye[0] = m_eye[1] = m_eye[2] = 0.0f;
     m_has_cam = false;
-    m_cam_pos[0] = m_cam_pos[1] = m_cam_pos[2] = 0.0f;
-    m_cam_rot[0] = m_cam_rot[1] = m_cam_rot[2] = 0.0f;
+    m_cam_object = m_cam_attr = m_cam_target = -1;
     m_cam_fov = 45.0f; m_cam_near = 0.5f; m_cam_far = 100.0f;
+    m_track_dist = m_track_speed = 0.0f;
+    m_follow_smooth.Reset();
     m_time = 0.0f;
 
     m_content.Init(device, contentRoot);
@@ -399,10 +400,17 @@ void SceneRuntime::BuildDrawLists()
                 shader_path = at.shader_path;
             else if (at.type == "Camera" && at.cam_active && !m_has_cam)
             {
-                for (int k = 0; k < 3; ++k) { m_cam_pos[k] = o.position[k]; m_cam_rot[k] = o.rotation[k]; }
+                // Record which camera; the view itself is resolved per frame in
+                // Render so Follow/Track see live physics/script motion.
+                m_cam_object = (int)i;
+                m_cam_attr   = (int)a;
                 m_cam_fov  = at.cam_fov;
                 m_cam_near = at.cam_near;
                 m_cam_far  = at.cam_far;
+                m_cam_target = -1;
+                if (at.cam_type == camr::CamFollow && !at.cam_follow_target.empty())
+                    for (size_t t = 0; t < m_scene.objects.size(); ++t)
+                        if (m_scene.objects[t].name == at.cam_follow_target) { m_cam_target = (int)t; break; }
                 m_has_cam  = true;
             }
             else if (at.type == "Directional Light" && !have_dir)
@@ -516,17 +524,57 @@ void SceneRuntime::Render(float dt)
     D3DMATRIX view, proj;
     if (m_has_cam)
     {
-        // Basis from the camera object's rotation (same Rot(x,y,z) order as
-        // ComposeWorld; rotation 0 looks down +Z), matching the editor's
-        // look-through view.
+        // Per-frame resolve through the shared camera/CameraResolve.h (the same
+        // math the editor's look-through uses). A simulated pose stands in for
+        // the authored transform when the object has one.
+        const RtObject&    co = m_scene.objects[m_cam_object];
+        const RtAttribute& ca = co.attributes[m_cam_attr];
         const float d2r = kPi / 180.0f;
-        const D3DMATRIX rot = Multiply(Multiply(RotationX(m_cam_rot[0] * d2r),
-                                                RotationY(m_cam_rot[1] * d2r)),
-                                       RotationZ(m_cam_rot[2] * d2r));
-        Vec3 fwd = { rot._31, rot._32, rot._33 };
-        Vec3 up  = { rot._21, rot._22, rot._23 };
-        Vec3 eye = { m_cam_pos[0], m_cam_pos[1], m_cam_pos[2] };
-        Vec3 at  = { eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z };
+
+        const phys::Pose* cam_pose = 0;
+        const phys::Pose* tgt_pose = 0;
+        for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
+        {
+            if (m_phys_poses[pi].objectIndex == m_cam_object) cam_pose = &m_phys_poses[pi];
+            if (m_cam_target >= 0 && m_phys_poses[pi].objectIndex == m_cam_target) tgt_pose = &m_phys_poses[pi];
+        }
+
+        camr::View v;
+        if (cam_pose)
+        {
+            const float* pm = cam_pose->matrix;
+            v.pos[0] = pm[12]; v.pos[1] = pm[13]; v.pos[2] = pm[14];
+            v.fwd[0] = pm[8];  v.fwd[1] = pm[9];  v.fwd[2] = pm[10];
+            v.up[0]  = pm[4];  v.up[1]  = pm[5];  v.up[2]  = pm[6];
+        }
+        else
+            camr::ResolveFixed(co.position, co.rotation, v);
+
+        if (ca.cam_type == camr::CamFollow && m_cam_target >= 0)
+        {
+            float tpos[3];
+            if (tgt_pose)
+            { tpos[0] = tgt_pose->matrix[12]; tpos[1] = tgt_pose->matrix[13]; tpos[2] = tgt_pose->matrix[14]; }
+            else
+                for (int k = 0; k < 3; ++k) tpos[k] = m_scene.objects[m_cam_target].position[k];
+            camr::ResolveFollow(co.position, co.rotation, tpos,
+                                ca.cam_follow_offset, ca.cam_follow_orbit,
+                                ca.cam_follow_rot_offset, ca.cam_follow_lock, v);
+            camr::SmoothFollow(v, m_follow_smooth, ca.cam_follow_smoothing, dt);
+        }
+        else if (ca.cam_type == camr::CamTrack && ca.cam_track_points.size() >= 6)
+        {
+            const float* pts = &ca.cam_track_points[0];
+            const int    n   = (int)(ca.cam_track_points.size() / 3);
+            const float total = camr::TrackTotalLength(pts, n);
+            camr::AdvanceTrack(m_track_dist, m_track_speed, ca.cam_track_speed,
+                               ca.cam_track_accel, dt, total);
+            camr::ResolveTrack(pts, n, m_track_dist, ca.cam_track_rot_offset, v);
+        }
+
+        Vec3 eye = { v.pos[0], v.pos[1], v.pos[2] };
+        Vec3 at  = { eye.x + v.fwd[0], eye.y + v.fwd[1], eye.z + v.fwd[2] };
+        Vec3 up  = { v.up[0], v.up[1], v.up[2] };
         m_eye[0] = eye.x; m_eye[1] = eye.y; m_eye[2] = eye.z;
         view = LookAtLH(eye, at, up);
         proj = PerspectiveFovLH(m_cam_fov * d2r, 16.0f / 9.0f, m_cam_near, m_cam_far);

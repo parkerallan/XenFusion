@@ -28,6 +28,22 @@ struct ObjectAttribute
     float cam_far    = 100.0f;
     bool  cam_active = false;
 
+    // Camera behavior (camr::CamType): 0=Fixed, 1=Follow, 2=Track.
+    // Follow chases a named object's live (physics/script) position; Track
+    // rides a B-spline through world-space points. Resolved by the shared
+    // camera/CameraResolve.h on both targets.
+    int         cam_type = 0;
+    std::string cam_follow_target;                       // object name, same scene
+    float       cam_follow_offset[3] = {0.0f, 2.0f, -5.0f}; // behind (+Z-forward engine) and above
+    float       cam_follow_orbit[3]  = {0.0f, 0.0f, 0.0f};  // yaw/pitch of the offset (z unused)
+    float       cam_follow_rot_offset[3] = {0.0f, 0.0f, 0.0f};
+    bool        cam_follow_lock      = false;            // stay put, only aim at target
+    float       cam_follow_smoothing = 0.0f;             // ease time constant, seconds (0 = snap)
+    std::vector<float> cam_track_points;                 // world-space xyz triplets
+    float       cam_track_speed      = 5.0f;             // units/sec cruise
+    float       cam_track_accel      = 0.0f;             // units/sec^2 ramp (0 = instant)
+    float       cam_track_rot_offset[3] = {0.0f, 0.0f, 0.0f};
+
     // For "Directional Light" / "Point Light" (color * intensity lights the
     // standard material). Directional: direction = object rotation (+Z forward,
     // like the camera), first light in scene order wins. Point: position =
@@ -124,6 +140,11 @@ struct EngineState
     // Selection: an object inside a scene (both -1 = nothing).
     int selected_scene  = -1; // index into scenes
     int selected_object = -1; // index into scenes[selected_scene].objects
+
+    // Selected control point of the selected object's Track camera (-1 = none).
+    // While a point is selected the viewport gizmo moves the point, not the
+    // object. Reset whenever the object selection changes.
+    int selected_track_point_index = -1;
 
     // --- Assets browser ---
     std::filesystem::path assets_cwd;                // current dir, relative to assets/

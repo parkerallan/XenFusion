@@ -21,6 +21,20 @@ struct RtAttribute
     float cam_far;
     bool  cam_active; // at most one per scene: drives the runtime view
 
+    // Camera behavior (camr::CamType): 0=Fixed, 1=Follow, 2=Track. Resolved
+    // per-frame by the shared camera/CameraResolve.h.
+    int         cam_type;
+    std::string cam_follow_target;      // object name, same scene
+    float       cam_follow_offset[3];
+    float       cam_follow_orbit[3];    // yaw/pitch (z unused)
+    float       cam_follow_rot_offset[3];
+    bool        cam_follow_lock;
+    float       cam_follow_smoothing;   // seconds (0 = snap)
+    std::vector<float> cam_track_points; // world-space xyz triplets
+    float       cam_track_speed;
+    float       cam_track_accel;
+    float       cam_track_rot_offset[3];
+
     // For "Directional Light" / "Point Light": color * intensity. Directional
     // direction = object rotation (+Z forward); point position = object
     // position, fading to zero at range.
@@ -51,6 +65,15 @@ struct RtAttribute
         cam_near   = 0.5f;
         cam_far    = 100.0f;
         cam_active = false;
+        cam_type   = 0;
+        cam_follow_offset[0] = 0.0f; cam_follow_offset[1] = 2.0f; cam_follow_offset[2] = -5.0f;
+        cam_follow_orbit[0] = cam_follow_orbit[1] = cam_follow_orbit[2] = 0.0f;
+        cam_follow_rot_offset[0] = cam_follow_rot_offset[1] = cam_follow_rot_offset[2] = 0.0f;
+        cam_follow_lock      = false;
+        cam_follow_smoothing = 0.0f;
+        cam_track_speed      = 5.0f;
+        cam_track_accel      = 0.0f;
+        cam_track_rot_offset[0] = cam_track_rot_offset[1] = cam_track_rot_offset[2] = 0.0f;
         light_color[0] = light_color[1] = light_color[2] = 1.0f;
         light_intensity = 1.0f;
         light_range     = 15.0f;

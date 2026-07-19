@@ -219,6 +219,116 @@ void InspectorPanel::Render(EngineState& state)
                                 oa.cam_active = false;
                 edited = commit = true;
             }
+
+            const char* cam_types = "Fixed\0Follow\0Track\0";
+            if (ImGui::Combo("Type", &attr.cam_type, cam_types))
+            {
+                // Switching to Track seeds a minimal 2-point path at the object.
+                if (attr.cam_type == 2 && attr.cam_track_points.size() < 6)
+                {
+                    attr.cam_track_points.clear();
+                    for (int k = 0; k < 3; ++k) attr.cam_track_points.push_back(obj->position[k]);
+                    attr.cam_track_points.push_back(obj->position[0]);
+                    attr.cam_track_points.push_back(obj->position[1]);
+                    attr.cam_track_points.push_back(obj->position[2] + 10.0f); // ahead (+Z)
+                }
+                edited = commit = true;
+            }
+
+            if (attr.cam_type == 1) // Follow
+            {
+                // Target picker: any other object in this scene by name.
+                const char* current = attr.cam_follow_target.empty()
+                                          ? "(none)" : attr.cam_follow_target.c_str();
+                if (ImGui::BeginCombo("Target", current))
+                {
+                    if (ImGui::Selectable("(none)", attr.cam_follow_target.empty()))
+                    {
+                        attr.cam_follow_target.clear();
+                        edited = commit = true;
+                    }
+                    if (scene)
+                        for (const SceneObject& other : scene->objects)
+                        {
+                            if (other.name == obj->name)
+                                continue; // a camera cannot follow itself
+                            if (ImGui::Selectable(other.name.c_str(),
+                                                  other.name == attr.cam_follow_target))
+                            {
+                                attr.cam_follow_target = other.name;
+                                edited = commit = true;
+                            }
+                        }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::Checkbox("Lock Position", &attr.cam_follow_lock))
+                    edited = commit = true;
+                ImGui::TextDisabled(attr.cam_follow_lock
+                    ? "Stays at its transform + offset, aims at the target."
+                    : "Rides at target + offset; keeps its own rotation.");
+                edited |= ImGui::DragFloat3("Offset", attr.cam_follow_offset, 0.05f);
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                ImGui::BeginDisabled(attr.cam_follow_lock);
+                edited |= ImGui::DragFloat2("Orbit", attr.cam_follow_orbit, 0.5f, -360.0f, 360.0f, "%.2f deg");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                ImGui::EndDisabled();
+                edited |= ImGui::DragFloat3("Rotation Offset", attr.cam_follow_rot_offset, 0.5f, -360.0f, 360.0f, "%.2f deg");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Smoothing", &attr.cam_follow_smoothing, 0.005f, 0.0f, 2.0f, "%.3f s");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                if (attr.cam_follow_smoothing < 0.0f) attr.cam_follow_smoothing = 0.0f;
+            }
+            else if (attr.cam_type == 2) // Track
+            {
+                const int point_count = (int)(attr.cam_track_points.size() / 3);
+                ImGui::Text("Path Points (%d)", point_count);
+                int remove_index = -1;
+                for (int p = 0; p < point_count; ++p)
+                {
+                    ImGui::PushID(p);
+                    if (ImGui::RadioButton("##select", state.selected_track_point_index == p))
+                        state.selected_track_point_index = p;
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(-60.0f);
+                    edited |= ImGui::DragFloat3("##point", &attr.cam_track_points[p * 3], 0.05f);
+                    commit |= ImGui::IsItemDeactivatedAfterEdit();
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(point_count <= 2); // spline needs 2+ points
+                    if (ImGui::SmallButton("X"))
+                        remove_index = p;
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                }
+                if (remove_index >= 0)
+                {
+                    attr.cam_track_points.erase(attr.cam_track_points.begin() + remove_index * 3,
+                                                attr.cam_track_points.begin() + remove_index * 3 + 3);
+                    if (state.selected_track_point_index >= point_count - 1)
+                        state.selected_track_point_index = point_count - 2;
+                    edited = commit = true;
+                }
+                if (ImGui::Button("Add Point"))
+                {
+                    // Append 2 units past the last point along +Z.
+                    const std::size_t n = attr.cam_track_points.size();
+                    float lx = 0.0f, ly = 0.0f, lz = 0.0f;
+                    if (n >= 3) { lx = attr.cam_track_points[n-3]; ly = attr.cam_track_points[n-2]; lz = attr.cam_track_points[n-1]; }
+                    attr.cam_track_points.push_back(lx);
+                    attr.cam_track_points.push_back(ly);
+                    attr.cam_track_points.push_back(lz + 2.0f);
+                    state.selected_track_point_index = point_count;
+                    edited = commit = true;
+                }
+                edited |= ImGui::DragFloat("Speed", &attr.cam_track_speed, 0.05f, 0.0f, 1000.0f, "%.2f u/s");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Acceleration", &attr.cam_track_accel, 0.05f, 0.0f, 1000.0f, "%.2f u/s^2");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat3("Rotation Offset##track", attr.cam_track_rot_offset, 0.5f, -360.0f, 360.0f, "%.2f deg");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                if (attr.cam_track_speed < 0.0f) attr.cam_track_speed = 0.0f;
+                if (attr.cam_track_accel < 0.0f) attr.cam_track_accel = 0.0f;
+            }
+
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
