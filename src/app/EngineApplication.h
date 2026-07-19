@@ -12,6 +12,7 @@
 #include "panels/LogPanel.h"
 #include "panels/PerformancePanel.h"
 #include "panels/EditorPanel.h"
+#include "panels/MapperPanel.h"
 
 #include <windows.h>
 
@@ -64,4 +65,5 @@ private:
     LogPanel         log_panel_;
     PerformancePanel performance_panel_;
     EditorPanel      editor_panel_;
+    MapperPanel      mapper_panel_;
 };

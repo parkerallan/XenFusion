@@ -83,6 +83,7 @@ void SettingsPanel::Render(EngineState& state)
     ImGui::SameLine(); ImGui::Checkbox("Warning", &state.log_show_warning);
     ImGui::Checkbox("Error",   &state.log_show_error);
     ImGui::SameLine(); ImGui::Checkbox("Build",   &state.log_show_build);
+    ImGui::SameLine(); ImGui::Checkbox("Log",     &state.log_show_script);
 
     ImGui::End();
 }

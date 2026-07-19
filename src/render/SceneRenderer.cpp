@@ -10,11 +10,16 @@
 #include "ImGuizmo.h"
 
 #include <windows.h> // GetModuleFileNameW
+#include <Xinput.h>
+#include "input/XInputPoll.h"
+#include "input/ControllerMapping.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <system_error>
 
@@ -513,6 +518,15 @@ void SceneRenderer::RenderUi(EngineState& state)
         }
     }
 
+    // While playing, poll the controller, then overlay keyboard/mouse per the
+    // editor's Mapping panel (state.controller_mapping). Done here in RenderUi
+    // where the ImGui key/mouse state is live; RenderGpu's script Update reads it.
+    if (m_phys_on)
+    {
+        input::PollXInput(m_input);
+        input::ApplyMapping(state.controller_mapping, m_input);
+    }
+
     // No directional light authored: keep the legacy fixed sun — white when the
     // scene has no lights at all (old scenes render unchanged), black when point
     // lights exist (the author owns the lighting; only c0's direction, which
@@ -696,6 +710,8 @@ void SceneRenderer::RenderGpu(float dt)
     // enter/exit events go to the Log. Same code the 360 runtime runs.
     if (m_phys_on)
     {
+        // Input was polled in RenderUi (controller + Mapping-panel keyboard/mouse).
+        m_script.Update(dt); // scripts set impulses/velocity/transforms for this step
         m_phys.Step(dt);
         m_phys.ReadPoses(m_phys_poses);
         for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
@@ -712,22 +728,13 @@ void SceneRenderer::RenderGpu(float dt)
             }
         }
 
+        // Dispatch trigger enter events to scripts (no automatic engine logging —
+        // a script's own on_trigger + log() is the only trigger output).
         std::vector<phys::TriggerEvent> events;
         m_phys.DrainTriggerEvents(events);
         for (size_t ei = 0; ei < events.size(); ++ei)
-        {
-            const phys::TriggerEvent& e = events[ei];
-            const int names = (int)m_phys_names.size();
-            std::string tn = (e.triggerObjectIndex >= 0 && e.triggerObjectIndex < names &&
-                              !m_phys_names[e.triggerObjectIndex].empty())
-                                 ? m_phys_names[e.triggerObjectIndex]
-                                 : ("object " + std::to_string(e.triggerObjectIndex));
-            std::string on = (e.otherObjectIndex >= 0 && e.otherObjectIndex < names &&
-                              !m_phys_names[e.otherObjectIndex].empty())
-                                 ? m_phys_names[e.otherObjectIndex]
-                                 : ("object " + std::to_string(e.otherObjectIndex));
-            applog::Info("Trigger \"" + tn + (e.entered ? "\" entered by \"" : "\" exited by \"") + on + "\"");
-        }
+            if (events[ei].entered)
+                m_script.FireTrigger(events[ei].triggerObjectIndex, events[ei].otherObjectIndex);
     }
 
     // Redirect rendering to the offscreen target, remembering the back buffer.
@@ -1197,18 +1204,59 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
     for (std::size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
     for (std::size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
 
+    // Lua scripts: load each object's .lua and run its on_start.
+    m_script.Begin(&m_phys, this);
+    int scriptCount = 0;
+    for (int i = 0; i < (int)scene.objects.size(); ++i)
+    {
+        const SceneObject& o = scene.objects[i];
+        for (const ObjectAttribute& a : o.attributes)
+        {
+            if (a.type != "Script" || a.script_path.empty())
+                continue;
+            std::ifstream in(m_project_root / a.script_path, std::ios::binary);
+            if (!in) { applog::Error("Script not found: " + a.script_path); continue; }
+            std::ostringstream ss; ss << in.rdbuf();
+            m_script.LoadScript(i, ss.str(),
+                                std::filesystem::path(a.script_path).filename().string());
+            ++scriptCount;
+        }
+    }
+    m_script.Start();
+
     m_phys_poses.clear();
     m_phys_on = true;
-    applog::Info("Physics: play (" + std::to_string((int)descs.size()) + " bodies)");
+    applog::Info("Physics: play (" + std::to_string((int)descs.size()) + " bodies, " +
+                 std::to_string(scriptCount) + " scripts)");
 }
 
 void SceneRenderer::StopPhysics()
 {
+    m_script.Clear();
     m_phys.Clear();
     m_phys_poses.clear();
     m_phys_on = false;
     applog::Info("Physics: stop");
     // m_phys_debug is rebuilt from the scene each RenderUi (authoring wireframes).
+}
+
+// --- script::ScriptHost (editor) ---
+bool  SceneRenderer::InputButton(const char* name) { return m_input.Button(name); }
+float SceneRenderer::InputAxis(const char* name)   { return m_input.Axis(name); }
+void  SceneRenderer::Log(const char* msg)          { applog::Script(msg); }        // [LOG]
+void  SceneRenderer::LogError(const char* msg)     { applog::Error(msg); }          // [ERROR]
+int   SceneRenderer::FindObject(const char* name)
+{
+    for (std::size_t i = 0; i < m_phys_names.size(); ++i)
+        if (m_phys_names[i] == name)
+            return (int)i;
+    return -1;
+}
+const char* SceneRenderer::ObjectName(int index)
+{
+    if (index >= 0 && index < (int)m_phys_names.size())
+        return m_phys_names[index].c_str();
+    return "";
 }
 
 void SceneRenderer::AppendColliderWire(const PhysDebug& pd, const D3DMATRIX& m,

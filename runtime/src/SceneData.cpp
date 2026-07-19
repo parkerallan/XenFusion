@@ -263,9 +263,11 @@ namespace scenedata
                     const JValue* t = ja.Find("type");
                     const JValue* m = ja.Find("model_path");
                     const JValue* s = ja.Find("shader_path");
+                    const JValue* sc = ja.Find("script_path");
                     if (t && t->type == JValue::Str) at.type = t->str;
                     if (m && m->type == JValue::Str) at.model_path = m->str;
                     if (s && s->type == JValue::Str) at.shader_path = s->str;
+                    if (sc && sc->type == JValue::Str) at.script_path = sc->str;
                     const JValue* fov = ja.Find("fov");
                     const JValue* zn  = ja.Find("near");
                     const JValue* zf  = ja.Find("far");

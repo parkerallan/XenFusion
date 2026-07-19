@@ -9,9 +9,10 @@
 
 struct RtAttribute
 {
-    std::string type;        // "3D Model" | "Shader" | "Camera"
+    std::string type;        // "3D Model" | "Shader" | "Camera" | "Script" | ...
     std::string model_path;  // for "3D Model"
     std::string shader_path; // for "Shader"
+    std::string script_path; // for "Script": .lua gameplay script
 
     // For "Camera": the object's transform places/aims it (rotation 0 looks
     // down +Z). Defaults match the old fixed-camera projection.

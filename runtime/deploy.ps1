@@ -44,6 +44,17 @@ Copy-Item $xex (Join-Path $out "default.xex")
 $scenesSrc = Join-Path $Project "scenes"
 if (Test-Path $scenesSrc) { Copy-Item $scenesSrc (Join-Path $out "scenes") -Recurse }
 
+# Gameplay scripts ship loose (Lua source, compiled on load — never .luac, which
+# is endian-specific). Copy every .lua under the project, preserving its path
+# relative to the project so the runtime's game:\<script_path> resolves.
+$projRoot = (Resolve-Path $Project).Path
+Get-ChildItem $Project -Filter *.lua -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    $rel = $_.FullName.Substring($projRoot.Length).TrimStart('\','/')
+    $dst = Join-Path $out $rel
+    New-Item -ItemType Directory -Force (Split-Path -Parent $dst) | Out-Null
+    Copy-Item $_.FullName $dst
+}
+
 # Shaders. Compile every HLSL -> Xenos .cso offline with the XDK's PC-side fxc,
 # and bake each custom shader's //@ render directives into a tiny .dir sidecar.
 # The game ships only .cso + .dir (no HLSL). The runtime loads the .cso and reads

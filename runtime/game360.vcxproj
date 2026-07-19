@@ -36,7 +36,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;$(ProjectDir)..\third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
@@ -48,7 +48,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;$(ProjectDir)..\third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>MaxSpeed</Optimization>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
@@ -68,6 +68,7 @@
     <ClCompile Include="src\StreamCache.cpp" />
     <ClCompile Include="src\stb_impl.cpp" />
     <ClCompile Include="..\src\physics\PhysicsWorld.cpp" />
+    <ClCompile Include="..\src\script\ScriptVM.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\XboxRenderer.h" />
@@ -214,6 +215,37 @@
     <ClCompile Include="../third_party/bullet/src/LinearMath/btQuickprof.cpp" />
     <ClCompile Include="../third_party/bullet/src/LinearMath/btSerializer.cpp" />
     <ClCompile Include="../third_party/bullet/src/LinearMath/btVector3.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Vendored Lua 5.4.7 (curated subset; no io/os/loadlib/init - see third_party/lua/README.md). -->
+    <ClCompile Include="../third_party/lua/src/lapi.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lauxlib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lbaselib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lcode.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lcorolib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lctype.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/ldblib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/ldebug.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/ldo.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/ldump.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lfunc.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lgc.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/llex.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lmathlib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lmem.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lobject.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lopcodes.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lparser.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lstate.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lstring.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lstrlib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/ltable.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/ltablib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/ltm.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lundump.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lutf8lib.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lvm.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
+    <ClCompile Include="../third_party/lua/src/lzio.c"><CompileAs>CompileAsC</CompileAs></ClCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

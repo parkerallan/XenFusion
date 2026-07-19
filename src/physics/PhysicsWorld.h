@@ -31,6 +31,20 @@ namespace phys
         // Enter/exit events for trigger volumes since the previous call.
         void DrainTriggerEvents(std::vector<TriggerEvent>& out);
 
+        // --- Scripting verbs: mutate/query a body by its objectIndex. All are
+        // no-ops / return false if the object has no rigid body. ---
+
+        // Apply an instantaneous central impulse (the jump). Wakes the body.
+        void ApplyImpulse(int objectIndex, float x, float y, float z);
+        // Set / get linear velocity (player movement).
+        void SetLinearVelocity(int objectIndex, float x, float y, float z);
+        bool GetLinearVelocity(int objectIndex, float out[3]) const;
+        // Teleport / drive: set world position + rotation (degrees, X*Y*Z). For a
+        // Kinematic body this is how a script moves it each frame.
+        void SetTransform(int objectIndex, const float pos[3], const float rotDeg[3]);
+        // Current world position of the body.
+        bool GetPosition(int objectIndex, float out[3]) const;
+
         // Destroy the world and all bodies/shapes.
         void Clear();
 

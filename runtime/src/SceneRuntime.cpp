@@ -2,6 +2,7 @@
 #include "Endian.h"
 #include "RtMath.h"
 #include "SpakFormat.h"
+#include "input/XInputPoll.h" // XInput is available via xtl.h (included by the header)
 
 #include <stdio.h>
 #include <string.h>
@@ -83,7 +84,57 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
 
     BuildDrawLists();
     BuildPhysics();
+    BuildScripts();
     return true;
+}
+
+// --- script::ScriptHost (runtime) ---
+bool  SceneRuntime::InputButton(const char* name) { return m_input.Button(name); }
+float SceneRuntime::InputAxis(const char* name)   { return m_input.Axis(name); }
+void  SceneRuntime::Log(const char* msg)
+{
+    OutputDebugStringA("[script] ");
+    OutputDebugStringA(msg);
+    OutputDebugStringA("\n");
+}
+int SceneRuntime::FindObject(const char* name)
+{
+    for (size_t i = 0; i < m_scene.objects.size(); ++i)
+        if (m_scene.objects[i].name == name)
+            return (int)i;
+    return -1;
+}
+const char* SceneRuntime::ObjectName(int index)
+{
+    if (index >= 0 && index < (int)m_scene.objects.size())
+        return m_scene.objects[index].name.c_str();
+    return "";
+}
+
+// Load each object's .lua from the deployed content and run its on_start.
+void SceneRuntime::BuildScripts()
+{
+    m_script.Begin(&m_phys, this);
+    for (size_t i = 0; i < m_scene.objects.size(); ++i)
+    {
+        const RtObject& o = m_scene.objects[i];
+        for (size_t a = 0; a < o.attributes.size(); ++a)
+        {
+            const RtAttribute& at = o.attributes[a];
+            if (at.type != "Script" || at.script_path.empty())
+                continue;
+            // Scripts ship loose (source) — read the whole file from game:\.
+            std::string full = m_content.Resolve(at.script_path);
+            FILE* f = fopen(full.c_str(), "rb");
+            if (!f) { OutputDebugStringA(("script not found: " + at.script_path + "\n").c_str()); continue; }
+            fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+            std::string src;
+            if (n > 0) { src.resize((size_t)n); size_t got = fread(&src[0], 1, (size_t)n, f); src.resize(got); }
+            fclose(f);
+            m_script.LoadScript((int)i, src, at.script_path);
+        }
+    }
+    m_script.Start();
 }
 
 // Create the Bullet world from the scene's Rigid Body / Trigger attributes. The
@@ -427,6 +478,11 @@ void SceneRuntime::Render(float dt)
     // (the worker thread did the read + decompress off this thread).
     m_cache.Update(8);
 
+    // Poll the controller, then run scripts before the physics step so their
+    // impulses/velocity/transforms are integrated this frame (no-op if none).
+    input::PollXInput(m_input);
+    m_script.Update(dt);
+
     // Physics: step Bullet, then override the draw items whose objects are
     // simulated (world = Scale * pose). Same code path as the editor preview.
     if (!m_phys.Empty())
@@ -447,15 +503,12 @@ void SceneRuntime::Render(float dt)
             }
         }
 
+        // Dispatch trigger enter events to scripts (no automatic engine logging).
         std::vector<phys::TriggerEvent> events;
         m_phys.DrainTriggerEvents(events);
         for (size_t ei = 0; ei < events.size(); ++ei)
-        {
-            char buf[128];
-            sprintf(buf, "trigger %d %s object %d\n", events[ei].triggerObjectIndex,
-                    events[ei].entered ? "entered by" : "exited by", events[ei].otherObjectIndex);
-            OutputDebugStringA(buf);
-        }
+            if (events[ei].entered)
+                m_script.FireTrigger(events[ei].triggerObjectIndex, events[ei].otherObjectIndex);
     }
 
     // View through the scene's active "Camera" attribute when it has one, else

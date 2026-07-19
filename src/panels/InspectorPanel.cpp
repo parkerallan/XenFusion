@@ -163,6 +163,41 @@ void InspectorPanel::Render(EngineState& state)
                 ImGui::EndDragDropTarget();
             }
         }
+        else if (attr.type == "Script")
+        {
+            // Read-only path display; set by dragging a .lua from the Assets panel.
+            char buf[260];
+            const std::string shown = attr.script_path.empty() ? "(drag a .lua from Assets)" : attr.script_path;
+            std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##script_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+
+                    if (ext == ".lua")
+                    {
+                        attr.script_path = dropped;
+                        save();
+                    }
+                    else
+                    {
+                        state.AddLog("Not a Lua script: " + dropped, LogLevel::Error);
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::TextDisabled("Runs on_start / on_update(dt) / on_trigger during Play.");
+        }
         else if (attr.type == "Camera")
         {
             // Edits mark the scene dirty every tick; the file is written once,
@@ -305,6 +340,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Shader";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Script"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Script";
             obj->attributes.push_back(attr);
             save();
         }

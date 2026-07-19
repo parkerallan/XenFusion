@@ -31,6 +31,7 @@ namespace project
                 ja["type"]        = a.type;
                 ja["model_path"]  = a.model_path;
                 ja["shader_path"] = a.shader_path;
+                ja["script_path"] = a.script_path;
                 if (a.type == "Camera")
                 {
                     ja["fov"]    = a.cam_fov;
@@ -112,6 +113,7 @@ namespace project
                         a.type        = ja.value("type", std::string("3D Model"));
                         a.model_path  = ja.value("model_path", std::string());
                         a.shader_path = ja.value("shader_path", std::string());
+                        a.script_path = ja.value("script_path", std::string());
                         a.cam_fov     = ja.value("fov", 45.0f);
                         a.cam_near    = ja.value("near", 0.5f);
                         a.cam_far     = ja.value("far", 100.0f);

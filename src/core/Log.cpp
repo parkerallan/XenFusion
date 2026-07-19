@@ -14,7 +14,8 @@ namespace applog
         // shows up when running under a debugger / terminal).
         const char* tag = level == LogLevel::Error   ? "[ERROR]" :
                           level == LogLevel::Warning ? "[WARN] " :
-                          level == LogLevel::Build   ? "[BUILD]" : "[INFO] ";
+                          level == LogLevel::Build   ? "[BUILD]" :
+                          level == LogLevel::Script  ? "[LOG]  " : "[INFO] ";
         std::printf("%s %s\n", tag, text.c_str());
     }
 

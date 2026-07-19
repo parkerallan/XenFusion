@@ -44,17 +44,22 @@ namespace phys
         // Initial world transform for a body: Bullet basis is the transpose of the
         // renderer's row-vector rotation, so a read-back before any step reproduces
         // the authored orientation exactly (no pop at Play).
-        btTransform MakeTransform(const BodyDesc& d)
+        btTransform MakeTransformPR(const float pos[3], const float rotDeg[3])
         {
             float r[3][3];
-            EulerRowVec3x3(d.rotEulerDeg, r);
+            EulerRowVec3x3(rotDeg, r);
             btMatrix3x3 basis(r[0][0], r[1][0], r[2][0],
                               r[0][1], r[1][1], r[2][1],
                               r[0][2], r[1][2], r[2][2]);
             btTransform xf;
             xf.setBasis(basis);
-            xf.setOrigin(btVector3(d.pos[0], d.pos[1], d.pos[2]));
+            xf.setOrigin(btVector3(pos[0], pos[1], pos[2]));
             return xf;
+        }
+
+        btTransform MakeTransform(const BodyDesc& d)
+        {
+            return MakeTransformPR(d.pos, d.rotEulerDeg);
         }
 
         // Override Bullet's default material combine (which MULTIPLIES the two
@@ -122,6 +127,9 @@ namespace phys
         // collision object -> objectIndex (for resolving overlap partners).
         std::map<const btCollisionObject*, int> objIndexOf;
 
+        // objectIndex -> rigid body (for scripting verbs to find a body by index).
+        std::map<int, btRigidBody*> bodyByIndex;
+
         Impl()
             : config(0), dispatcher(0), broadphase(0), solver(0), world(0), ghostCb(0) {}
     };
@@ -163,6 +171,7 @@ namespace phys
         s.readback.clear();
         s.lastOverlap.clear();
         s.objIndexOf.clear();
+        s.bodyByIndex.clear();
 
         delete s.world;      s.world = 0;
         delete s.solver;     s.solver = 0;
@@ -295,6 +304,7 @@ namespace phys
 
             s.rigidBodies.push_back(body);
             s.objIndexOf[body] = d.objectIndex;
+            s.bodyByIndex[d.objectIndex] = body;
             if (d.kind != BodyDesc::Static && !forceStatic)
             {
                 Impl::ReadRec rr; rr.body = body; rr.objectIndex = d.objectIndex;
@@ -373,5 +383,58 @@ namespace phys
             }
             last.swap(current);
         }
+    }
+
+    // --- Scripting verbs -----------------------------------------------------
+
+    void PhysicsWorld::ApplyImpulse(int objectIndex, float x, float y, float z)
+    {
+        std::map<int, btRigidBody*>::iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return;
+        it->second->activate(true);
+        it->second->applyCentralImpulse(btVector3(x, y, z));
+    }
+
+    void PhysicsWorld::SetLinearVelocity(int objectIndex, float x, float y, float z)
+    {
+        std::map<int, btRigidBody*>::iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return;
+        it->second->activate(true);
+        it->second->setLinearVelocity(btVector3(x, y, z));
+    }
+
+    bool PhysicsWorld::GetLinearVelocity(int objectIndex, float out[3]) const
+    {
+        std::map<int, btRigidBody*>::const_iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return false;
+        const btVector3& v = it->second->getLinearVelocity();
+        out[0] = v.x(); out[1] = v.y(); out[2] = v.z();
+        return true;
+    }
+
+    void PhysicsWorld::SetTransform(int objectIndex, const float pos[3], const float rotDeg[3])
+    {
+        std::map<int, btRigidBody*>::iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return;
+        btRigidBody* body = it->second;
+        const btTransform xf = MakeTransformPR(pos, rotDeg);
+        body->setWorldTransform(xf);
+        // Kinematic bodies are driven from their motion state each step, so update
+        // it too (this is how a script continuously moves a kinematic player).
+        if (body->getMotionState())
+            body->getMotionState()->setWorldTransform(xf);
+        body->activate(true);
+        // Teleport semantics: drop residual momentum so it appears, not launches.
+        body->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
+        body->setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
+    }
+
+    bool PhysicsWorld::GetPosition(int objectIndex, float out[3]) const
+    {
+        std::map<int, btRigidBody*>::const_iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return false;
+        const btVector3& o = it->second->getWorldTransform().getOrigin();
+        out[0] = o.x(); out[1] = o.y(); out[2] = o.z();
+        return true;
     }
 }

@@ -9,6 +9,7 @@ enum class LogLevel
     Warning,
     Error,
     Build,
+    Script, // output from a script's log() call — shown as [LOG]
 };
 
 struct LogEntry
@@ -23,10 +24,11 @@ namespace applog
 {
     void Add(LogLevel level, const std::string& text);
 
-    inline void Info (const std::string& s) { Add(LogLevel::Info,    s); }
-    inline void Warn (const std::string& s) { Add(LogLevel::Warning, s); }
-    inline void Error(const std::string& s) { Add(LogLevel::Error,   s); }
-    inline void Build(const std::string& s) { Add(LogLevel::Build,   s); }
+    inline void Info  (const std::string& s) { Add(LogLevel::Info,    s); }
+    inline void Warn  (const std::string& s) { Add(LogLevel::Warning, s); }
+    inline void Error (const std::string& s) { Add(LogLevel::Error,   s); }
+    inline void Build (const std::string& s) { Add(LogLevel::Build,   s); }
+    inline void Script(const std::string& s) { Add(LogLevel::Script,  s); }
 
     const std::vector<LogEntry>& Entries();
     void Clear();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Log.h"
+#include "input/ControllerMapping.h"
 
 #include "imgui.h"
 
@@ -17,6 +18,7 @@ struct ObjectAttribute
     std::string type = "3D Model";
     std::string model_path;  // for "3D Model": path to the model asset
     std::string shader_path; // for "Shader": path to a custom .hlsl asset
+    std::string script_path; // for "Script": path to a .lua gameplay script
 
     // For "Camera". Rotation (0,0,0) looks down +Z; at most one camera per
     // scene is active — it drives the runtime view (defaults match the old
@@ -100,6 +102,7 @@ struct EngineState
     bool show_log_panel       = true;
     bool show_performance_panel = true;
     bool show_editor_panel    = true;
+    bool show_mapper_panel    = false;
     bool show_style_editor    = false;
     bool compile_shaders_requested = false; // compile all project shaders next frame
     bool build_run_requested       = false; // build the .xex + launch it in Xenia
@@ -139,6 +142,10 @@ struct EngineState
     // Transient — never serialized.
     bool physics_playing = false;
 
+    // Editor-only PC keyboard/mouse -> Xbox control mapping, for driving scripts
+    // in the Play preview. Loaded per-project by the Mapping panel.
+    input::ControllerMapping controller_mapping;
+
     // --- Toolchain (console build) paths, chosen via the folder picker ---
     std::string toolchain_xdk;      // Xbox 360 SDK (XDK) root -> passed to the build as XEDK
     std::string toolchain_emulator; // Xenia emulator
@@ -155,6 +162,7 @@ struct EngineState
     bool log_show_warning = true;
     bool log_show_error   = true;
     bool log_show_build   = true;
+    bool log_show_script  = true; // script log() output ([LOG])
 
     void AddLog(const std::string& message, LogLevel level = LogLevel::Info)
     {

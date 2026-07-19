@@ -98,9 +98,9 @@ namespace
     // --- Deferred filesystem action (applied after the grid is drawn) ---
     struct PendingOp
     {
-        enum Type { None, Copy, Delete, Move, NewFolder, NewShader } type = None;
+        enum Type { None, Copy, Delete, Move, NewFolder, NewShader, NewScript } type = None;
         fs::path a; // primary path
-        fs::path b; // destination dir (Move) / parent dir (NewFolder/NewShader)
+        fs::path b; // destination dir (Move) / parent dir (New*)
     };
 
     // Starter template written into a freshly-created custom shader. Uses the
@@ -141,6 +141,34 @@ namespace
         "{\n"
         "    return float4(i.uv, 0.0, 1.0);\n"
         "}\n";
+
+    // Starter written into a freshly-created Lua gameplay script. Attach it via a
+    // "Script" attribute; see DeveloperAPI.md for the full function reference.
+    const char* kNewScriptTemplate =
+        "-- Gameplay script. Attach with a \"Script\" attribute; add a Dynamic\n"
+        "-- \"Rigid Body\" if it should move. See DeveloperAPI.md for all functions.\n"
+        "-- Lifecycle: on_start(), on_update(dt), on_trigger(other).\n"
+        "\n"
+        "function on_start()\n"
+        "    -- Runs once when Play (editor) or the title (console) starts.\n"
+        "    log(\"script started\")\n"
+        "end\n"
+        "\n"
+        "function on_update(dt)\n"
+        "    -- Runs every frame; dt = seconds since the last frame.\n"
+        "    -- Example: move with the left stick / WASD, jump on A / Space.\n"
+        "    -- local vx, vy, vz = self:velocity()\n"
+        "    -- self:set_velocity(input.axis(\"LX\") * 6, vy, -input.axis(\"LY\") * 6)\n"
+        "    -- if input.button(\"A\") and math.abs(vy) < 0.5 then\n"
+        "    --     self:apply_impulse(0, 7, 0)\n"
+        "    -- end\n"
+        "end\n"
+        "\n"
+        "function on_trigger(entrant)\n"
+        "    -- Runs when a Trigger Volume on this object is entered. `entrant` is\n"
+        "    -- the object that entered (name it whatever you like).\n"
+        "    -- if entrant:name() == \"fox\" then log(\"caught the fox\") end\n"
+        "end\n";
     PendingOp g_pending;
     bool      g_open_rename = false;
     fs::path  g_rename_target;
@@ -348,6 +376,8 @@ void AssetsPanel::Render(EngineState& state)
             g_pending = {PendingOp::NewFolder, dir, {}};
         if (ImGui::MenuItem(ICON_FA_FILE " New Shader"))
             g_pending = {PendingOp::NewShader, dir, {}};
+        if (ImGui::MenuItem(ICON_FA_FILE " New Script"))
+            g_pending = {PendingOp::NewScript, dir, {}};
         ImGui::EndPopup();
     }
 
@@ -401,6 +431,15 @@ void AssetsPanel::Render(EngineState& state)
             out << kNewShaderTemplate;
             applog::Info(out ? "Created " + path.filename().string()
                              : "Create shader failed: " + path.filename().string());
+            break;
+        }
+        case PendingOp::NewScript:
+        {
+            const fs::path path = UniqueName(g_pending.a / "NewScript.lua");
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << kNewScriptTemplate;
+            applog::Info(out ? "Created " + path.filename().string()
+                             : "Create script failed: " + path.filename().string());
             break;
         }
         default: break;

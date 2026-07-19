@@ -28,7 +28,8 @@ namespace project
         std::error_code ec;
         const std::string name = root.filename().string();
 
-        for (const char* sub : {"scenes", "assets", "assets/models", "assets/textures", "assets/audio"})
+        for (const char* sub : {"scenes", "assets", "assets/models", "assets/textures",
+                                "assets/audio", "assets/scripts"})
             fs::create_directories(root / sub, ec);
 
         // Manifest.
@@ -75,6 +76,10 @@ namespace project
 
         state.project_root = root;
         state.project_name = ReadProjectManifestName(manifest, manifest.stem().string());
+
+        // Ensure the conventional asset folders exist (idempotent) so older
+        // projects gain assets/scripts for Lua gameplay scripts.
+        fs::create_directories(root / "assets" / "scripts", ec);
 
         LoadScenes(state);
         AddRecent(state, root);

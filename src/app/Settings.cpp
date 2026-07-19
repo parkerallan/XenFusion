@@ -34,6 +34,7 @@ namespace settings
             {"warning", s.log_show_warning},
             {"error",   s.log_show_error},
             {"build",   s.log_show_build},
+            {"script",  s.log_show_script},
         };
         j["toolchain"] = {
             {"xdk",      s.toolchain_xdk},
@@ -82,6 +83,7 @@ namespace settings
             s.log_show_warning = l.value("warning", s.log_show_warning);
             s.log_show_error   = l.value("error",   s.log_show_error);
             s.log_show_build   = l.value("build",   s.log_show_build);
+            s.log_show_script  = l.value("script",  s.log_show_script);
         }
         if (j.contains("toolchain"))
         {

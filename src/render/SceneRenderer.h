@@ -3,6 +3,9 @@
 #include "render/MeshCache.h"
 #include "render/ShaderCache.h"
 #include "physics/PhysicsWorld.h"
+#include "script/ScriptVM.h"
+#include "script/ScriptTypes.h"
+#include "input/InputState.h"
 
 #include <d3d9.h>
 
@@ -25,9 +28,18 @@ struct SceneFile;
 //
 // Rendering goes to a D3DPOOL_DEFAULT render-target texture, so OnDeviceLost()
 // releases it before a device Reset; RenderUi lazily recreates it.
-class SceneRenderer
+class SceneRenderer : public script::ScriptHost
 {
 public:
+    // script::ScriptHost — input is stubbed until the input system lands; log
+    // goes to the editor Log; find resolves a scene object name to its index.
+    bool  InputButton(const char* name);
+    float InputAxis(const char* name);
+    void  Log(const char* msg);
+    void  LogError(const char* msg);
+    int   FindObject(const char* name);
+    const char* ObjectName(int index);
+
     void Initialize(IDirect3DDevice9* device);
     void Shutdown();
     void OnDeviceLost();
@@ -167,8 +179,14 @@ private:
     phys::PhysicsWorld           m_phys;
     bool                         m_phys_on = false;
     std::vector<phys::Pose>      m_phys_poses;
-    std::vector<std::string>     m_phys_names;   // object names, for trigger logs
+    std::vector<std::string>     m_phys_names;   // object names, for trigger logs + find
     std::vector<PhysDebug>       m_phys_debug;
+
+    // Lua scripting: built alongside physics on Play, stepped before m_phys.
+    script::ScriptVM             m_script;
+
+    // Controller + keyboard snapshot, polled each Play frame; read by ScriptHost.
+    input::InputState            m_input;
 
     // Models to draw this frame (captured in RenderUi) + the mesh cache that
     // bakes/loads them.

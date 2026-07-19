@@ -15,6 +15,7 @@ namespace
         case LogLevel::Error:   return "[ERROR] ";
         case LogLevel::Warning: return "[WARN]  ";
         case LogLevel::Build:   return "[BUILD] ";
+        case LogLevel::Script:  return "[LOG]   ";
         default:                return "[INFO]  ";
         }
     }
@@ -26,6 +27,7 @@ namespace
         case LogLevel::Error:   return ImVec4(0.95f, 0.42f, 0.38f, 1.0f);
         case LogLevel::Warning: return ImVec4(0.95f, 0.75f, 0.25f, 1.0f);
         case LogLevel::Build:   return ImVec4(0.45f, 0.72f, 1.00f, 1.0f);
+        case LogLevel::Script:  return ImVec4(0.55f, 0.85f, 0.65f, 1.0f);
         default:                return ImGui::GetStyleColorVec4(ImGuiCol_Text);
         }
     }
@@ -37,6 +39,7 @@ namespace
         case LogLevel::Error:   return s.log_show_error;
         case LogLevel::Warning: return s.log_show_warning;
         case LogLevel::Build:   return s.log_show_build;
+        case LogLevel::Script:  return s.log_show_script;
         default:                return s.log_show_info;
         }
     }
