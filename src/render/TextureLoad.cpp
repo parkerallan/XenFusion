@@ -142,4 +142,58 @@ namespace mesh
         stbi_image_free(pixels);
         return tex;
     }
+
+    IDirect3DCubeTexture9* LoadEnvCube(IDirect3DDevice9* device, const std::filesystem::path& dir)
+    {
+        if (!device)
+            return nullptr;
+
+        // Face order matches D3DCUBEMAP_FACE_POSITIVE_X .. NEGATIVE_Z.
+        static const char* kFaces[6] =
+            { "env_px.png", "env_nx.png", "env_py.png", "env_ny.png", "env_pz.png", "env_nz.png" };
+
+        unsigned char* pixels[6] = {};
+        int size = 0;
+        for (int f = 0; f < 6; ++f)
+        {
+            int w = 0, h = 0, ch = 0;
+            pixels[f] = stbi_load((dir / kFaces[f]).string().c_str(), &w, &h, &ch, 4);
+            if (!pixels[f] || w != h || (size != 0 && w != size))
+            {
+                for (int k = 0; k <= f; ++k) stbi_image_free(pixels[k]);
+                return nullptr; // missing or mismatched face -> no env map
+            }
+            size = w;
+        }
+
+        IDirect3DCubeTexture9* cube = nullptr;
+        if (FAILED(device->CreateCubeTexture((UINT)size, 1, 0, D3DFMT_A8R8G8B8,
+                                             D3DPOOL_MANAGED, &cube, nullptr)))
+        {
+            for (int f = 0; f < 6; ++f) stbi_image_free(pixels[f]);
+            return nullptr;
+        }
+        for (int f = 0; f < 6; ++f)
+        {
+            D3DLOCKED_RECT rect;
+            if (SUCCEEDED(cube->LockRect((D3DCUBEMAP_FACES)f, 0, &rect, nullptr, 0)))
+            {
+                for (int y = 0; y < size; ++y)
+                {
+                    unsigned char*       dst = static_cast<unsigned char*>(rect.pBits) + (size_t)y * rect.Pitch;
+                    const unsigned char* src = pixels[f] + (size_t)y * size * 4;
+                    for (int x = 0; x < size; ++x)
+                    {
+                        dst[x * 4 + 0] = src[x * 4 + 2]; // B
+                        dst[x * 4 + 1] = src[x * 4 + 1]; // G
+                        dst[x * 4 + 2] = src[x * 4 + 0]; // R
+                        dst[x * 4 + 3] = src[x * 4 + 3]; // A
+                    }
+                }
+                cube->UnlockRect((D3DCUBEMAP_FACES)f, 0);
+            }
+            stbi_image_free(pixels[f]);
+        }
+        return cube;
+    }
 }

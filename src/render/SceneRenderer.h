@@ -175,7 +175,20 @@ private:
     IDirect3DVertexDeclaration9* m_mesh_decl = nullptr;
     IDirect3DTexture9*           m_def_white  = nullptr; // default diffuse
     IDirect3DTexture9*           m_def_normal = nullptr; // default flat normal
-    IDirect3DTexture9*           m_def_black  = nullptr; // default specular
+    IDirect3DTexture9*           m_def_black  = nullptr; // default specular / emissive / metallic
+    IDirect3DCubeTexture9*       m_def_envcube = nullptr; // black cube: env fallback
+    IDirect3DCubeTexture9*       m_env         = nullptr; // static env map (assets/env), fallback
+
+    // Dynamic environment capture: each frame the scene is rendered into this
+    // small cube from the first metallic object's position, so metal reflects
+    // the ACTUAL scene (objects, lit walls) rather than a painted sky.
+    IDirect3DCubeTexture9*       m_env_dyn       = nullptr; // D3DPOOL_DEFAULT (device-lost aware)
+    IDirect3DSurface9*           m_env_dyn_depth = nullptr;
+    bool                         m_env_captured  = false;   // captured this frame -> bind m_env_dyn
+    // One cube face of the capture: a reduced scene pass (models only — no
+    // grid/gizmos/outlines/post) from the metal object's point of view.
+    void DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj,
+                         const float eye[3], int skip_object);
     std::filesystem::path        m_standard_src;         // <exe>/standard.hlsl (engine source)
     std::filesystem::path        m_project_root;         // compiled shaders live in <root>/shaders
 

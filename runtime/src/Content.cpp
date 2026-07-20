@@ -68,6 +68,7 @@ void RtMesh::Release()
     for (size_t i = 0; i < subsets.size(); ++i)
     {
         RtSubset& s = subsets[i];
+        if (s.metallic) { s.metallic->Release(); s.metallic = NULL; }
         if (s.emissive) { s.emissive->Release(); s.emissive = NULL; }
         if (s.specular) { s.specular->Release(); s.specular = NULL; }
         if (s.normal)   { s.normal->Release();   s.normal = NULL; }
@@ -92,12 +93,12 @@ void RtShader::Release()
 // Layout: MeshHeader { char magic[4]; u32 version; u32 vertexCount; u32 indexCount }
 // then vertexCount * 44-byte vertices, indexCount * u32 indices, then a u32
 // subset count followed by one record per material: u32 indexStart, u32
-// indexCount, then four length-prefixed strings (diffuse / normal / specular /
-// emissive, relative to the .mesh).
+// indexCount, then five length-prefixed strings (diffuse / normal / specular /
+// emissive / metallic, relative to the .mesh).
 // ---------------------------------------------------------------------------
 namespace
 {
-    const unsigned int kMeshVersion = 5;   // must match the editor's MESH_VERSION
+    const unsigned int kMeshVersion = 6;   // must match the editor's MESH_VERSION
     const unsigned int kVertexBytes = 44;  // MeshVertex
 
     // Advance a cursor over a length-prefixed (u32 LE) string.
@@ -288,6 +289,7 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         std::string texNormal  = ReadStr(p, size, off);
         std::string texSpec    = ReadStr(p, size, off);
         std::string texEmis    = ReadStr(p, size, off);
+        std::string texMetal   = ReadStr(p, size, off);
         if (!texDiffuse.empty())
         {
             const std::string dabs = Join(meshDir, texDiffuse);
@@ -302,6 +304,7 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         }
         if (!texSpec.empty())   sub.specular = LoadTexture(m_device, Join(meshDir, texSpec));
         if (!texEmis.empty())   sub.emissive = LoadTexture(m_device, Join(meshDir, texEmis));
+        if (!texMetal.empty())  sub.metallic = LoadTexture(m_device, Join(meshDir, texMetal));
         mesh.subsets.push_back(sub);
     }
 
@@ -500,6 +503,58 @@ bool Content::LoadStandard()
         return true;
     Log("shader: standard failed", "");
     return false;
+}
+
+IDirect3DCubeTexture9* Content::LoadEnvCube()
+{
+    if (!m_device)
+        return NULL;
+
+    // Face order matches D3DCUBEMAP_FACE_POSITIVE_X .. NEGATIVE_Z. Faces load
+    // as plain 2D textures (D3DX handles decode + tiling), then D3DX copies
+    // each into the cube face, converting as needed.
+    static const char* kFaces[6] =
+        { "env_px.png", "env_nx.png", "env_py.png", "env_ny.png", "env_pz.png", "env_nz.png" };
+
+    IDirect3DTexture9* faces[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+    unsigned int size = 0;
+    for (int f = 0; f < 6; ++f)
+    {
+        faces[f] = LoadTexture(m_device, Resolve("assets\\env\\" + std::string(kFaces[f])));
+        if (!faces[f])
+        {
+            for (int k = 0; k < f; ++k) faces[k]->Release();
+            return NULL; // no/partial env set -> no reflections
+        }
+        D3DSURFACE_DESC d;
+        faces[f]->GetLevelDesc(0, &d);
+        if (d.Width != d.Height || (size != 0 && d.Width != size))
+        {
+            for (int k = 0; k <= f; ++k) faces[k]->Release();
+            Log("env: face size mismatch ", kFaces[f]);
+            return NULL;
+        }
+        size = d.Width;
+    }
+
+    IDirect3DCubeTexture9* cube = NULL;
+    if (SUCCEEDED(m_device->CreateCubeTexture(size, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cube, NULL)))
+    {
+        for (int f = 0; f < 6; ++f)
+        {
+            IDirect3DSurface9* dst = NULL;
+            IDirect3DSurface9* src = NULL;
+            if (SUCCEEDED(cube->GetCubeMapSurface((D3DCUBEMAP_FACES)f, 0, &dst)) &&
+                SUCCEEDED(faces[f]->GetSurfaceLevel(0, &src)))
+            {
+                D3DXLoadSurfaceFromSurface(dst, NULL, NULL, src, NULL, NULL, D3DX_FILTER_NONE, 0);
+            }
+            if (src) src->Release();
+            if (dst) dst->Release();
+        }
+    }
+    for (int f = 0; f < 6; ++f) faces[f]->Release();
+    return cube;
 }
 
 bool Content::LoadBuiltin(const char* stem, RtShader& out)

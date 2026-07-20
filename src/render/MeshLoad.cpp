@@ -60,6 +60,7 @@ namespace mesh
             ReadStr(in, s.textures.normal);
             ReadStr(in, s.textures.specular);
             ReadStr(in, s.textures.emissive);
+            ReadStr(in, s.textures.metallic);
             if (!in || s.indexStart + s.indexCount > h.indexCount)
                 return false;
             out_subsets.push_back(std::move(s));

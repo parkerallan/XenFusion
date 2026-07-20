@@ -9,7 +9,7 @@
 
 // Current baked-blob version. Bumped whenever MeshVertex or the material
 // section changes so stale blobs are re-baked from their source.
-constexpr uint32_t MESH_VERSION = 5;
+constexpr uint32_t MESH_VERSION = 6;
 
 // Runtime vertex layout: position + normal + tangent + one UV. Tangent is
 // needed for normal mapping. Not FVF-expressible, so meshes are drawn with a
@@ -31,17 +31,19 @@ struct MeshHeader
 };
 // After the header: vertexCount vertices, indexCount uint32 indices, then a
 // uint32 subset count followed by one subset per source material: uint32
-// indexStart, uint32 indexCount, then four length-prefixed strings (diffuse,
-// normal, specular, emissive texture paths relative to the mesh file; empty =
-// absent).
+// indexStart, uint32 indexCount, then five length-prefixed strings (diffuse,
+// normal, specular, emissive, metallic texture paths relative to the mesh
+// file; empty = absent).
 
-// Diffuse / normal / specular / emissive texture references for one material.
+// Diffuse / normal / specular / emissive / metallic texture references for one
+// material.
 struct MeshTextures
 {
     std::string diffuse;
     std::string normal;
     std::string specular;
     std::string emissive;
+    std::string metallic;
 };
 
 // One material's range within a baked mesh: draw indices [indexStart,
@@ -68,6 +70,7 @@ struct GpuSubset
     IDirect3DTexture9* normal   = nullptr;
     IDirect3DTexture9* specular = nullptr;
     IDirect3DTexture9* emissive = nullptr; // null = no glow (black default)
+    IDirect3DTexture9* metallic = nullptr; // null = dielectric (black default)
     AlphaKind          alpha    = AlphaKind::Opaque;
     bool               normalHasHeight = false; // normal map's alpha carries a
                                                 // height field (0.5 = neutral)
@@ -87,6 +90,7 @@ struct GpuMesh
     {
         for (GpuSubset& s : subsets)
         {
+            if (s.metallic) { s.metallic->Release(); s.metallic = nullptr; }
             if (s.emissive) { s.emissive->Release(); s.emissive = nullptr; }
             if (s.specular) { s.specular->Release(); s.specular = nullptr; }
             if (s.normal)   { s.normal->Release();   s.normal = nullptr; }
@@ -123,4 +127,11 @@ namespace mesh
                                    const std::filesystem::path& path,
                                    AlphaKind* out_alpha = nullptr,
                                    bool* out_height = nullptr);
+
+    // Load the project's environment cube map: six square, same-sized face
+    // images env_px/nx/py/ny/pz/nz.png inside `dir`. Metal surfaces reflect it
+    // (standard.hlsl s5). Returns null when any face is missing/mismatched —
+    // the renderer then binds its black default cube (no reflections).
+    IDirect3DCubeTexture9* LoadEnvCube(IDirect3DDevice9* device,
+                                       const std::filesystem::path& dir);
 }

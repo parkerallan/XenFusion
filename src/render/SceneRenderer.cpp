@@ -1,5 +1,6 @@
 #include "render/SceneRenderer.h"
 
+#include "camera/EnvCubeViews.h"
 #include "core/Log.h"
 #include "project/ProjectIO.h"
 #include "render/Shader.h"
@@ -251,7 +252,21 @@ void SceneRenderer::Initialize(IDirect3DDevice9* device)
     // Fallback textures for meshes missing a map.
     m_def_white  = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 255, 255, 255)); // diffuse
     m_def_normal = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 128, 128, 255)); // flat normal (0,0,1)
-    m_def_black  = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 0, 0, 0));       // no specular
+    m_def_black  = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 0, 0, 0));       // no specular / metal
+
+    // Black 1x1 cube: the env-map fallback (metal reflects nothing).
+    if (SUCCEEDED(device->CreateCubeTexture(1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &m_def_envcube, nullptr)))
+    {
+        for (int f = 0; f < 6; ++f)
+        {
+            D3DLOCKED_RECT lr;
+            if (SUCCEEDED(m_def_envcube->LockRect((D3DCUBEMAP_FACES)f, 0, &lr, nullptr, 0)))
+            {
+                *static_cast<DWORD*>(lr.pBits) = D3DCOLOR_ARGB(255, 0, 0, 0);
+                m_def_envcube->UnlockRect((D3DCUBEMAP_FACES)f, 0);
+            }
+        }
+    }
 
     // Unit quad (XY plane, uv 0..1, v=0 at the bottom) for standalone shaders.
     // MeshVertex layout: pos, normal, tangent, uv. MANAGED so it survives resets.
@@ -371,6 +386,8 @@ void SceneRenderer::Shutdown()
     if (m_cube_vb)    { m_cube_vb->Release();    m_cube_vb = nullptr; }
     if (m_quad_ib)    { m_quad_ib->Release();    m_quad_ib = nullptr; }
     if (m_quad_vb)    { m_quad_vb->Release();    m_quad_vb = nullptr; }
+    if (m_env)         { m_env->Release();         m_env = nullptr; }
+    if (m_def_envcube) { m_def_envcube->Release(); m_def_envcube = nullptr; }
     if (m_def_black)  { m_def_black->Release();  m_def_black = nullptr; }
     if (m_def_normal) { m_def_normal->Release(); m_def_normal = nullptr; }
     if (m_def_white)  { m_def_white->Release();  m_def_white = nullptr; }
@@ -391,6 +408,8 @@ void SceneRenderer::Shutdown()
 
 void SceneRenderer::OnDeviceLost()
 {
+    if (m_env_dyn_depth) { m_env_dyn_depth->Release(); m_env_dyn_depth = nullptr; }
+    if (m_env_dyn)       { m_env_dyn->Release();       m_env_dyn = nullptr; }
     if (m_bloomBSurf) { m_bloomBSurf->Release(); m_bloomBSurf = nullptr; }
     if (m_bloomB)     { m_bloomB->Release();     m_bloomB = nullptr; }
     if (m_bloomASurf) { m_bloomASurf->Release(); m_bloomASurf = nullptr; }
@@ -434,6 +453,9 @@ void SceneRenderer::RenderUi(EngineState& state)
     {
         m_project_root = state.project_root;
         LoadStandardShader();
+        // Project environment cube map (metal reflections); optional.
+        if (m_env) { m_env->Release(); m_env = nullptr; }
+        m_env = mesh::LoadEnvCube(m_device, m_project_root / "assets" / "env");
     }
     m_meshes.SetProjectRoot(state.project_root);  // clears cache on project change
     m_shaders.SetProjectRoot(state.project_root);
@@ -988,6 +1010,64 @@ void SceneRenderer::RenderGpu(float dt)
     m_device->GetRenderTarget(0, &prevRt);
     m_device->GetDepthStencilSurface(&prevDepth);
 
+    // --- Dynamic environment capture (metal reflections) ---
+    // Metal reflects the ACTUAL scene: render it into a small cube map from the
+    // first metallic object's position; the main pass samples it on s5. The
+    // captured object itself is skipped (a mirror can't mirror itself).
+    m_env_captured = false;
+    {
+        const UINT kEnvSize = 128;
+        int   env_obj = -1;
+        float env_pos[3] = { 0.0f, 0.0f, 0.0f };
+        for (const DrawItem& item : m_draw_items)
+        {
+            GpuMesh* gm = m_meshes.Get(item.model_path);
+            if (!gm) continue;
+            bool metal = false;
+            for (const GpuSubset& s : gm->subsets)
+                if (s.metallic) { metal = true; break; }
+            if (!metal) continue;
+            env_obj = item.object_index;
+            env_pos[0] = item.world._41; env_pos[1] = item.world._42; env_pos[2] = item.world._43;
+            break;
+        }
+        if (env_obj != -1 && m_vs && m_ps && m_mesh_decl)
+        {
+            if (!m_env_dyn)
+                m_device->CreateCubeTexture(kEnvSize, 1, D3DUSAGE_RENDERTARGET,
+                                            D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_env_dyn, nullptr);
+            if (!m_env_dyn_depth)
+                m_device->CreateDepthStencilSurface(kEnvSize, kEnvSize, D3DFMT_D16,
+                                                    D3DMULTISAMPLE_NONE, 0, TRUE, &m_env_dyn_depth, nullptr);
+            if (m_env_dyn && m_env_dyn_depth && SUCCEEDED(m_device->BeginScene()))
+            {
+                float pm[16];
+                envcube::FaceProj(0.2f, 100.0f, pm);
+                D3DMATRIX proj;
+                memcpy(&proj, pm, sizeof(pm));
+                for (int f = 0; f < 6; ++f)
+                {
+                    IDirect3DSurface9* face = nullptr;
+                    if (FAILED(m_env_dyn->GetCubeMapSurface((D3DCUBEMAP_FACES)f, 0, &face)))
+                        continue;
+                    m_device->SetRenderTarget(0, face);
+                    m_device->SetDepthStencilSurface(m_env_dyn_depth);
+                    D3DVIEWPORT9 evp = { 0, 0, kEnvSize, kEnvSize, 0.0f, 1.0f };
+                    m_device->SetViewport(&evp);
+                    m_device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, m_background, 1.0f, 0);
+                    float vm[16];
+                    envcube::FaceView(f, env_pos, vm);
+                    D3DMATRIX view;
+                    memcpy(&view, vm, sizeof(vm));
+                    DrawSceneForEnv(view, proj, env_pos, env_obj);
+                    face->Release();
+                }
+                m_device->EndScene();
+                m_env_captured = true;
+            }
+        }
+    }
+
     // Render into the multisampled target when available (for alpha-to-coverage);
     // it is resolved into m_rt after EndScene.
     IDirect3DSurface9* sceneRt    = (m_msaa != D3DMULTISAMPLE_NONE) ? m_rtMS    : m_rtSurface;
@@ -1031,20 +1111,30 @@ void SceneRenderer::RenderGpu(float dt)
                                       m_grid.data(), sizeof(Vertex));
         }
 
-        // --- Scene models (shader: diffuse / normal / specular / emissive) ---
+        // --- Scene models (shader: diffuse / normal / specular / emissive /
+        //     metallic + environment cube) ---
         if (!m_draw_items.empty() && m_vs && m_ps && m_mesh_decl)
         {
             m_device->SetVertexDeclaration(m_mesh_decl);
             m_device->SetVertexShader(m_vs);
             m_device->SetPixelShader(m_ps);
             m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
-            for (DWORD s = 0; s < 4; ++s)
+            for (DWORD s = 0; s < 5; ++s)
             {
                 m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
                 m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
                 m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
                 m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
             }
+            // s5 = environment cube (bound once per frame).
+            m_device->SetSamplerState(5, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(5, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(5, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            m_device->SetSamplerState(5, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+            m_device->SetSamplerState(5, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
+            m_device->SetTexture(5, m_env_captured ? (IDirect3DBaseTexture9*)m_env_dyn
+                                  : m_env          ? (IDirect3DBaseTexture9*)m_env
+                                                   : (IDirect3DBaseTexture9*)m_def_envcube);
 
             // Pixel-shader constants: light direction, camera position, ambient.
             const float cam_pos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
@@ -1090,6 +1180,7 @@ void SceneRenderer::RenderGpu(float dt)
                 m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
                 m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
                 m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
+                m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                gm->vertexCount, s.indexStart, s.indexCount / 3);
             };
@@ -1269,6 +1360,99 @@ void SceneRenderer::RenderGpu(float dt)
     m_device->SetDepthStencilSurface(prevDepth);
     if (prevRt)    prevRt->Release();
     if (prevDepth) prevDepth->Release();
+}
+
+// One cube face of the dynamic environment capture: a reduced scene pass —
+// models only, from the metal object's point of view. No grid, gizmos,
+// outlines or post; metal inside a reflection samples the black cube (no
+// recursion) and no glow mask is exported (c15 = 0).
+void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj,
+                                    const float eye[3], int skip_object)
+{
+    const D3DMATRIX vp = Multiply(view, proj);
+
+    m_device->SetVertexDeclaration(m_mesh_decl);
+    m_device->SetVertexShader(m_vs);
+    m_device->SetPixelShader(m_ps);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+        D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    for (DWORD st = 0; st < 5; ++st)
+    {
+        m_device->SetSamplerState(st, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(st, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(st, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+        m_device->SetSamplerState(st, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    }
+    m_device->SetTexture(5, m_def_envcube);
+
+    const float cam[4]     = { eye[0], eye[1], eye[2], 0.0f };
+    const float ambient[4] = { 0.22f, 0.22f, 0.25f, 0.0f };
+    const float zero[4]    = { 0.0f, 0.0f, 0.0f, 0.0f };
+    m_device->SetPixelShaderConstantF(0, m_light_dir, 1);
+    m_device->SetPixelShaderConstantF(1, cam, 1);
+    m_device->SetPixelShaderConstantF(2, ambient, 1);
+    m_device->SetPixelShaderConstantF(6, m_light_col, 1);
+    m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
+    m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
+    m_device->SetPixelShaderConstantF(15, zero, 1);
+
+    m_device->SetRenderState(D3DRS_ALPHAREF, 128);
+    m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const bool blendPass = (pass == 1);
+        m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, blendPass ? TRUE : FALSE);
+        if (blendPass)
+        {
+            m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+            m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+            m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        }
+        for (const DrawItem& item : m_draw_items)
+        {
+            if (item.object_index == skip_object)
+                continue;
+            GpuMesh* gm = m_meshes.Get(item.model_path);
+            if (!gm)
+                continue;
+            bool bound = false;
+            for (const GpuSubset& s : gm->subsets)
+            {
+                if ((s.alpha == AlphaKind::Blend) != blendPass)
+                    continue;
+                if (!bound)
+                {
+                    const D3DMATRIX wvp = Multiply(item.world, vp);
+                    m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
+                    m_device->SetVertexShaderConstantF(4, &item.world.m[0][0], 4);
+                    m_device->SetStreamSource(0, gm->vb, 0, sizeof(MeshVertex));
+                    m_device->SetIndices(gm->ib);
+                    bound = true;
+                }
+                if (!blendPass)
+                    m_device->SetRenderState(D3DRS_ALPHATESTENABLE,
+                                             s.alpha == AlphaKind::Cutout ? TRUE : FALSE);
+                const float bump[4] = { s.normalHasHeight ? 0.08f : 0.0f, 0.0f, 0.0f, 0.0f };
+                m_device->SetPixelShaderConstantF(5, bump, 1);
+                m_device->SetTexture(0, s.diffuse  ? s.diffuse  : m_def_white);
+                m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
+                m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
+                m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
+                m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
+                m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+                                               gm->vertexCount, s.indexStart, s.indexCount / 3);
+            }
+        }
+    }
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 }
 
 // The bloom chain: extract the glow (scene rgb * exported alpha mask) into a

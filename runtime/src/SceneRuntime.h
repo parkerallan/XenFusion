@@ -39,6 +39,12 @@ public:
     // leaves the glow off.
     void InitBloom(class XboxRenderer& renderer);
 
+    // Dynamic environment capture (metal reflections): render the scene into a
+    // small cube map from the first metallic object's position. MUST run
+    // OUTSIDE the tiling bracket — call before XboxRenderer::BeginFrame().
+    // Skips silently when the scene has no metallic object.
+    void RenderEnvCapture();
+
     // Draw the whole scene for one frame (device scene already begun by the
     // caller). dt advances gTime for animated custom shaders.
     void Render(float dt);
@@ -91,6 +97,19 @@ private:
     IDirect3DTexture9*           m_def_white;
     IDirect3DTexture9*           m_def_normal;
     IDirect3DTexture9*           m_def_black;
+    IDirect3DCubeTexture9*       m_def_envcube; // black cube: env fallback
+    IDirect3DCubeTexture9*       m_env;         // static env map (assets/env), fallback
+
+    // Dynamic environment capture: EDRAM working target + depth (Base 0 —
+    // aliases the tile targets, legal because the capture runs before
+    // BeginTiling) resolved face-by-face into the cube texture.
+    IDirect3DSurface9*           m_envRT;
+    IDirect3DSurface9*           m_envDepth;
+    IDirect3DCubeTexture9*       m_envDynCube;
+    bool                         m_env_captured; // this frame -> bind m_envDynCube
+    // One capture face: frame constants + both material passes over the draw
+    // items (via DrawMesh), skipping the captured object itself.
+    void DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int skipItem);
 
     // Unit quad + unit cube (mesh vertex layout) for standalone shaders.
     IDirect3DVertexBuffer9*      m_quad_vb;

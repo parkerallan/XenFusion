@@ -3,7 +3,10 @@
 #include "RtMath.h"
 #include "SpakFormat.h"
 #include "XboxRenderer.h"
+#include "camera/EnvCubeViews.h"
 #include "input/XInputPoll.h" // XInput is available via xtl.h (included by the header)
+
+#include <xgraphics.h> // GPU_EDRAM_TILE_SIZE (env-capture EDRAM placement)
 
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +39,8 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
 
     m_mesh_decl = NULL;
     m_def_white = m_def_normal = m_def_black = NULL;
+    m_def_envcube = NULL; m_env = NULL;
+    m_envRT = NULL; m_envDepth = NULL; m_envDynCube = NULL; m_env_captured = false;
     m_quad_vb = NULL; m_quad_ib = NULL; m_cube_vb = NULL; m_cube_ib = NULL;
 
     // Fixed camera: the editor's default orbit framing (no input on the console).
@@ -70,12 +75,46 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
 
     m_def_white  = SolidTexture(D3DCOLOR_ARGB(255, 255, 255, 255)); // diffuse
     m_def_normal = SolidTexture(D3DCOLOR_ARGB(255, 128, 128, 255)); // flat normal
-    m_def_black  = SolidTexture(D3DCOLOR_ARGB(255, 0, 0, 0));       // no specular
+    m_def_black  = SolidTexture(D3DCOLOR_ARGB(255, 0, 0, 0));       // no specular / metal
+
+    // Black 1x1 cube: the env-map fallback (metal reflects nothing).
+    if (SUCCEEDED(m_device->CreateCubeTexture(1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &m_def_envcube, NULL)))
+    {
+        for (int f = 0; f < 6; ++f)
+        {
+            D3DLOCKED_RECT lr;
+            if (SUCCEEDED(m_def_envcube->LockRect((D3DCUBEMAP_FACES)f, 0, &lr, NULL, 0)))
+            {
+                *(DWORD*)lr.pBits = D3DCOLOR_ARGB(255, 0, 0, 0);
+                m_def_envcube->UnlockRect((D3DCUBEMAP_FACES)f, 0);
+            }
+        }
+    }
 
     if (!BuildGeometry())
         return false;
 
     m_content.LoadStandard();
+    m_env = m_content.LoadEnvCube(); // static fallback; the dynamic capture wins
+
+    // Dynamic environment capture resources: a small EDRAM target + depth at
+    // Base 0 (aliasing the tile targets — the capture runs before BeginTiling)
+    // and the cube texture the faces resolve into. Failure just disables the
+    // capture; the static/black env fallback still binds.
+    {
+        D3DSURFACE_PARAMETERS sp;
+        ZeroMemory(&sp, sizeof(sp));
+        sp.Base = 0;
+        if (SUCCEEDED(m_device->CreateRenderTarget(128, 128, D3DFMT_A8R8G8B8,
+                                                   D3DMULTISAMPLE_NONE, 0, FALSE, &m_envRT, &sp)))
+        {
+            sp.Base = m_envRT->Size / GPU_EDRAM_TILE_SIZE;
+            sp.HierarchicalZBase = 0;
+            m_device->CreateDepthStencilSurface(128, 128, D3DFMT_D24S8,
+                                                D3DMULTISAMPLE_NONE, 0, FALSE, &m_envDepth, &sp);
+        }
+        m_device->CreateCubeTexture(128, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_envDynCube, NULL);
+    }
 
     // Load the startup scene: <root>\game.proj -> startupScene, else Main.scene.
     std::string startup = scenedata::ReadStartupScene(m_content.Resolve("game.proj"));
@@ -299,6 +338,125 @@ void SceneRuntime::InitBloom(XboxRenderer& renderer)
     // else: glow stays off — the scene still renders (older deploys).
 }
 
+// One capture face: frame constants for the face's point of view, then both
+// material passes over the draw items via DrawMesh, skipping the captured
+// object (a mirror can't mirror itself).
+void SceneRuntime::DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int skipItem)
+{
+    RtShader* mat = m_content.Standard();
+
+    const float cam[4]     = { eye[0], eye[1], eye[2], 0.0f };
+    const float ambient[4] = { 0.22f, 0.22f, 0.25f, 0.0f };
+    m_device->SetPixelShaderConstantF(0, m_light_dir, 1);
+    m_device->SetPixelShaderConstantF(1, cam, 1);
+    m_device->SetPixelShaderConstantF(2, ambient, 1);
+    m_device->SetPixelShaderConstantF(6, m_light_col, 1);
+    m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
+    m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
+
+    // Pass 1 — opaque + cutout; pass 2 — blended (same order as Render).
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+    for (size_t i = 0; i < m_draw_items.size(); ++i)
+    {
+        if ((int)i == skipItem) continue;
+        RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
+        if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, false);
+    }
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+    m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    for (size_t i = 0; i < m_draw_items.size(); ++i)
+    {
+        if ((int)i == skipItem) continue;
+        RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
+        if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, true);
+    }
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+}
+
+void SceneRuntime::RenderEnvCapture()
+{
+    m_env_captured = false;
+    if (!m_device || !m_envRT || !m_envDepth || !m_envDynCube)
+        return;
+    RtShader* mat = m_content.Standard();
+    if (!mat || !mat->Valid() || m_draw_items.empty())
+        return;
+
+    // The first draw item with a metallic subset is the capture point.
+    int   skip = -1;
+    float pos[3] = { 0.0f, 0.0f, 0.0f };
+    for (size_t i = 0; i < m_draw_items.size(); ++i)
+    {
+        RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
+        if (!gm) continue;
+        bool metal = false;
+        for (size_t s = 0; s < gm->subsets.size(); ++s)
+            if (gm->subsets[s].metallic) { metal = true; break; }
+        if (!metal) continue;
+        skip = (int)i;
+        pos[0] = m_draw_items[i].world._41;
+        pos[1] = m_draw_items[i].world._42;
+        pos[2] = m_draw_items[i].world._43;
+        break;
+    }
+    if (skip < 0)
+        return; // no metal in the scene -> nothing needs reflections
+
+    m_device->SetRenderTarget(0, m_envRT);
+    m_device->SetDepthStencilSurface(m_envDepth);
+    D3DVIEWPORT9 vp;
+    vp.X = 0; vp.Y = 0; vp.Width = 128; vp.Height = 128;
+    vp.MinZ = 0.0f; vp.MaxZ = 1.0f;
+    m_device->SetViewport(&vp);
+
+    m_device->SetVertexDeclaration(m_mesh_decl);
+    m_device->SetVertexShader(mat->vs);
+    m_device->SetPixelShader(mat->ps);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+        D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    for (DWORD st = 0; st < 5; ++st)
+    {
+        m_device->SetSamplerState(st, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(st, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(st, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+        m_device->SetSamplerState(st, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    }
+    // Metal inside a reflection reflects nothing (no recursion).
+    m_device->SetTexture(5, (IDirect3DBaseTexture9*)m_def_envcube);
+
+    float pm[16];
+    envcube::FaceProj(0.2f, 100.0f, pm);
+    D3DMATRIX proj;
+    memcpy(&proj, pm, sizeof(pm));
+
+    const D3DRECT faceRect = { 0, 0, 128, 128 };
+    for (int f = 0; f < 6; ++f)
+    {
+        m_device->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+                        D3DCOLOR_ARGB(255, 24, 24, 28), 1.0f, 0);
+        float vm[16];
+        envcube::FaceView(f, pos, vm);
+        D3DMATRIX view;
+        memcpy(&view, vm, sizeof(vm));
+        DrawModelsForEnv(Multiply(view, proj), pos, skip);
+        m_device->Resolve(D3DRESOLVE_RENDERTARGET0, &faceRect, m_envDynCube,
+                          NULL, 0, (UINT)f, NULL, 0.0f, 0, NULL);
+    }
+    m_env_captured = true;
+}
+
 void SceneRuntime::Shutdown()
 {
     m_bloom_combine.Release();
@@ -312,6 +470,11 @@ void SceneRuntime::Shutdown()
     if (m_quad_vb)   { m_quad_vb->Release();   m_quad_vb = NULL; }
     if (m_def_black) { m_def_black->Release(); m_def_black = NULL; }
     if (m_def_normal){ m_def_normal->Release();m_def_normal = NULL; }
+    if (m_envDynCube)  { m_envDynCube->Release();  m_envDynCube = NULL; }
+    if (m_envDepth)    { m_envDepth->Release();    m_envDepth = NULL; }
+    if (m_envRT)       { m_envRT->Release();       m_envRT = NULL; }
+    if (m_env)         { m_env->Release();         m_env = NULL; }
+    if (m_def_envcube) { m_def_envcube->Release(); m_def_envcube = NULL; }
     if (m_def_white) { m_def_white->Release(); m_def_white = NULL; }
     if (m_mesh_decl) { m_mesh_decl->Release(); m_mesh_decl = NULL; }
     m_content.Shutdown();
@@ -629,19 +792,29 @@ void SceneRuntime::Render(float dt)
     m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
         D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 
-    // --- Scene models (standard diffuse / normal / specular / emissive material) ---
+    // --- Scene models (standard diffuse / normal / specular / emissive /
+    //     metallic material + environment cube) ---
     RtShader* std_mat = m_content.Standard();
     if (!m_draw_items.empty() && std_mat && std_mat->Valid())
     {
         m_device->SetVertexShader(std_mat->vs);
         m_device->SetPixelShader(std_mat->ps);
-        for (DWORD s = 0; s < 4; ++s)
+        for (DWORD s = 0; s < 5; ++s)
         {
             m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
             m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
             m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
             m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
         }
+        // s5 = environment cube (bound once per frame).
+        m_device->SetSamplerState(5, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(5, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(5, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        m_device->SetSamplerState(5, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        m_device->SetSamplerState(5, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
+        m_device->SetTexture(5, m_env_captured ? (IDirect3DBaseTexture9*)m_envDynCube
+                              : m_env          ? (IDirect3DBaseTexture9*)m_env
+                                               : (IDirect3DBaseTexture9*)m_def_envcube);
         m_device->SetPixelShaderConstantF(0, lightDir, 1);
         m_device->SetPixelShaderConstantF(1, camPos, 1);
         m_device->SetPixelShaderConstantF(2, ambient, 1);
@@ -769,6 +942,7 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
         m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
         m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
         m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
+        m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
         m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gm->vertexCount,
                                        s.indexStart, s.indexCount / 3);
     }

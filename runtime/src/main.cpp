@@ -41,6 +41,10 @@ void __cdecl main()
     QueryPerformanceCounter(&qpcLast);
     for (;;)
     {
+        // Metal reflections: capture the scene into the env cube map from the
+        // metallic object's position. Outside the tiling bracket by design.
+        scene.RenderEnvCapture();
+
         if (renderer.BeginFrame())
         {
             QueryPerformanceCounter(&qpcNow);

@@ -102,6 +102,7 @@ namespace mesh
             subset.textures.normal   = find_tex(mat, {aiTextureType_NORMALS, aiTextureType_HEIGHT});
             subset.textures.specular = find_tex(mat, {aiTextureType_SPECULAR});
             subset.textures.emissive = find_tex(mat, {aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR});
+            subset.textures.metallic = find_tex(mat, {aiTextureType_METALNESS});
             subsets.push_back(std::move(subset));
         }
 
@@ -137,6 +138,7 @@ namespace mesh
             WriteStr(out, s.textures.normal);
             WriteStr(out, s.textures.specular);
             WriteStr(out, s.textures.emissive);
+            WriteStr(out, s.textures.metallic);
         }
         return true;
     }

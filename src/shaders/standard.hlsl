@@ -10,6 +10,8 @@
 //       c7-c10 = point light pos + 1/range^2   c11-c14 = point light rgb * intensity
 //       s0 = diffuse   s1 = normal (alpha = height field)   s2 = specular
 //       s3 = emissive (rgb added after lighting; black = none)
+//       s4 = metallic (r: 0 = dielectric, 1 = metal)   s5 = environment cube
+//            (metal reflects the env tinted by the diffuse; black cube = none)
 //       c15 = glow-mask switch: 1 = output alpha carries the emissive strength
 //             (the bloom chain's glow source — opaque subsets only), 0 = output
 //             alpha is the diffuse's (cutout / blend passes need it)
@@ -44,6 +46,8 @@ sampler2D sDiffuse  : register(s0);
 sampler2D sNormal   : register(s1);
 sampler2D sSpecular : register(s2);
 sampler2D sEmissive : register(s3);
+sampler2D sMetallic : register(s4);
+samplerCUBE sEnv    : register(s5);
 
 float4 PSMain(VSOut i) : COLOR
 {
@@ -88,15 +92,40 @@ float4 PSMain(VSOut i) : COLOR
     // smoothly to zero at range: (1 - (d/range)^2)^2, with w = 1/range^2.
     // The max() keeps rsqrt finite at the light's own position; unused slots
     // upload zero color and contribute nothing.
+    // pglint: per-point-light specular, used by the METAL term only (dielectric
+    // point lighting stays diffuse-only — the original trade-off). Same falloff
+    // as the diffuse so a light's glint dies with its light.
     float3 diffuse = gLightColor * ndl;
+    float3 pglint  = 0;
     [unroll] for (int k = 0; k < 4; ++k)
     {
         float3 pl  = gPointPos[k].xyz - i.wpos;
         float  d2  = max(dot(pl, pl), 1e-4);
         float  att = saturate(1.0 - d2 * gPointPos[k].w);
-        diffuse += gPointCol[k] * (saturate(dot(n, pl * rsqrt(d2))) * (att * att));
+        float3 Lp  = pl * rsqrt(d2);
+        diffuse += gPointCol[k] * (saturate(dot(n, Lp)) * (att * att));
+        float3 Hp  = normalize(Lp + V);
+        pglint += gPointCol[k] * (pow(saturate(dot(n, Hp)), 96.0) * (att * att));
     }
     float3 color = dtex.rgb * (gAmbient + diffuse) + spec * (gLightColor * pow(ndh, 40.0));
+
+    // Metal (360-era env-map look): the surface IS its environment — no flat
+    // shading terms at all. Three parts, all tinted by the diffuse (the metal's
+    // COLOR: near-white = silver, warm = gold):
+    // Metal = its environment, nothing else. ONE env sample — along the
+    // reflection vector, Fresnel-boosted at grazing angles (the rim-brightening
+    // that reads as "metal") — plus a tight glint from the directional light.
+    // Exactly one sample means a doubled image is structurally impossible.
+    // The diffuse map is the metal's COLOR (near-white = silver, warm = gold).
+    // m = 0 reduces exactly to `color` above.
+    float  m    = tex2D(sMetallic, uv).r;
+    float3 R    = reflect(-V, n);
+    float  ndv  = saturate(dot(n, V));
+    float  fres = 0.55 + 0.45 * pow(1.0 - ndv, 2.0);
+    float3 metal = texCUBE(sEnv, R).rgb * dtex.rgb * fres
+                 + dtex.rgb * (gLightColor * pow(ndh, 96.0) + pglint);
+    color = lerp(color, metal, m);
+
     float3 etex  = tex2D(sEmissive, uv).rgb; // self-illumination: unlit, additive
     color += etex;
     // Alpha: normally the diffuse's (cutout mask / blend factor). Opaque subsets

@@ -44,6 +44,15 @@ Copy-Item $xex (Join-Path $out "default.xex")
 $scenesSrc = Join-Path $Project "scenes"
 if (Test-Path $scenesSrc) { Copy-Item $scenesSrc (Join-Path $out "scenes") -Recurse }
 
+# Environment cube map faces ship loose (assets/env/env_*.png): one global map
+# per project; the runtime assembles the cube at boot via D3DX. Small + loaded
+# once, so not worth cooking into the pak.
+$envSrc = Join-Path $Project "assets\env"
+if (Test-Path $envSrc) {
+    New-Item -ItemType Directory -Force (Join-Path $out "assets\env") | Out-Null
+    Copy-Item (Join-Path $envSrc "env_*.png") (Join-Path $out "assets\env") -ErrorAction SilentlyContinue
+}
+
 # Gameplay scripts ship loose (Lua source, compiled on load — never .luac, which
 # is endian-specific). Copy every .lua under the project, preserving its path
 # relative to the project so the runtime's game:\<script_path> resolves.
