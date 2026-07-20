@@ -21,10 +21,20 @@ namespace shadercompiler
         const fs::path out = project_root / "shaders";
         int ok = 0, fail = 0;
 
-        // 1) the engine's built-in standard shader.
-        std::string err;
-        if (shader::BakeToCso(standard_hlsl, out, err)) ++ok;
-        else { ++fail; applog::Error("standard.hlsl: " + (err.empty() ? "compile failed" : err)); }
+        // 1) the engine's built-in shaders: the standard material plus the bloom
+        // post passes — everything shipped next to standard.hlsl.
+        std::error_code eec;
+        for (const fs::directory_entry& de : fs::directory_iterator(standard_hlsl.parent_path(), eec))
+        {
+            if (!de.is_regular_file(eec)) continue;
+            const fs::path p = de.path();
+            std::string ext = p.extension().string();
+            for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+            if (ext != ".hlsl") continue;
+            std::string err;
+            if (shader::BakeToCso(p, out, err)) ++ok;
+            else { ++fail; applog::Error(p.filename().string() + ": " + (err.empty() ? "compile failed" : err)); }
+        }
 
         // 2) every project shader (.hlsl anywhere under the project, except output).
         std::error_code ec;

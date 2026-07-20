@@ -121,7 +121,7 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
         }
     }
 
-    // Load the blob + each material subset's textures (diffuse / normal / specular).
+    // Load the blob + each material subset's textures (diffuse / normal / specular / emissive).
     auto try_load = [&](GpuMesh& g)
     {
         std::vector<MeshSubset> subsets;
@@ -142,6 +142,7 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
                 gs.diffuse  = load(s.textures.diffuse, &gs.alpha); // transparency mode from the diffuse's alpha
                 gs.normal   = load(s.textures.normal, nullptr, &gs.normalHasHeight); // bump offset from the normal's alpha
                 gs.specular = load(s.textures.specular);
+                gs.emissive = load(s.textures.emissive);
                 g.subsets.push_back(gs);
             }
         }

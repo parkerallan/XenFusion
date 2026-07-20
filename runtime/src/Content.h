@@ -26,9 +26,10 @@ struct RtSubset
     IDirect3DTexture9* diffuse;
     IDirect3DTexture9* normal;
     IDirect3DTexture9* specular;
+    IDirect3DTexture9* emissive; // NULL = no glow (black default at draw)
 
     RtSubset() : indexStart(0), indexCount(0), alpha(RtOpaque), normalHasHeight(false),
-                 diffuse(NULL), normal(NULL), specular(NULL) {}
+                 diffuse(NULL), normal(NULL), specular(NULL), emissive(NULL) {}
 };
 
 // A mesh resident in GPU memory. Vertex layout matches the editor's MeshVertex
@@ -96,6 +97,11 @@ public:
     // Compile the built-in material from <root>/shaders/standard.hlsl.
     bool LoadStandard();
     RtShader* Standard() { return &m_standard; }
+
+    // Load one built-in shader pair by stem (e.g. "bloom_bright"): shipped .cso
+    // first, .hlsl compile as the dev fallback. No //@ state (post passes set
+    // their own device state).
+    bool LoadBuiltin(const char* stem, RtShader& out);
 
     // Combine the content root with a scene-relative path (slashes -> '\').
     std::string Resolve(const std::string& rel) const;

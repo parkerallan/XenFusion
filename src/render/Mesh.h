@@ -9,7 +9,7 @@
 
 // Current baked-blob version. Bumped whenever MeshVertex or the material
 // section changes so stale blobs are re-baked from their source.
-constexpr uint32_t MESH_VERSION = 4;
+constexpr uint32_t MESH_VERSION = 5;
 
 // Runtime vertex layout: position + normal + tangent + one UV. Tangent is
 // needed for normal mapping. Not FVF-expressible, so meshes are drawn with a
@@ -31,15 +31,17 @@ struct MeshHeader
 };
 // After the header: vertexCount vertices, indexCount uint32 indices, then a
 // uint32 subset count followed by one subset per source material: uint32
-// indexStart, uint32 indexCount, then three length-prefixed strings (diffuse,
-// normal, specular texture paths relative to the mesh file; empty = absent).
+// indexStart, uint32 indexCount, then four length-prefixed strings (diffuse,
+// normal, specular, emissive texture paths relative to the mesh file; empty =
+// absent).
 
-// Diffuse / normal / specular texture references for one material.
+// Diffuse / normal / specular / emissive texture references for one material.
 struct MeshTextures
 {
     std::string diffuse;
     std::string normal;
     std::string specular;
+    std::string emissive;
 };
 
 // One material's range within a baked mesh: draw indices [indexStart,
@@ -65,6 +67,7 @@ struct GpuSubset
     IDirect3DTexture9* diffuse  = nullptr; // null = use default
     IDirect3DTexture9* normal   = nullptr;
     IDirect3DTexture9* specular = nullptr;
+    IDirect3DTexture9* emissive = nullptr; // null = no glow (black default)
     AlphaKind          alpha    = AlphaKind::Opaque;
     bool               normalHasHeight = false; // normal map's alpha carries a
                                                 // height field (0.5 = neutral)
@@ -84,6 +87,7 @@ struct GpuMesh
     {
         for (GpuSubset& s : subsets)
         {
+            if (s.emissive) { s.emissive->Release(); s.emissive = nullptr; }
             if (s.specular) { s.specular->Release(); s.specular = nullptr; }
             if (s.normal)   { s.normal->Release();   s.normal = nullptr; }
             if (s.diffuse)  { s.diffuse->Release();  s.diffuse = nullptr; }

@@ -154,9 +154,24 @@ private:
     float m_point_pos[4][4] = {}; // xyz + w = 1/range^2
     float m_point_col[4][4] = {}; // rgb * intensity; zero = unused slot
 
+    // Bloom post chain: bright-extract (rgb * alpha-mask) into a quarter-res
+    // target, separable blur, additive combine. Drawn after the scene resolve;
+    // skipped entirely when the shaders/.cso or targets are missing.
+    void RenderBloom();
+
     // Shader-based material pipeline (diffuse / normal / specular).
     IDirect3DVertexShader9*      m_vs        = nullptr;
     IDirect3DPixelShader9*       m_ps        = nullptr;
+    IDirect3DVertexShader9*      m_bloom_bright_vs  = nullptr;
+    IDirect3DPixelShader9*       m_bloom_bright_ps  = nullptr;
+    IDirect3DVertexShader9*      m_bloom_blur_vs    = nullptr;
+    IDirect3DPixelShader9*       m_bloom_blur_ps    = nullptr;
+    IDirect3DVertexShader9*      m_bloom_combine_vs = nullptr;
+    IDirect3DPixelShader9*       m_bloom_combine_ps = nullptr;
+    IDirect3DTexture9*           m_bloomA     = nullptr; // quarter-res ping
+    IDirect3DSurface9*           m_bloomASurf = nullptr;
+    IDirect3DTexture9*           m_bloomB     = nullptr; // quarter-res pong
+    IDirect3DSurface9*           m_bloomBSurf = nullptr;
     IDirect3DVertexDeclaration9* m_mesh_decl = nullptr;
     IDirect3DTexture9*           m_def_white  = nullptr; // default diffuse
     IDirect3DTexture9*           m_def_normal = nullptr; // default flat normal

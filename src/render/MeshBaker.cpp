@@ -101,6 +101,7 @@ namespace mesh
             subset.textures.diffuse  = find_tex(mat, {aiTextureType_DIFFUSE, aiTextureType_BASE_COLOR});
             subset.textures.normal   = find_tex(mat, {aiTextureType_NORMALS, aiTextureType_HEIGHT});
             subset.textures.specular = find_tex(mat, {aiTextureType_SPECULAR});
+            subset.textures.emissive = find_tex(mat, {aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR});
             subsets.push_back(std::move(subset));
         }
 
@@ -135,6 +136,7 @@ namespace mesh
             WriteStr(out, s.textures.diffuse);
             WriteStr(out, s.textures.normal);
             WriteStr(out, s.textures.specular);
+            WriteStr(out, s.textures.emissive);
         }
         return true;
     }

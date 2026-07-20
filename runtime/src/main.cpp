@@ -29,6 +29,7 @@ void __cdecl main()
         renderer.Shutdown();
         return;
     }
+    scene.InitBloom(renderer); // emissive glow post chain (optional shaders)
 
     // Real per-frame delta from the CPU timebase — the same wall-clock dt the
     // editor uses (QueryPerformanceCounter). We can't assume vsync paces us to

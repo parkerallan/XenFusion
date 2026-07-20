@@ -68,6 +68,7 @@ void RtMesh::Release()
     for (size_t i = 0; i < subsets.size(); ++i)
     {
         RtSubset& s = subsets[i];
+        if (s.emissive) { s.emissive->Release(); s.emissive = NULL; }
         if (s.specular) { s.specular->Release(); s.specular = NULL; }
         if (s.normal)   { s.normal->Release();   s.normal = NULL; }
         if (s.diffuse)  { s.diffuse->Release();  s.diffuse = NULL; }
@@ -91,12 +92,12 @@ void RtShader::Release()
 // Layout: MeshHeader { char magic[4]; u32 version; u32 vertexCount; u32 indexCount }
 // then vertexCount * 44-byte vertices, indexCount * u32 indices, then a u32
 // subset count followed by one record per material: u32 indexStart, u32
-// indexCount, then three length-prefixed strings (diffuse / normal / specular,
-// relative to the .mesh).
+// indexCount, then four length-prefixed strings (diffuse / normal / specular /
+// emissive, relative to the .mesh).
 // ---------------------------------------------------------------------------
 namespace
 {
-    const unsigned int kMeshVersion = 4;   // must match the editor's MESH_VERSION
+    const unsigned int kMeshVersion = 5;   // must match the editor's MESH_VERSION
     const unsigned int kVertexBytes = 44;  // MeshVertex
 
     // Advance a cursor over a length-prefixed (u32 LE) string.
@@ -286,6 +287,7 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         std::string texDiffuse = ReadStr(p, size, off);
         std::string texNormal  = ReadStr(p, size, off);
         std::string texSpec    = ReadStr(p, size, off);
+        std::string texEmis    = ReadStr(p, size, off);
         if (!texDiffuse.empty())
         {
             const std::string dabs = Join(meshDir, texDiffuse);
@@ -299,6 +301,7 @@ RtMesh* Content::GetMesh(const std::string& relPath)
             sub.normalHasHeight = NormalAlphaHasHeight(nabs); // bump offset from the normal's alpha
         }
         if (!texSpec.empty())   sub.specular = LoadTexture(m_device, Join(meshDir, texSpec));
+        if (!texEmis.empty())   sub.emissive = LoadTexture(m_device, Join(meshDir, texEmis));
         mesh.subsets.push_back(sub);
     }
 
@@ -496,6 +499,19 @@ bool Content::LoadStandard()
     if (CompileShaderFile(m_device, Resolve("shaders/standard.hlsl"), m_standard))
         return true;
     Log("shader: standard failed", "");
+    return false;
+}
+
+bool Content::LoadBuiltin(const char* stem, RtShader& out)
+{
+    out.Release();
+    const std::string s(stem);
+    if (LoadShaderCso(m_device, Resolve("shaders/" + s + "_vs.cso"),
+                                Resolve("shaders/" + s + "_ps.cso"), out))
+        return true;
+    if (CompileShaderFile(m_device, Resolve("shaders/" + s + ".hlsl"), out))
+        return true;
+    Log("shader: builtin failed ", s);
     return false;
 }
 

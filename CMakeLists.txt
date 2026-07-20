@@ -175,11 +175,16 @@ add_custom_command(TARGET XenFusion POST_BUILD
     VERBATIM
 )
 
-# Ship the engine's built-in shader source in <exe>/shaders. At runtime the
-# engine compiles it into each project's own shaders/ folder (with the customs).
+# Ship the engine's built-in shader sources in <exe>/shaders (the standard
+# material + the bloom post passes). At runtime the engine compiles them into
+# each project's own shaders/ folder (with the customs).
 add_custom_command(TARGET XenFusion POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:XenFusion>/shaders"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SHADER_SRC_DIR}/standard.hlsl" "$<TARGET_FILE_DIR:XenFusion>/shaders/standard.hlsl"
+        "${SHADER_SRC_DIR}/standard.hlsl"
+        "${SHADER_SRC_DIR}/bloom_bright.hlsl"
+        "${SHADER_SRC_DIR}/bloom_blur.hlsl"
+        "${SHADER_SRC_DIR}/bloom_combine.hlsl"
+        "$<TARGET_FILE_DIR:XenFusion>/shaders"
     VERBATIM
 )

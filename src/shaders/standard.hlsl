@@ -9,6 +9,10 @@
 //       c6 = light color (directional rgb * intensity)
 //       c7-c10 = point light pos + 1/range^2   c11-c14 = point light rgb * intensity
 //       s0 = diffuse   s1 = normal (alpha = height field)   s2 = specular
+//       s3 = emissive (rgb added after lighting; black = none)
+//       c15 = glow-mask switch: 1 = output alpha carries the emissive strength
+//             (the bloom chain's glow source — opaque subsets only), 0 = output
+//             alpha is the diffuse's (cutout / blend passes need it)
 // (PS c3/c4 stay free: the custom-shader convention claims them for gTime/gCamObj.)
 
 float4x4 gWVP   : register(c0);
@@ -35,9 +39,11 @@ float  gBumpScale : register(c5); // max UV offset over the full height range; 0
 float3 gLightColor : register(c6);  // directional rgb * intensity (white = legacy sun)
 float4 gPointPos[4] : register(c7); // xyz = world position, w = 1 / range^2
 float3 gPointCol[4] : register(c11);// rgb * intensity; zero = unused slot
+float  gGlowMask   : register(c15); // 1 = alpha out = emissive strength (bloom source)
 sampler2D sDiffuse  : register(s0);
 sampler2D sNormal   : register(s1);
 sampler2D sSpecular : register(s2);
+sampler2D sEmissive : register(s3);
 
 float4 PSMain(VSOut i) : COLOR
 {
@@ -91,5 +97,11 @@ float4 PSMain(VSOut i) : COLOR
         diffuse += gPointCol[k] * (saturate(dot(n, pl * rsqrt(d2))) * (att * att));
     }
     float3 color = dtex.rgb * (gAmbient + diffuse) + spec * (gLightColor * pow(ndh, 40.0));
-    return float4(color, dtex.a); // transparency from the diffuse's alpha
+    float3 etex  = tex2D(sEmissive, uv).rgb; // self-illumination: unlit, additive
+    color += etex;
+    // Alpha: normally the diffuse's (cutout mask / blend factor). Opaque subsets
+    // instead export the emissive strength — the bloom chain reads it back as
+    // "how much should this pixel glow" (see bloom_bright.hlsl).
+    float glow = max(etex.r, max(etex.g, etex.b));
+    return float4(color, lerp(dtex.a, glow, gGlowMask));
 }

@@ -47,7 +47,7 @@ private:
     struct CacheMesh
     {
         RtMesh                    mesh;
-        std::vector<unsigned int> texHash; // 3 per subset (diffuse/normal/spec)
+        std::vector<unsigned int> texHash; // 4 per subset (diffuse/normal/spec/emissive)
         int              state;
         const SpakEntry* entry;
         unsigned int     bytes;   // resident size, for the budget

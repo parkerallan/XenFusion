@@ -2,6 +2,7 @@
 #include "Endian.h"
 #include "RtMath.h"
 #include "SpakFormat.h"
+#include "XboxRenderer.h"
 #include "input/XInputPoll.h" // XInput is available via xtl.h (included by the header)
 
 #include <stdio.h>
@@ -285,8 +286,24 @@ RtMesh* SceneRuntime::ResolveMesh(const std::string& relPath)
     return m_content.GetMesh(relPath);      // not in the pak — raw fallback
 }
 
+void SceneRuntime::InitBloom(XboxRenderer& renderer)
+{
+    if (m_content.LoadBuiltin("bloom_bright",  m_bloom_bright) &&
+        m_content.LoadBuiltin("bloom_blur",    m_bloom_blur) &&
+        m_content.LoadBuiltin("bloom_combine", m_bloom_combine))
+    {
+        renderer.SetBloomShaders(m_bloom_bright.vs,  m_bloom_bright.ps,
+                                 m_bloom_blur.vs,    m_bloom_blur.ps,
+                                 m_bloom_combine.vs, m_bloom_combine.ps);
+    }
+    // else: glow stays off — the scene still renders (older deploys).
+}
+
 void SceneRuntime::Shutdown()
 {
+    m_bloom_combine.Release();
+    m_bloom_blur.Release();
+    m_bloom_bright.Release();
     m_cache.Shutdown();
     m_pak.Close();
     if (m_cube_ib)   { m_cube_ib->Release();   m_cube_ib = NULL; }
@@ -606,17 +623,19 @@ void SceneRuntime::Render(float dt)
     m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
     m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
     m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    // Colour writes default to RGB only: the tile target's ALPHA channel is the
+    // emissive glow mask (the bloom source XboxRenderer's glow chain reads from
+    // the resolved frame). Only opaque material subsets write it — see DrawMesh.
     m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
-        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
-        D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 
-    // --- Scene models (standard diffuse / normal / specular material) ---
+    // --- Scene models (standard diffuse / normal / specular / emissive material) ---
     RtShader* std_mat = m_content.Standard();
     if (!m_draw_items.empty() && std_mat && std_mat->Valid())
     {
         m_device->SetVertexShader(std_mat->vs);
         m_device->SetPixelShader(std_mat->ps);
-        for (DWORD s = 0; s < 3; ++s)
+        for (DWORD s = 0; s < 4; ++s)
         {
             m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
             m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
@@ -663,6 +682,8 @@ void SceneRuntime::Render(float dt)
         }
         m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        m_device->SetRenderState(D3DRS_COLORWRITEENABLE,   // back to RGB-only:
+            D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
     }
 
     // --- Standalone custom-shader objects ---
@@ -734,9 +755,20 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
         // so their UVs — and the cutout alpha they feed — are untouched.
         const float bump[4] = { s.normalHasHeight ? 0.08f : 0.0f, 0.0f, 0.0f, 0.0f };
         m_device->SetPixelShaderConstantF(5, bump, 1);
+        // Opaque subsets export their emissive strength in the target's alpha —
+        // the glow chain's bloom source. Cutout/blend keep the diffuse's alpha
+        // for masking/blending and must not touch the mask channel.
+        const bool glowMask = (s.alpha == RtOpaque);
+        const float maskc[4] = { glowMask ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+        m_device->SetPixelShaderConstantF(15, maskc, 1);
+        m_device->SetRenderState(D3DRS_COLORWRITEENABLE, glowMask
+            ? D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+              D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA
+            : D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
         m_device->SetTexture(0, s.diffuse  ? s.diffuse  : m_def_white);
         m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
         m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
+        m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
         m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gm->vertexCount,
                                        s.indexStart, s.indexCount / 3);
     }

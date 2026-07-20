@@ -78,11 +78,12 @@ if ($fxc -and (Test-Path $fxc)) {
             if ($dirs) { $dirs | Set-Content -Path (Join-Path $shaderOut ($stem + '.dir')) -Encoding ascii }
         }
     }
-    # The built-in material is the editor's canonical shader (one source of truth,
-    # shared by the PC viewport and the console runtime) - compile that, no //@.
-    $stdHlsl = Join-Path (Split-Path -Parent $root) "src\shaders\standard.hlsl"
-    if (-not (Test-Path $stdHlsl)) { throw "Built-in material not found: $stdHlsl" }
-    Compile-Xeno $stdHlsl $false
+    # The built-in shaders (standard material + bloom post passes) are the
+    # editor's canonical sources (one source of truth, shared by the PC viewport
+    # and the console runtime) - compile them all, no //@.
+    $engineShaderDir = Join-Path (Split-Path -Parent $root) "src\shaders"
+    if (-not (Test-Path (Join-Path $engineShaderDir "standard.hlsl"))) { throw "Built-in material not found in: $engineShaderDir" }
+    Get-ChildItem $engineShaderDir -Filter *.hlsl | ForEach-Object { Compile-Xeno $_.FullName $false }
     Get-ChildItem (Join-Path $Project "assets") -Filter *.hlsl -Recurse -ErrorAction SilentlyContinue |
         ForEach-Object { Compile-Xeno $_.FullName $true }           # custom shaders (+ //@ sidecar)
     Write-Output "Compiled Xenos shaders (.cso) + baked //@ sidecars"

@@ -324,6 +324,31 @@ void SceneRenderer::LoadStandardShader()
         if (ps) ps->Release();
         applog::Warn("Shaders not compiled yet — press 'Compile shaders' in Settings");
     }
+
+    // The bloom post chain (emissive glow). Optional: missing .cso just turns
+    // the glow off (older projects until their shaders are recompiled).
+    auto reload = [&](const char* stem, IDirect3DVertexShader9*& ovs, IDirect3DPixelShader9*& ops)
+    {
+        IDirect3DVertexShader9* nvs = shader::LoadVS(m_device, out / (std::string(stem) + "_vs.cso"));
+        IDirect3DPixelShader9*  nps = shader::LoadPS(m_device, out / (std::string(stem) + "_ps.cso"));
+        if (nvs && nps)
+        {
+            if (ovs) ovs->Release();
+            if (ops) ops->Release();
+            ovs = nvs;
+            ops = nps;
+        }
+        else
+        {
+            if (nvs) nvs->Release();
+            if (nps) nps->Release();
+        }
+    };
+    reload("bloom_bright",  m_bloom_bright_vs,  m_bloom_bright_ps);
+    reload("bloom_blur",    m_bloom_blur_vs,    m_bloom_blur_ps);
+    reload("bloom_combine", m_bloom_combine_vs, m_bloom_combine_ps);
+    if (m_vs && (!m_bloom_bright_ps || !m_bloom_blur_ps || !m_bloom_combine_ps))
+        applog::Warn("Bloom shaders not compiled — emissive glow off until 'Compile shaders'");
 }
 
 // "Compile shaders" action: compile every shader into <project>/shaders (the
@@ -350,6 +375,12 @@ void SceneRenderer::Shutdown()
     if (m_def_normal) { m_def_normal->Release(); m_def_normal = nullptr; }
     if (m_def_white)  { m_def_white->Release();  m_def_white = nullptr; }
     if (m_mesh_decl)  { m_mesh_decl->Release();  m_mesh_decl = nullptr; }
+    if (m_bloom_combine_ps) { m_bloom_combine_ps->Release(); m_bloom_combine_ps = nullptr; }
+    if (m_bloom_combine_vs) { m_bloom_combine_vs->Release(); m_bloom_combine_vs = nullptr; }
+    if (m_bloom_blur_ps)    { m_bloom_blur_ps->Release();    m_bloom_blur_ps = nullptr; }
+    if (m_bloom_blur_vs)    { m_bloom_blur_vs->Release();    m_bloom_blur_vs = nullptr; }
+    if (m_bloom_bright_ps)  { m_bloom_bright_ps->Release();  m_bloom_bright_ps = nullptr; }
+    if (m_bloom_bright_vs)  { m_bloom_bright_vs->Release();  m_bloom_bright_vs = nullptr; }
     if (m_ps)         { m_ps->Release();         m_ps = nullptr; }
     if (m_vs)         { m_vs->Release();         m_vs = nullptr; }
     m_shaders.Shutdown();
@@ -360,6 +391,10 @@ void SceneRenderer::Shutdown()
 
 void SceneRenderer::OnDeviceLost()
 {
+    if (m_bloomBSurf) { m_bloomBSurf->Release(); m_bloomBSurf = nullptr; }
+    if (m_bloomB)     { m_bloomB->Release();     m_bloomB = nullptr; }
+    if (m_bloomASurf) { m_bloomASurf->Release(); m_bloomASurf = nullptr; }
+    if (m_bloomA)     { m_bloomA->Release();     m_bloomA = nullptr; }
     if (m_depthMS)   { m_depthMS->Release();   m_depthMS = nullptr; }
     if (m_rtMS)      { m_rtMS->Release();      m_rtMS = nullptr; }
     if (m_depth)     { m_depth->Release();     m_depth = nullptr; }
@@ -959,7 +994,20 @@ void SceneRenderer::RenderGpu(float dt)
     IDirect3DSurface9* sceneDepth = (m_msaa != D3DMULTISAMPLE_NONE) ? m_depthMS : m_depth;
     m_device->SetRenderTarget(0, sceneRt);
     m_device->SetDepthStencilSurface(sceneDepth);
-    m_device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, m_background, 1.0f, 0);
+
+    // With the bloom chain present, the target's alpha channel carries the
+    // emissive glow mask: cleared to zero, written ONLY by opaque material
+    // subsets (color writes default to RGB), read back by RenderBloom, and
+    // saturated to opaque by its combine pass (ImGui samples the alpha).
+    // Without the chain, alpha stays at the opaque clear — the old behavior.
+    const bool bloom_ok = m_bloomASurf && m_bloomBSurf &&
+        m_bloom_bright_vs && m_bloom_bright_ps &&
+        m_bloom_blur_vs   && m_bloom_blur_ps &&
+        m_bloom_combine_vs && m_bloom_combine_ps;
+    m_device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+                    bloom_ok ? (m_background & 0x00FFFFFF) : m_background, 1.0f, 0);
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 
     if (SUCCEEDED(m_device->BeginScene()))
     {
@@ -983,14 +1031,14 @@ void SceneRenderer::RenderGpu(float dt)
                                       m_grid.data(), sizeof(Vertex));
         }
 
-        // --- Scene models (shader: diffuse / normal / specular) ---
+        // --- Scene models (shader: diffuse / normal / specular / emissive) ---
         if (!m_draw_items.empty() && m_vs && m_ps && m_mesh_decl)
         {
             m_device->SetVertexDeclaration(m_mesh_decl);
             m_device->SetVertexShader(m_vs);
             m_device->SetPixelShader(m_ps);
             m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
-            for (DWORD s = 0; s < 3; ++s)
+            for (DWORD s = 0; s < 4; ++s)
             {
                 m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
                 m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
@@ -1028,9 +1076,20 @@ void SceneRenderer::RenderGpu(float dt)
             {
                 const float bump[4] = { s.normalHasHeight ? kBumpScale : 0.0f, 0.0f, 0.0f, 0.0f };
                 m_device->SetPixelShaderConstantF(5, bump, 1);
+                // Opaque subsets export their emissive strength in the target's
+                // alpha (the bloom glow source). Cutout/blend keep the diffuse's
+                // alpha for masking/blending and must not touch the mask channel.
+                const bool glow = bloom_ok && s.alpha == AlphaKind::Opaque;
+                const float mask[4] = { glow ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+                m_device->SetPixelShaderConstantF(15, mask, 1);
+                m_device->SetRenderState(D3DRS_COLORWRITEENABLE, glow
+                    ? D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+                      D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA
+                    : D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
                 m_device->SetTexture(0, s.diffuse  ? s.diffuse  : m_def_white);
                 m_device->SetTexture(1, s.normal   ? s.normal   : m_def_normal);
                 m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
+                m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                gm->vertexCount, s.indexStart, s.indexCount / 3);
             };
@@ -1098,6 +1157,8 @@ void SceneRenderer::RenderGpu(float dt)
             }
             m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
             m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+            m_device->SetRenderState(D3DRS_COLORWRITEENABLE,   // back to RGB-only:
+                D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 
             // --- Selection outline (fixed-function orange wireframe) ---
             m_device->SetVertexShader(nullptr);
@@ -1194,11 +1255,100 @@ void SceneRenderer::RenderGpu(float dt)
     if (m_msaa != D3DMULTISAMPLE_NONE && m_rtMS && m_rtSurface)
         m_device->StretchRect(m_rtMS, nullptr, m_rtSurface, nullptr, D3DTEXF_NONE);
 
+    // Emissive glow: blur the exported glow mask and lay it over the scene.
+    RenderBloom();
+
+    // ImGui composites the viewport texture with alpha and manages most of its
+    // own states, but not the color-write mask — leave it fully enabled.
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+        D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+
     // Restore the back buffer as the active target.
     m_device->SetRenderTarget(0, prevRt);
     m_device->SetDepthStencilSurface(prevDepth);
     if (prevRt)    prevRt->Release();
     if (prevDepth) prevDepth->Release();
+}
+
+// The bloom chain: extract the glow (scene rgb * exported alpha mask) into a
+// quarter-res target, blur it wide (separable H+V), and add it back over the
+// scene. The wide soft halo is what makes emissive surfaces read as glowing
+// (streetlamp corona) instead of merely rendering at full brightness.
+void SceneRenderer::RenderBloom()
+{
+    if (!m_bloomASurf || !m_bloomBSurf || !m_rt || !m_rtSurface ||
+        !m_bloom_bright_vs || !m_bloom_bright_ps ||
+        !m_bloom_blur_vs   || !m_bloom_blur_ps ||
+        !m_bloom_combine_vs || !m_bloom_combine_ps)
+        return;
+    if (FAILED(m_device->BeginScene()))
+        return;
+
+    struct QuadVtx { float x, y, z, u, v; };
+    static const QuadVtx quad[4] = {
+        { -1.0f,  1.0f, 0.0f, 0.0f, 0.0f },
+        {  1.0f,  1.0f, 0.0f, 1.0f, 0.0f },
+        { -1.0f, -1.0f, 0.0f, 0.0f, 1.0f },
+        {  1.0f, -1.0f, 0.0f, 1.0f, 1.0f },
+    };
+
+    m_device->SetDepthStencilSurface(nullptr);
+    m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+        D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+
+    const int bw = (m_width  / 4 > 0) ? m_width  / 4 : 1;
+    const int bh = (m_height / 4 > 0) ? m_height / 4 : 1;
+
+    auto pass = [&](IDirect3DSurface9* dst, int dw, int dh,
+                    IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps,
+                    IDirect3DTexture9* src)
+    {
+        m_device->SetRenderTarget(0, dst);
+        D3DVIEWPORT9 vp = { 0, 0, (DWORD)dw, (DWORD)dh, 0.0f, 1.0f };
+        m_device->SetViewport(&vp);
+        const float half[4] = { 1.0f / (float)dw, 1.0f / (float)dh, 0.0f, 0.0f };
+        m_device->SetVertexShaderConstantF(0, half, 1);
+        m_device->SetVertexShader(vs);
+        m_device->SetPixelShader(ps);
+        m_device->SetTexture(0, src);
+        m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+    };
+
+    // Glow extract (rgb * mask) into quarter-res, then the separable blur. The
+    // 1.5-texel tap spacing widens the 9-tap kernel; two passes at quarter res
+    // give a halo tens of full-res pixels across.
+    pass(m_bloomASurf, bw, bh, m_bloom_bright_vs, m_bloom_bright_ps, m_rt);
+    const float stepH[4] = { 1.5f / (float)bw, 0.0f, 0.0f, 0.0f };
+    m_device->SetPixelShaderConstantF(0, stepH, 1);
+    pass(m_bloomBSurf, bw, bh, m_bloom_blur_vs, m_bloom_blur_ps, m_bloomA);
+    const float stepV[4] = { 0.0f, 1.5f / (float)bh, 0.0f, 0.0f };
+    m_device->SetPixelShaderConstantF(0, stepV, 1);
+    pass(m_bloomASurf, bw, bh, m_bloom_blur_vs, m_bloom_blur_ps, m_bloomB);
+
+    // Additive combine over the resolved scene (alpha saturates to opaque).
+    const float gain[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+    m_device->SetPixelShaderConstantF(0, gain, 1);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_ONE);
+    m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+    pass(m_rtSurface, m_width, m_height, m_bloom_combine_vs, m_bloom_combine_ps, m_bloomA);
+
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetTexture(0, nullptr);
+    m_device->EndScene();
 }
 
 // Draw one standalone shader: pick geometry, build its transform + uniforms,
@@ -1644,6 +1794,28 @@ bool SceneRenderer::EnsureTarget(int width, int height)
             OnDeviceLost();
             return false;
         }
+    }
+
+    // Quarter-res ping/pong targets for the bloom chain. Optional: if either
+    // fails, RenderBloom just skips (no glow), the scene still renders.
+    const int bw = (width  / 4 > 0) ? width  / 4 : 1;
+    const int bh = (height / 4 > 0) ? height / 4 : 1;
+    if (SUCCEEDED(m_device->CreateTexture(bw, bh, 1, D3DUSAGE_RENDERTARGET,
+                                          D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_bloomA, nullptr)) &&
+        SUCCEEDED(m_device->CreateTexture(bw, bh, 1, D3DUSAGE_RENDERTARGET,
+                                          D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_bloomB, nullptr)))
+    {
+        if (FAILED(m_bloomA->GetSurfaceLevel(0, &m_bloomASurf)) ||
+            FAILED(m_bloomB->GetSurfaceLevel(0, &m_bloomBSurf)))
+        {
+            if (m_bloomBSurf) { m_bloomBSurf->Release(); m_bloomBSurf = nullptr; }
+            if (m_bloomASurf) { m_bloomASurf->Release(); m_bloomASurf = nullptr; }
+        }
+    }
+    if (!m_bloomASurf || !m_bloomBSurf)
+    {
+        if (m_bloomB) { m_bloomB->Release(); m_bloomB = nullptr; }
+        if (m_bloomA) { m_bloomA->Release(); m_bloomA = nullptr; }
     }
 
     m_width  = width;

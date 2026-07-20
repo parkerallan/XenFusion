@@ -34,6 +34,11 @@ public:
     bool Init(IDirect3DDevice9* device, const std::string& contentRoot);
     void Shutdown();
 
+    // Load the bloom post shaders and hand them to the renderer, which runs the
+    // glow chain between the tile resolve and Swap. Optional: missing .cso just
+    // leaves the glow off.
+    void InitBloom(class XboxRenderer& renderer);
+
     // Draw the whole scene for one frame (device scene already begun by the
     // caller). dt advances gTime for animated custom shaders.
     void Render(float dt);
@@ -76,6 +81,11 @@ private:
     std::string                  m_root;
     Content                      m_content;
     RtScene                      m_scene;
+
+    // Bloom post shaders (owned here, used by XboxRenderer's glow chain).
+    RtShader                     m_bloom_bright;
+    RtShader                     m_bloom_blur;
+    RtShader                     m_bloom_combine;
 
     IDirect3DVertexDeclaration9* m_mesh_decl;
     IDirect3DTexture9*           m_def_white;
