@@ -13,11 +13,117 @@
 
 #include <shellapi.h> // Drag-drop from Explorer
 
+#include "stb/stb_image.h" // splash image decode (implementation in TextureLoad.cpp)
+
 #include <algorithm>
 #include <filesystem>
 #include <string>
 
 namespace fs = std::filesystem;
+
+// ---------------------------------------------------------------------------
+// Splash screen: a borderless popup showing branding/splash.png (next to the
+// exe) while Init() runs. Skipped silently if the image is missing.
+// ---------------------------------------------------------------------------
+namespace
+{
+    struct SplashState
+    {
+        HWND           hwnd   = nullptr;
+        unsigned char* pixels = nullptr; // BGRA, top-down
+        int            w = 0, h = 0;
+        DWORD          shown_at = 0;
+    };
+    SplashState g_splash;
+
+    LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+        if (msg == WM_PAINT && g_splash.pixels)
+        {
+            PAINTSTRUCT ps;
+            HDC dc = ::BeginPaint(hwnd, &ps);
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader.biSize        = sizeof(bmi.bmiHeader);
+            bmi.bmiHeader.biWidth       = g_splash.w;
+            bmi.bmiHeader.biHeight      = -g_splash.h; // negative = top-down rows
+            bmi.bmiHeader.biPlanes      = 1;
+            bmi.bmiHeader.biBitCount    = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            RECT rc;
+            ::GetClientRect(hwnd, &rc);
+            ::SetStretchBltMode(dc, HALFTONE); // smooth downscale
+            ::SetBrushOrgEx(dc, 0, 0, nullptr);
+            ::StretchDIBits(dc, 0, 0, rc.right, rc.bottom, 0, 0, g_splash.w, g_splash.h,
+                            g_splash.pixels, &bmi, DIB_RGB_COLORS, SRCCOPY);
+            ::EndPaint(hwnd, &ps);
+            return 0;
+        }
+        return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    void ShowSplash()
+    {
+        wchar_t exe[MAX_PATH];
+        const DWORD n = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        const fs::path png =
+            fs::path(std::wstring(exe, n)).parent_path() / "branding" / "splash.png";
+
+        int w = 0, h = 0, channels = 0;
+        unsigned char* rgba = stbi_load(png.string().c_str(), &w, &h, &channels, 4);
+        if (!rgba)
+            return;
+        for (int i = 0; i < w * h; ++i) // RGBA -> BGRA for GDI
+            std::swap(rgba[i * 4 + 0], rgba[i * 4 + 2]);
+        g_splash.pixels = rgba;
+        g_splash.w = w;
+        g_splash.h = h;
+
+        WNDCLASSEXW wc = { sizeof(wc), 0, SplashWndProc, 0L, 0L,
+                           ::GetModuleHandleW(nullptr), nullptr,
+                           ::LoadCursor(nullptr, IDC_ARROW), nullptr,
+                           nullptr, L"XenFusionSplash", nullptr };
+        ::RegisterClassExW(&wc);
+
+        // The art is authored large; show it at a reduced size on screen.
+        const int disp_w = w * 2 / 5;
+        const int disp_h = h * 2 / 5;
+
+        RECT wa = {};
+        ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        const int x = wa.left + ((wa.right - wa.left) - disp_w) / 2;
+        const int y = wa.top + ((wa.bottom - wa.top) - disp_h) / 2;
+
+        // Tool window: no taskbar button for the short-lived splash.
+        g_splash.hwnd = ::CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                                          wc.lpszClassName, L"XenFusion", WS_POPUP,
+                                          x, y, disp_w, disp_h, nullptr, nullptr, wc.hInstance, nullptr);
+        if (!g_splash.hwnd)
+            return;
+        ::ShowWindow(g_splash.hwnd, SW_SHOWNOACTIVATE);
+        ::UpdateWindow(g_splash.hwnd); // synchronous first WM_PAINT
+        g_splash.shown_at = ::GetTickCount();
+    }
+
+    void CloseSplash()
+    {
+        if (g_splash.hwnd)
+        {
+            // Keep the splash up long enough to be seen even on a fast start.
+            const DWORD kMinVisibleMs = 1500;
+            const DWORD visible = ::GetTickCount() - g_splash.shown_at;
+            if (visible < kMinVisibleMs)
+                ::Sleep(kMinVisibleMs - visible);
+            ::DestroyWindow(g_splash.hwnd);
+            ::UnregisterClassW(L"XenFusionSplash", ::GetModuleHandleW(nullptr));
+            g_splash.hwnd = nullptr;
+        }
+        if (g_splash.pixels)
+        {
+            stbi_image_free(g_splash.pixels);
+            g_splash.pixels = nullptr;
+        }
+    }
+} // namespace
 
 // The Win32 backend exposes its message handler through this forward-decl.
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -59,9 +165,15 @@ bool EngineApplication::Init()
 {
     g_app = this;
 
+    ShowSplash(); // branding splash while the editor initializes
+
+    // APPICON is the icon resource embedded via XenFusion.rc — it gives the
+    // window its taskbar / Alt-Tab / title-bar icon.
+    const HICON app_icon = ::LoadIconW(::GetModuleHandleW(nullptr), L"APPICON");
+
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L,
-                       ::GetModuleHandleW(nullptr), nullptr, nullptr, nullptr,
-                       nullptr, L"XenFusionWindow", nullptr };
+                       ::GetModuleHandleW(nullptr), app_icon, nullptr, nullptr,
+                       nullptr, L"XenFusionWindow", app_icon };
     ::RegisterClassExW(&wc);
     window_ = ::CreateWindowW(wc.lpszClassName, L"XenFusion",
                               WS_OVERLAPPEDWINDOW, 100, 100, 1440, 900,
@@ -71,10 +183,13 @@ bool EngineApplication::Init()
 
     if (!renderer_.Init(window_))
     {
+        CloseSplash(); // the topmost splash would hide the error box
         ::MessageBoxW(nullptr, L"Failed to create the Direct3D 9 device.",
                       L"XenFusion", MB_OK | MB_ICONERROR);
         return false;
     }
+
+    CloseSplash(); // init done — hand over to the main window
 
     ::ShowWindow(window_, SW_SHOWDEFAULT);
     ::UpdateWindow(window_);

@@ -1,0 +1,3 @@
+// Application icon embedded in the exe (Explorer, taskbar, Alt-Tab).
+// Loaded at runtime by name for the window class icon.
+APPICON ICON "../../branding/XenFusion.ico"

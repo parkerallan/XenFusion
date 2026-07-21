@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(XenFusion LANGUAGES CXX)
+project(XenFusion LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -123,6 +123,7 @@ set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/src/shaders)
 # The engine executable.
 # ---------------------------------------------------------------------------
 add_executable(XenFusion
+    src/app/XenFusion.rc
     src/app/main.cpp
     src/app/EngineApplication.cpp
     src/app/Settings.cpp
@@ -162,9 +163,14 @@ target_compile_definitions(XenFusion PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_
 target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp bullet lua Ole32 Shell32 Xinput9_1_0)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
+# Subsystem per config: Debug keeps the console window (log/stdout), all other
+# configs are GUI apps — no console at launch. The entry override lets the GUI
+# configs link the ordinary main().
 set_target_properties(XenFusion PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:XenFusion>"
+    WIN32_EXECUTABLE "$<NOT:$<CONFIG:Debug>>"
 )
+target_link_options(XenFusion PRIVATE "$<$<NOT:$<CONFIG:Debug>>:/ENTRY:mainCRTStartup>")
 
 # Ship the icon font next to the exe so it can be loaded at runtime.
 add_custom_command(TARGET XenFusion POST_BUILD
@@ -172,6 +178,15 @@ add_custom_command(TARGET XenFusion POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/third_party/fonts/fa-solid-900.ttf"
         "$<TARGET_FILE_DIR:XenFusion>/fonts/fa-solid-900.ttf"
+    VERBATIM
+)
+
+# Ship the splash image next to the exe (shown while the editor starts).
+add_custom_command(TARGET XenFusion POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:XenFusion>/branding"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/branding/splash.png"
+        "$<TARGET_FILE_DIR:XenFusion>/branding/splash.png"
     VERBATIM
 )
 
