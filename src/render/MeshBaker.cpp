@@ -103,6 +103,16 @@ namespace mesh
             subset.textures.specular = find_tex(mat, {aiTextureType_SPECULAR});
             subset.textures.emissive = find_tex(mat, {aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR});
             subset.textures.metallic = find_tex(mat, {aiTextureType_METALNESS});
+            subset.textures.clearcoat = find_tex(mat, {aiTextureType_CLEARCOAT});
+            if (subset.textures.clearcoat.empty())
+            {
+                // Substance-style sibling export: <model>_Clearcoat.png next to
+                // the source (OBJ/MTL has no clearcoat map statement to read).
+                const std::string sibling = source.stem().string() + "_Clearcoat.png";
+                std::error_code ec;
+                if (fs::exists(source.parent_path() / sibling, ec))
+                    subset.textures.clearcoat = sibling;
+            }
             subsets.push_back(std::move(subset));
         }
 
@@ -139,6 +149,7 @@ namespace mesh
             WriteStr(out, s.textures.specular);
             WriteStr(out, s.textures.emissive);
             WriteStr(out, s.textures.metallic);
+            WriteStr(out, s.textures.clearcoat);
         }
         return true;
     }

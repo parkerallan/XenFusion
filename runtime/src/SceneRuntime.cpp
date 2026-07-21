@@ -433,7 +433,8 @@ void SceneRuntime::RenderEnvCapture()
         m_device->SetSamplerState(st, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
         m_device->SetSamplerState(st, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
     }
-    // Metal inside a reflection reflects nothing (no recursion).
+    // Metal inside a reflection reflects nothing (no recursion). The clearcoat
+    // slot is bound per subset by DrawMesh; its env term is zero here anyway.
     m_device->SetTexture(5, (IDirect3DBaseTexture9*)m_def_envcube);
 
     float pm[16];
@@ -806,12 +807,16 @@ void SceneRuntime::Render(float dt)
             m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
             m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
         }
-        // s5 = environment cube (bound once per frame).
+        // s5 = environment cube (bound once per frame); s6 = clearcoat mask.
         m_device->SetSamplerState(5, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
         m_device->SetSamplerState(5, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
         m_device->SetSamplerState(5, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
         m_device->SetSamplerState(5, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         m_device->SetSamplerState(5, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
+        m_device->SetSamplerState(6, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(6, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(6, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+        m_device->SetSamplerState(6, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
         m_device->SetTexture(5, m_env_captured ? (IDirect3DBaseTexture9*)m_envDynCube
                               : m_env          ? (IDirect3DBaseTexture9*)m_env
                                                : (IDirect3DBaseTexture9*)m_def_envcube);
@@ -943,6 +948,7 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
         m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
         m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
         m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
+        m_device->SetTexture(6, s.clearcoat ? s.clearcoat : m_def_black);
         m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gm->vertexCount,
                                        s.indexStart, s.indexCount / 3);
     }

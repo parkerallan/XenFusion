@@ -145,6 +145,7 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
                 gs.specular = load(s.textures.specular);
                 gs.emissive = load(s.textures.emissive);
                 gs.metallic = load(s.textures.metallic);
+                gs.clearcoat = load(s.textures.clearcoat);
                 g.subsets.push_back(gs);
             }
         }

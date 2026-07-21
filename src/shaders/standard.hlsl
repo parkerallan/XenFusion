@@ -12,6 +12,8 @@
 //       s3 = emissive (rgb added after lighting; black = none)
 //       s4 = metallic (r: 0 = dielectric, 1 = metal)   s5 = environment cube
 //            (metal reflects the env tinted by the diffuse; black cube = none)
+//       s6 = clearcoat (r: clear-lacquer amount — untinted env sheen ADDED over
+//            the lit surface; the paint keeps its color, car-paint style)
 //       c15 = glow-mask switch: 1 = output alpha carries the emissive strength
 //             (the bloom chain's glow source — opaque subsets only), 0 = output
 //             alpha is the diffuse's (cutout / blend passes need it)
@@ -48,6 +50,7 @@ sampler2D sSpecular : register(s2);
 sampler2D sEmissive : register(s3);
 sampler2D sMetallic : register(s4);
 samplerCUBE sEnv    : register(s5);
+sampler2D sClearcoat : register(s6);
 
 float4 PSMain(VSOut i) : COLOR
 {
@@ -125,6 +128,18 @@ float4 PSMain(VSOut i) : COLOR
     float3 metal = texCUBE(sEnv, R).rgb * dtex.rgb * fres
                  + dtex.rgb * (gLightColor * pow(ndh, 96.0) + pglint);
     color = lerp(color, metal, m);
+
+    // Clearcoat: a clear lacquer over the lit surface — an UNTINTED env sheen
+    // ADDED on top (the paint underneath keeps its full color, unlike metal
+    // which replaces it), plus the lacquer's own light glints: the directional
+    // and point-light highlights, white/untinted (the coat is clear), same
+    // tightness as the metal glints. Dielectric Fresnel on the env sheen:
+    // faint face-on, mirror at grazing. Reuses the single env sample above —
+    // no second sample, so no ghosting.
+    float coat  = tex2D(sClearcoat, uv).r;
+    float cfres = 0.05 + 0.95 * pow(1.0 - ndv, 4.0);
+    color += texCUBE(sEnv, R).rgb * (coat * cfres)
+           + (gLightColor * pow(ndh, 96.0) + pglint) * coat;
 
     float3 etex  = tex2D(sEmissive, uv).rgb; // self-illumination: unlit, additive
     color += etex;

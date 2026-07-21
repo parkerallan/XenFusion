@@ -1132,6 +1132,11 @@ void SceneRenderer::RenderGpu(float dt)
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
+            // s6 = clearcoat mask (per subset, 2D).
+            m_device->SetSamplerState(6, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(6, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(6, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+            m_device->SetSamplerState(6, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
             m_device->SetTexture(5, m_env_captured ? (IDirect3DBaseTexture9*)m_env_dyn
                                   : m_env          ? (IDirect3DBaseTexture9*)m_env
                                                    : (IDirect3DBaseTexture9*)m_def_envcube);
@@ -1181,6 +1186,7 @@ void SceneRenderer::RenderGpu(float dt)
                 m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
                 m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
                 m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
+                m_device->SetTexture(6, s.clearcoat ? s.clearcoat : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                gm->vertexCount, s.indexStart, s.indexCount / 3);
             };
@@ -1445,6 +1451,7 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
                 m_device->SetTexture(2, s.specular ? s.specular : m_def_black);
                 m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
                 m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
+                m_device->SetTexture(6, s.clearcoat ? s.clearcoat : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                gm->vertexCount, s.indexStart, s.indexCount / 3);
             }
