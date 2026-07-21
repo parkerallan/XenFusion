@@ -59,12 +59,20 @@ namespace project
                         ja["trackRotOffset"] = {a.cam_track_rot_offset[0], a.cam_track_rot_offset[1], a.cam_track_rot_offset[2]};
                     }
                 }
-                else if (a.type == "Directional Light" || a.type == "Point Light")
+                else if (a.type == "Directional Light" || a.type == "Point Light" ||
+                         a.type == "Spot Light" || a.type == "Environment Light")
                 {
                     ja["color"]     = {a.light_color[0], a.light_color[1], a.light_color[2]};
                     ja["intensity"] = a.light_intensity;
-                    if (a.type == "Point Light")
+                    if (a.type == "Point Light" || a.type == "Spot Light")
                         ja["range"] = a.light_range;
+                    if (a.type == "Spot Light")
+                    {
+                        ja["innerCone"] = a.light_inner_deg;
+                        ja["outerCone"] = a.light_outer_deg;
+                        ja["volumetric"] = a.light_volumetric;
+                        ja["volumetricIntensity"] = a.light_volumetric_intensity;
+                    }
                 }
                 else if (a.type == "Rigid Body")
                 {
@@ -166,6 +174,10 @@ namespace project
                         }
                         a.light_intensity = ja.value("intensity", 1.0f);
                         a.light_range     = ja.value("range", 15.0f);
+                        a.light_inner_deg = ja.value("innerCone", 20.0f);
+                        a.light_outer_deg = ja.value("outerCone", 30.0f);
+                        a.light_volumetric = ja.value("volumetric", false);
+                        a.light_volumetric_intensity = ja.value("volumetricIntensity", 1.0f);
 
                         auto readSize = [&](float* dst)
                         {

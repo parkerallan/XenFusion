@@ -93,6 +93,22 @@ private:
     RtShader                     m_bloom_blur;
     RtShader                     m_bloom_combine;
 
+    // Spot volumetric beam ("Project Light Shaft"): beam.hlsl over a unit-cone
+    // VB (apex origin, +Z, radius = z), scaled to tan(outer) * range by each
+    // beam's world matrix. Captured in BuildDrawLists, drawn additively after
+    // the translucents. Mirrors the editor's SceneRenderer.
+    RtShader                     m_beam;
+    IDirect3DVertexBuffer9*      m_beam_vb; // 24-segment fan, 72 verts, 44B each
+    struct SpotBeam
+    {
+        D3DMATRIX world;
+        float     color[4]; // rgb premultiplied: spot color * intensity * beam * gain
+        float     apex[4];  // world apex (PS c2) — the PS rebuilds the cone
+        float     axis[4];  // normal analytically: xyz = unit dir, w = tan(outer)
+    };
+    SpotBeam                     m_spot_beams[2];
+    int                          m_spot_beam_count;
+
     IDirect3DVertexDeclaration9* m_mesh_decl;
     IDirect3DTexture9*           m_def_white;
     IDirect3DTexture9*           m_def_normal;
@@ -143,12 +159,17 @@ private:
     camr::FollowSmooth m_follow_smooth;
 
     // Scene lights captured in BuildDrawLists — ready-made PS constant payloads
-    // (c0 / c6 / c7-c10 / c11-c14), mirroring the editor's SceneRenderer. The
-    // legacy fixed sun is used when the scene has no light attributes at all.
+    // (c0 / c2 / c6 / c7-c10 / c11-c14 / c16-c21), mirroring the editor's
+    // SceneRenderer. The legacy fixed sun/ambient are used when the scene has
+    // no light attributes at all.
     float m_light_dir[4];
     float m_light_col[4];
     float m_point_pos[4][4]; // xyz + w = 1/range^2
     float m_point_col[4][4]; // rgb * intensity; zero = unused slot
+    float m_spot_pos[2][4];  // xyz + w = 1/range
+    float m_spot_dir[2][4];  // xyz = beam dir (+Z fwd), w = cos(inner half-angle)
+    float m_spot_col[2][4];  // rgb * intensity (zero = unused), w = cos(outer)
+    float m_ambient[4];      // environment-light sum or the legacy default
 
     float m_time;
 

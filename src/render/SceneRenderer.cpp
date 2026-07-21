@@ -362,6 +362,7 @@ void SceneRenderer::LoadStandardShader()
     reload("bloom_bright",  m_bloom_bright_vs,  m_bloom_bright_ps);
     reload("bloom_blur",    m_bloom_blur_vs,    m_bloom_blur_ps);
     reload("bloom_combine", m_bloom_combine_vs, m_bloom_combine_ps);
+    reload("beam", m_beam_vs, m_beam_ps); // spot volumetric shaft (optional)
     if (m_vs && (!m_bloom_bright_ps || !m_bloom_blur_ps || !m_bloom_combine_ps))
         applog::Warn("Bloom shaders not compiled — emissive glow off until 'Compile shaders'");
 }
@@ -398,6 +399,8 @@ void SceneRenderer::Shutdown()
     if (m_bloom_blur_vs)    { m_bloom_blur_vs->Release();    m_bloom_blur_vs = nullptr; }
     if (m_bloom_bright_ps)  { m_bloom_bright_ps->Release();  m_bloom_bright_ps = nullptr; }
     if (m_bloom_bright_vs)  { m_bloom_bright_vs->Release();  m_bloom_bright_vs = nullptr; }
+    if (m_beam_ps)    { m_beam_ps->Release();    m_beam_ps = nullptr; }
+    if (m_beam_vs)    { m_beam_vs->Release();    m_beam_vs = nullptr; }
     if (m_ps)         { m_ps->Release();         m_ps = nullptr; }
     if (m_vs)         { m_vs->Release();         m_vs = nullptr; }
     m_shaders.Shutdown();
@@ -484,11 +487,23 @@ void SceneRenderer::RenderUi(EngineState& state)
         m_track_preview = false;
     }
     bool  have_dir = false;
+    bool  have_env = false;
     int   point_count = 0;
+    int   spot_count = 0;
     std::memset(m_point_pos, 0, sizeof(m_point_pos));
     std::memset(m_point_col, 0, sizeof(m_point_col));
+    std::memset(m_spot_pos, 0, sizeof(m_spot_pos));
+    std::memset(m_spot_dir, 0, sizeof(m_spot_dir));
+    std::memset(m_spot_col, 0, sizeof(m_spot_col));
+    // Unused spot slots keep a valid cone pair (inner cos 1, outer cos 0) so the
+    // shader's smoothstep edges never collapse; zero color mutes them anyway.
+    m_spot_dir[0][2] = m_spot_dir[1][2] = 1.0f;
+    m_spot_dir[0][3] = m_spot_dir[1][3] = 1.0f;
+    m_ambient[0] = m_ambient[1] = m_ambient[2] = 0.0f;
     m_draw_items.clear();
     m_shader_items.clear();
+    m_spot_gizmos.clear();
+    m_spot_beams.clear();
     m_phys_debug.clear(); // rebuilt from the scene each frame (authoring wireframes)
     if (SceneFile* scene = state.SelectedScene())
     {
@@ -535,6 +550,65 @@ void SceneRenderer::RenderUi(EngineState& state)
                     }
                     m_point_pos[point_count][3] = 1.0f / (range * range);
                     ++point_count;
+                }
+                else if (a.type == "Spot Light" && spot_count < 2)
+                {
+                    // Position + beam direction (+Z forward) from the transform.
+                    const float d2r = 3.14159265f / 180.0f;
+                    const D3DMATRIX r = Multiply(Multiply(RotationX(o.rotation[0] * d2r),
+                                                          RotationY(o.rotation[1] * d2r)),
+                                                 RotationZ(o.rotation[2] * d2r));
+                    const float range = (std::max)(a.light_range, 0.1f);
+                    // Keep the smoothstep edges apart: outer strictly wider.
+                    const float inner = (std::min)((std::max)(a.light_inner_deg, 0.1f), 89.0f);
+                    const float outer = (std::max)(a.light_outer_deg, inner + 0.1f);
+                    m_spot_pos[spot_count][0] = o.position[0];
+                    m_spot_pos[spot_count][1] = o.position[1];
+                    m_spot_pos[spot_count][2] = o.position[2];
+                    m_spot_pos[spot_count][3] = 1.0f / range;
+                    m_spot_dir[spot_count][0] = r._31;
+                    m_spot_dir[spot_count][1] = r._32;
+                    m_spot_dir[spot_count][2] = r._33;
+                    m_spot_dir[spot_count][3] = std::cos(inner * d2r);
+                    for (int k = 0; k < 3; ++k) m_spot_col[spot_count][k] = a.light_color[k] * a.light_intensity;
+                    m_spot_col[spot_count][3] = std::cos(outer * d2r);
+                    ++spot_count;
+                    if (selected)
+                    {
+                        SpotGizmo sg;
+                        sg.base  = Multiply(r, Translation(o.position[0], o.position[1], o.position[2]));
+                        sg.range = range;
+                        sg.inner_deg = inner;
+                        sg.outer_deg = outer;
+                        m_spot_gizmos.push_back(sg);
+                    }
+                    if (a.light_volumetric && a.light_volumetric_intensity > 0.0f)
+                    {
+                        // Beam brightness: additive and double-sided, so a small
+                        // gain reads as haze rather than a solid (tune by eye;
+                        // keep in sync with SceneRuntime.cpp).
+                        const float kBeamGain = 0.10f;
+                        const float tano = std::tan(outer * d2r);
+                        const float rr = tano * range;
+                        SpotBeam b;
+                        b.world = Multiply(Multiply(Scaling(rr, rr, range), r),
+                                           Translation(o.position[0], o.position[1], o.position[2]));
+                        for (int k = 0; k < 3; ++k)
+                            b.color[k] = a.light_color[k] * a.light_intensity *
+                                         a.light_volumetric_intensity * kBeamGain;
+                        b.color[3] = 0.0f;
+                        b.apex[0] = o.position[0]; b.apex[1] = o.position[1];
+                        b.apex[2] = o.position[2]; b.apex[3] = 0.0f;
+                        b.axis[0] = r._31; b.axis[1] = r._32; b.axis[2] = r._33;
+                        b.axis[3] = tano;
+                        m_spot_beams.push_back(b);
+                    }
+                }
+                else if (a.type == "Environment Light")
+                {
+                    // Every instance sums into the one ambient term (c2).
+                    for (int k = 0; k < 3; ++k) m_ambient[k] += a.light_color[k] * a.light_intensity;
+                    have_env = true;
                 }
                 else if (a.type == "Rigid Body" || a.type == "Trigger Volume")
                 {
@@ -616,15 +690,23 @@ void SceneRenderer::RenderUi(EngineState& state)
     }
 
     // No directional light authored: keep the legacy fixed sun — white when the
-    // scene has no lights at all (old scenes render unchanged), black when point
-    // lights exist (the author owns the lighting; only c0's direction, which
-    // custom shaders read, stays meaningful).
+    // scene has no direct lights at all (old scenes render unchanged), black
+    // when point/spot lights exist (the author owns the lighting; only c0's
+    // direction, which custom shaders read, stays meaningful).
     if (!have_dir)
     {
         const Vec3 ld = Normalize({-0.4f, -1.0f, -0.5f});
         m_light_dir[0] = ld.x; m_light_dir[1] = ld.y; m_light_dir[2] = ld.z;
-        const float w = (point_count == 0) ? 1.0f : 0.0f;
+        const float w = (point_count == 0 && spot_count == 0) ? 1.0f : 0.0f;
         m_light_col[0] = m_light_col[1] = m_light_col[2] = w;
+    }
+    // No Environment Light authored: keep the legacy fixed ambient, so every
+    // existing scene renders unchanged. Authored ones replace it entirely (an
+    // Environment Light is only ever an ambient booster — it does not touch the
+    // legacy-sun rule above).
+    if (!have_env)
+    {
+        m_ambient[0] = 0.22f; m_ambient[1] = 0.22f; m_ambient[2] = 0.25f;
     }
 
     // Focus-key ("F") target: the selected object.
@@ -1143,13 +1225,15 @@ void SceneRenderer::RenderGpu(float dt)
 
             // Pixel-shader constants: light direction, camera position, ambient.
             const float cam_pos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
-            const float ambient[4]   = { 0.22f, 0.22f, 0.25f, 0.0f };
             m_device->SetPixelShaderConstantF(0, m_light_dir, 1);
             m_device->SetPixelShaderConstantF(1, cam_pos, 1);
-            m_device->SetPixelShaderConstantF(2, ambient, 1);
+            m_device->SetPixelShaderConstantF(2, m_ambient, 1);
             m_device->SetPixelShaderConstantF(6, m_light_col, 1);
             m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
             m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
+            m_device->SetPixelShaderConstantF(16, &m_spot_pos[0][0], 2);
+            m_device->SetPixelShaderConstantF(18, &m_spot_dir[0][0], 2);
+            m_device->SetPixelShaderConstantF(20, &m_spot_col[0][0], 2);
 
             const D3DMATRIX vp = Multiply(m_view, m_proj);
             // Per-item transform + buffers, then each material subset binds its
@@ -1303,14 +1387,53 @@ void SceneRenderer::RenderGpu(float dt)
             m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         }
 
-        // --- Physics collider wireframes (green rigid, cyan trigger) ---
-        // Drawn whenever the scene has colliders — during authoring (from the
-        // authored transform, so you can size them against the mesh) and while
-        // playing (RenderGpu's pose override makes them track the simulation).
-        if (!m_phys_debug.empty())
+        // --- Spot volumetric beams (additive cone mesh, beam.hlsl) ---
+        // Last of the translucents: additive is order-independent, depth test
+        // keeps geometry occluding the shaft, no depth write. RGB only so the
+        // ONE+ONE blend can't disturb the bloom glow mask in the alpha channel.
+        if (!m_spot_beams.empty() && m_beam_vs && m_beam_ps && m_mesh_decl)
+        {
+            if (m_beam_cone.empty())
+                BuildBeamCone();
+            m_device->SetVertexDeclaration(m_mesh_decl);
+            m_device->SetVertexShader(m_beam_vs);
+            m_device->SetPixelShader(m_beam_ps);
+            m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+            m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_ONE);
+            m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+            m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+            m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+            m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+            m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+                D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+            const float cam[4] = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
+            m_device->SetPixelShaderConstantF(1, cam, 1);
+            const D3DMATRIX vp = Multiply(m_view, m_proj);
+            for (const SpotBeam& b : m_spot_beams)
+            {
+                const D3DMATRIX wvp = Multiply(b.world, vp);
+                m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
+                m_device->SetVertexShaderConstantF(4, &b.world.m[0][0], 4);
+                m_device->SetPixelShaderConstantF(0, b.color, 1);
+                m_device->SetPixelShaderConstantF(2, b.apex, 1);
+                m_device->SetPixelShaderConstantF(3, b.axis, 1);
+                m_device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)(m_beam_cone.size() / 3),
+                                          m_beam_cone.data(), sizeof(MeshVertex));
+            }
+            m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+            m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        }
+
+        // --- Physics collider wireframes (green rigid, cyan trigger) and the
+        //     selected object's spot-light cone gizmo ---
+        // Colliders are drawn whenever the scene has them — during authoring
+        // (from the authored transform, so you can size them against the mesh)
+        // and while playing (RenderGpu's pose override makes them track the
+        // simulation). The spot cone rides the same line list.
+        if (!m_phys_debug.empty() || !m_spot_gizmos.empty())
         {
             std::vector<Vertex> lines;
-            lines.reserve(m_phys_debug.size() * 48);
+            lines.reserve(m_phys_debug.size() * 48 + m_spot_gizmos.size() * 104);
             for (size_t i = 0; i < m_phys_debug.size(); ++i)
             {
                 const PhysDebug& pd = m_phys_debug[i];
@@ -1326,6 +1449,8 @@ void SceneRenderer::RenderGpu(float dt)
                                                 : D3DCOLOR_ARGB(255, 90, 220, 110);
                 AppendColliderWire(pd, m, col, lines);
             }
+            for (size_t i = 0; i < m_spot_gizmos.size(); ++i)
+                AppendSpotCone(m_spot_gizmos[i], lines);
             if (!lines.empty())
             {
                 D3DMATRIX ident = Identity();
@@ -1397,15 +1522,17 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
     m_device->SetTexture(5, m_def_envcube);
 
     const float cam[4]     = { eye[0], eye[1], eye[2], 0.0f };
-    const float ambient[4] = { 0.22f, 0.22f, 0.25f, 0.0f };
     const float zero[4]    = { 0.0f, 0.0f, 0.0f, 0.0f };
     m_device->SetPixelShaderConstantF(0, m_light_dir, 1);
     m_device->SetPixelShaderConstantF(1, cam, 1);
-    m_device->SetPixelShaderConstantF(2, ambient, 1);
+    m_device->SetPixelShaderConstantF(2, m_ambient, 1);
     m_device->SetPixelShaderConstantF(6, m_light_col, 1);
     m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
     m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
     m_device->SetPixelShaderConstantF(15, zero, 1);
+    m_device->SetPixelShaderConstantF(16, &m_spot_pos[0][0], 2);
+    m_device->SetPixelShaderConstantF(18, &m_spot_dir[0][0], 2);
+    m_device->SetPixelShaderConstantF(20, &m_spot_col[0][0], 2);
 
     m_device->SetRenderState(D3DRS_ALPHAREF, 128);
     m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
@@ -1601,7 +1728,6 @@ void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& s
     // material), so a "model" shader can light/texture the mesh like standard.
     const float* lightDir   = m_light_dir; // the scene's directional light
     const float camPos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
-    const float ambient[4]  = { 0.22f, 0.22f, 0.25f, 0.0f };
     const float time4[4]    = { m_time, 0.0f, 0.0f, 0.0f };
 
     const D3DMATRIX wvp = Multiply(w, viewProj);
@@ -1611,7 +1737,7 @@ void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& s
     m_device->SetVertexShaderConstantF(4, &w.m[0][0], 4);
     m_device->SetPixelShaderConstantF(0, lightDir, 1);
     m_device->SetPixelShaderConstantF(1, camPos, 1);
-    m_device->SetPixelShaderConstantF(2, ambient, 1);
+    m_device->SetPixelShaderConstantF(2, m_ambient, 1);
     m_device->SetPixelShaderConstantF(3, time4, 1); // gTime
     m_device->SetStreamSource(0, vb, 0, sizeof(MeshVertex));
     m_device->SetIndices(ib);
@@ -1899,6 +2025,91 @@ void SceneRenderer::AppendColliderWire(const PhysDebug& pd, const D3DMATRIX& m,
         {
             out.push_back(L::P(cx[e[i][0]], cy[e[i][0]], cz[e[i][0]], m, col));
             out.push_back(L::P(cx[e[i][1]], cy[e[i][1]], cz[e[i][1]], m, col));
+        }
+    }
+}
+
+// Unit cone for the spot volumetric beam: apex at the origin opening down +Z,
+// ring radius 1 at z = 1 (radius = z), so the world matrix's (r, r, range)
+// scale shapes it into any spot's outer cone. Side surface only — the far end
+// stays open; the shader fades to zero there anyway. Smooth per-vertex ring
+// normals ((cos, sin, -1) / sqrt2 for radius = z); the apex takes its face's
+// mid-angle normal. uv.x carries t along the beam (0 = apex, 1 = end).
+void SceneRenderer::BuildBeamCone()
+{
+    const int   seg = 24;
+    const float TAU = 6.28318531f;
+    const float inv = 0.70710678f; // 1/sqrt2
+    m_beam_cone.clear();
+    m_beam_cone.reserve(seg * 3);
+    auto vert = [](float x, float y, float z, float nx, float ny, float nz, float t)
+    {
+        MeshVertex v = {};
+        v.px = x;  v.py = y;  v.pz = z;
+        v.nx = nx; v.ny = ny; v.nz = nz;
+        v.u  = t;
+        return v;
+    };
+    for (int s = 0; s < seg; ++s)
+    {
+        const float a0 = (float)s / seg * TAU;
+        const float a1 = (float)(s + 1) / seg * TAU;
+        const float am = (a0 + a1) * 0.5f;
+        m_beam_cone.push_back(vert(0, 0, 0, std::cos(am) * inv, std::sin(am) * inv, -inv, 0.0f));
+        m_beam_cone.push_back(vert(std::cos(a0), std::sin(a0), 1.0f,
+                                   std::cos(a0) * inv, std::sin(a0) * inv, -inv, 1.0f));
+        m_beam_cone.push_back(vert(std::cos(a1), std::sin(a1), 1.0f,
+                                   std::cos(a1) * inv, std::sin(a1) * inv, -inv, 1.0f));
+    }
+}
+
+// Spot-light cone (mirrors the Vulkan editor's gizmo): the beam axis down local
+// +Z, the outer cone's end ring at range (radius = tan(outer) * range) with
+// four spokes back to the apex, and a fainter inner-cone preview ring at 65% of
+// the beam. Sized purely by the attribute, so dragging Range / Inner / Outer in
+// the Inspector reshapes it live.
+void SceneRenderer::AppendSpotCone(const SpotGizmo& sg, std::vector<Vertex>& out) const
+{
+    struct L
+    {
+        static Vertex P(float x, float y, float z, const D3DMATRIX& m, D3DCOLOR c)
+        {
+            Vertex v;
+            v.x = x * m._11 + y * m._21 + z * m._31 + m._41;
+            v.y = x * m._12 + y * m._22 + z * m._32 + m._42;
+            v.z = x * m._13 + y * m._23 + z * m._33 + m._43;
+            v.color = c;
+            return v;
+        }
+    };
+
+    const int   seg = 24;
+    const float TAU = 6.28318531f, d2r = 3.14159265f / 180.0f;
+    const D3DCOLOR outer_col = D3DCOLOR_ARGB(255, 255, 221, 87); // warm gizmo yellow
+    const D3DCOLOR inner_col = D3DCOLOR_ARGB(255, 168, 156, 96); // dimmed preview
+    const float ro = std::tan(sg.outer_deg * d2r) * sg.range;
+    const float zi = sg.range * 0.65f;
+    const float ri = std::tan(sg.inner_deg * d2r) * zi;
+
+    // Beam axis.
+    out.push_back(L::P(0, 0, 0, sg.base, outer_col));
+    out.push_back(L::P(0, 0, sg.range, sg.base, outer_col));
+    for (int s = 0; s < seg; ++s)
+    {
+        const float a0 = (float)s / seg * TAU, a1 = (float)(s + 1) / seg * TAU;
+        const float c0 = std::cos(a0), s0 = std::sin(a0);
+        const float c1 = std::cos(a1), s1 = std::sin(a1);
+        // Outer ring at the cone's end...
+        out.push_back(L::P(c0 * ro, s0 * ro, sg.range, sg.base, outer_col));
+        out.push_back(L::P(c1 * ro, s1 * ro, sg.range, sg.base, outer_col));
+        // ...the inner-cone preview partway down the beam...
+        out.push_back(L::P(c0 * ri, s0 * ri, zi, sg.base, inner_col));
+        out.push_back(L::P(c1 * ri, s1 * ri, zi, sg.base, inner_col));
+        // ...and four spokes from the apex to the outer ring.
+        if ((s % (seg / 4)) == 0)
+        {
+            out.push_back(L::P(0, 0, 0, sg.base, outer_col));
+            out.push_back(L::P(c0 * ro, s0 * ro, sg.range, sg.base, outer_col));
         }
     }
 }

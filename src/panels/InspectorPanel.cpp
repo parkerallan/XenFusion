@@ -332,20 +332,40 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
-        else if (attr.type == "Directional Light" || attr.type == "Point Light")
+        else if (attr.type == "Directional Light" || attr.type == "Point Light" ||
+                 attr.type == "Spot Light" || attr.type == "Environment Light")
         {
             const bool is_point = (attr.type == "Point Light");
-            ImGui::TextDisabled(is_point ? "Position uses the object position."
-                                         : "Direction uses the object rotation.");
+            const bool is_spot  = (attr.type == "Spot Light");
+            const bool is_env   = (attr.type == "Environment Light");
+            ImGui::TextDisabled(is_env   ? "Flat ambient boost for the whole scene."
+                                : is_spot ? "Position and direction use the object transform."
+                                : is_point ? "Position uses the object position."
+                                           : "Direction uses the object rotation.");
             bool edited = false, commit = false;
             edited |= ImGui::ColorEdit3("Color", attr.light_color);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
             edited |= ImGui::DragFloat("Intensity", &attr.light_intensity, 0.05f, 0.0f, 100.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            if (is_point)
+            if (is_point || is_spot)
             {
                 edited |= ImGui::DragFloat("Range", &attr.light_range, 0.1f, 0.1f, 1000.0f, "%.1f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (is_spot)
+            {
+                edited |= ImGui::DragFloat("Inner Cone", &attr.light_inner_deg, 0.25f, 0.1f, 89.0f, "%.1f deg");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Outer Cone", &attr.light_outer_deg, 0.25f, 0.1f, 89.0f, "%.1f deg");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                // Volumetric beam: the cone made visible in the air (flashlight
+                // in fog) — an additive cone mesh, see beam.hlsl.
+                if (ImGui::Checkbox("Project Light Shaft", &attr.light_volumetric)) { edited = commit = true; }
+                if (attr.light_volumetric)
+                {
+                    edited |= ImGui::DragFloat("Beam Intensity", &attr.light_volumetric_intensity, 0.01f, 0.0f, 10.0f, "%.2f");
+                    commit |= ImGui::IsItemDeactivatedAfterEdit();
+                }
             }
             if (edited && scene) scene->dirty = true;
             if (commit) save();
@@ -478,6 +498,21 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Point Light";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Spot Light"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Spot Light";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Environment Light"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Environment Light";
+            attr.light_intensity = 0.2f; // an ambient boost, not a blowout
             obj->attributes.push_back(attr);
             save();
         }

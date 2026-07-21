@@ -5,9 +5,12 @@
 //
 // Register layout (kept in sync with SceneRenderer.cpp / SceneRuntime.cpp):
 //   VS  c0 = gWVP (world*view*proj)   c4 = gWorld
-//   PS  c0 = light dir   c1 = camera pos   c2 = ambient   c5 = bump scale
+//   PS  c0 = light dir   c1 = camera pos   c2 = ambient ("Environment Light"
+//       sum, or the fixed legacy default)   c5 = bump scale
 //       c6 = light color (directional rgb * intensity)
 //       c7-c10 = point light pos + 1/range^2   c11-c14 = point light rgb * intensity
+//       c16-c17 = spot light pos + 1/range   c18-c19 = spot dir + cos(inner)
+//       c20-c21 = spot rgb * intensity + cos(outer)
 //       s0 = diffuse   s1 = normal (alpha = height field)   s2 = specular
 //       s3 = emissive (rgb added after lighting; black = none)
 //       s4 = metallic (r: 0 = dielectric, 1 = metal)   s5 = environment cube
@@ -44,6 +47,9 @@ float3 gLightColor : register(c6);  // directional rgb * intensity (white = lega
 float4 gPointPos[4] : register(c7); // xyz = world position, w = 1 / range^2
 float3 gPointCol[4] : register(c11);// rgb * intensity; zero = unused slot
 float  gGlowMask   : register(c15); // 1 = alpha out = emissive strength (bloom source)
+float4 gSpotPos[2] : register(c16); // xyz = world position, w = 1 / range
+float4 gSpotDir[2] : register(c18); // xyz = beam direction (+Z fwd), w = cos(inner half-angle)
+float4 gSpotCol[2] : register(c20); // rgb * intensity (zero = unused), w = cos(outer half-angle)
 sampler2D sDiffuse  : register(s0);
 sampler2D sNormal   : register(s1);
 sampler2D sSpecular : register(s2);
@@ -109,6 +115,27 @@ float4 PSMain(VSOut i) : COLOR
         diffuse += gPointCol[k] * (saturate(dot(n, Lp)) * (att * att));
         float3 Hp  = normalize(Lp + V);
         pglint += gPointCol[k] * (pow(saturate(dot(n, Hp)), 96.0) * (att * att));
+    }
+    // Up to two spot lights, treated like the points (diffuse here, glint into
+    // the metal/clearcoat terms) with the Vulkan editor's spot falloff pair:
+    // (1 - d/range)^2 distance fade x a smoothstep-shaped cone ramp between the
+    // outer and inner half-angle cosines. Hand-rolled smoothstep with a max()ed
+    // divisor: if the cone edges ever collapse (all-zero constants under an
+    // exe that predates spot uploads), smoothstep(0,0,x) would go NaN and eat
+    // the whole diffuse term — this form just degrades to a hard cone edge.
+    [unroll] for (int j = 0; j < 2; ++j)
+    {
+        float3 sl   = gSpotPos[j].xyz - i.wpos;
+        float  sd2  = max(dot(sl, sl), 1e-4);
+        float  sinv = rsqrt(sd2);
+        float3 Ls   = sl * sinv;
+        float  satt = saturate(1.0 - sd2 * sinv * gSpotPos[j].w); // 1 - d/range
+        float  st   = saturate((dot(-gSpotDir[j].xyz, Ls) - gSpotCol[j].w)
+                               / max(gSpotDir[j].w - gSpotCol[j].w, 1e-4));
+        satt = satt * satt * (st * st * (3.0 - 2.0 * st));
+        diffuse += gSpotCol[j].rgb * (saturate(dot(n, Ls)) * satt);
+        float3 Hs = normalize(Ls + V);
+        pglint += gSpotCol[j].rgb * (pow(saturate(dot(n, Hs)), 96.0) * satt);
     }
     float3 color = dtex.rgb * (gAmbient + diffuse) + spec * (gLightColor * pow(ndh, 40.0));
 

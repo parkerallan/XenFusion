@@ -313,11 +313,19 @@ namespace scenedata
                     const JValue* col = ja.Find("color");
                     const JValue* lin = ja.Find("intensity");
                     const JValue* rng = ja.Find("range");
+                    const JValue* icn = ja.Find("innerCone");
+                    const JValue* ocn = ja.Find("outerCone");
                     at.light_color[0] = NumAt(col, 0, 1.0f);
                     at.light_color[1] = NumAt(col, 1, 1.0f);
                     at.light_color[2] = NumAt(col, 2, 1.0f);
                     if (lin && lin->type == JValue::Number) at.light_intensity = (float)lin->num;
                     if (rng && rng->type == JValue::Number) at.light_range     = (float)rng->num;
+                    if (icn && icn->type == JValue::Number) at.light_inner_deg = (float)icn->num;
+                    if (ocn && ocn->type == JValue::Number) at.light_outer_deg = (float)ocn->num;
+                    const JValue* vol = ja.Find("volumetric");
+                    const JValue* voi = ja.Find("volumetricIntensity");
+                    if (vol && vol->type == JValue::Bool)   at.light_volumetric = vol->b;
+                    if (voi && voi->type == JValue::Number) at.light_volumetric_intensity = (float)voi->num;
 
                     // "Rigid Body" / "Trigger Volume" physics fields.
                     const JValue* pk  = ja.Find("kind");

@@ -35,12 +35,17 @@ struct RtAttribute
     float       cam_track_accel;
     float       cam_track_rot_offset[3];
 
-    // For "Directional Light" / "Point Light": color * intensity. Directional
-    // direction = object rotation (+Z forward); point position = object
-    // position, fading to zero at range.
+    // For "Directional Light" / "Point Light" / "Spot Light" / "Environment
+    // Light": color * intensity. Directional direction = object rotation (+Z
+    // forward); point/spot position = object position, fading to zero at range;
+    // spot cones between the half-angles; environment = flat ambient sum.
     float light_color[3];
     float light_intensity;
-    float light_range; // "Point Light" only
+    float light_range;     // "Point Light" / "Spot Light"
+    float light_inner_deg; // "Spot Light": inner cone half-angle, degrees
+    float light_outer_deg; // "Spot Light": outer cone half-angle, degrees
+    bool  light_volumetric;           // "Spot Light": draw the beam cone
+    float light_volumetric_intensity; // beam brightness scale
 
     // For "Rigid Body" (Bullet). The object transform is the initial pose; scale
     // stays authored (colliders are sized by phys_size, not the object scale).
@@ -77,6 +82,10 @@ struct RtAttribute
         light_color[0] = light_color[1] = light_color[2] = 1.0f;
         light_intensity = 1.0f;
         light_range     = 15.0f;
+        light_inner_deg = 20.0f;
+        light_outer_deg = 30.0f;
+        light_volumetric = false;
+        light_volumetric_intensity = 1.0f;
         phys_kind = 0;
         phys_shape = 0;
         phys_size[0] = phys_size[1] = phys_size[2] = 0.5f;

@@ -182,6 +182,7 @@ add_custom_command(TARGET XenFusion POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:XenFusion>/shaders"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${SHADER_SRC_DIR}/standard.hlsl"
+        "${SHADER_SRC_DIR}/beam.hlsl"
         "${SHADER_SRC_DIR}/bloom_bright.hlsl"
         "${SHADER_SRC_DIR}/bloom_blur.hlsl"
         "${SHADER_SRC_DIR}/bloom_combine.hlsl"

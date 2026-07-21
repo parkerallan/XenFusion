@@ -44,13 +44,20 @@ struct ObjectAttribute
     float       cam_track_accel      = 0.0f;             // units/sec^2 ramp (0 = instant)
     float       cam_track_rot_offset[3] = {0.0f, 0.0f, 0.0f};
 
-    // For "Directional Light" / "Point Light" (color * intensity lights the
-    // standard material). Directional: direction = object rotation (+Z forward,
-    // like the camera), first light in scene order wins. Point: position =
-    // object position, fades to zero at range, first four win.
+    // For "Directional Light" / "Point Light" / "Spot Light" / "Environment
+    // Light" (color * intensity lights the standard material). Directional:
+    // direction = object rotation (+Z forward, like the camera), first light in
+    // scene order wins. Point: position = object position, fades to zero at
+    // range, first four win. Spot: position + direction from the object
+    // transform, smoothstep cone between the half-angles, first two win.
+    // Environment: flat ambient boost, every instance sums.
     float light_color[3]  = {1.0f, 1.0f, 1.0f};
     float light_intensity = 1.0f;
-    float light_range     = 15.0f; // "Point Light" only
+    float light_range     = 15.0f; // "Point Light" / "Spot Light"
+    float light_inner_deg = 20.0f; // "Spot Light": inner cone half-angle, degrees
+    float light_outer_deg = 30.0f; // "Spot Light": outer cone half-angle, degrees
+    bool  light_volumetric = false;          // "Spot Light": draw the beam cone
+    float light_volumetric_intensity = 1.0f; // beam brightness scale
 
     // For "Rigid Body" (simulated by Bullet in the editor preview and on the
     // console). The object's transform is the initial pose; scale stays authored

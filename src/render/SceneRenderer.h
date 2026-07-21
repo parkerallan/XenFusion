@@ -147,12 +147,16 @@ private:
     float     m_eye[3] = {0.0f, 0.0f, 0.0f};
 
     // Scene lights captured in RenderUi, uploaded in RenderGpu — ready-made PS
-    // constant payloads (c0 / c6 / c7-c10 / c11-c14). The legacy fixed sun is
-    // used when the scene has no light attributes at all.
+    // constant payloads (c0 / c2 / c6 / c7-c10 / c11-c14 / c16-c21). The legacy
+    // fixed sun/ambient are used when the scene has no light attributes at all.
     float m_light_dir[4]    = {0.0f, 0.0f, 0.0f, 0.0f};
     float m_light_col[4]    = {1.0f, 1.0f, 1.0f, 0.0f};
     float m_point_pos[4][4] = {}; // xyz + w = 1/range^2
     float m_point_col[4][4] = {}; // rgb * intensity; zero = unused slot
+    float m_spot_pos[2][4]  = {}; // xyz + w = 1/range
+    float m_spot_dir[2][4]  = {}; // xyz = beam dir (+Z fwd), w = cos(inner half-angle)
+    float m_spot_col[2][4]  = {}; // rgb * intensity (zero = unused), w = cos(outer)
+    float m_ambient[4]      = {0.22f, 0.22f, 0.25f, 0.0f}; // env-light sum or legacy default
 
     // Bloom post chain: bright-extract (rgb * alpha-mask) into a quarter-res
     // target, separable blur, additive combine. Drawn after the scene resolve;
@@ -222,6 +226,35 @@ private:
     // by m (row-vector rotation+translation), to a fixed-function line list.
     void AppendColliderWire(const PhysDebug& pd, const D3DMATRIX& m,
                             D3DCOLOR col, std::vector<Vertex>& out) const;
+
+    // Spot-light cone gizmo, shown for the selected object only (display-only,
+    // like the collider wires — the Inspector's Range / Inner / Outer values
+    // reshape it live; the object gizmo moves/aims it).
+    struct SpotGizmo
+    {
+        D3DMATRIX base;      // rotation + translation, beam down local +Z
+        float     range;
+        float     inner_deg; // cone half-angles, degrees
+        float     outer_deg;
+    };
+    std::vector<SpotGizmo> m_spot_gizmos; // rebuilt each frame in RenderUi
+    void AppendSpotCone(const SpotGizmo& sg, std::vector<Vertex>& out) const;
+
+    // Spot volumetric beams ("Project Light Shaft"): an additive unit-cone mesh
+    // (beam.hlsl) scaled to tan(outer) * range by its world matrix. Captured in
+    // RenderUi next to the spot slots, drawn after the translucents.
+    struct SpotBeam
+    {
+        D3DMATRIX world;    // unit cone (apex origin, +Z, radius = z) -> world
+        float     color[4]; // rgb premultiplied: spot color * intensity * beam * gain
+        float     apex[4];  // world apex (PS c2) — the PS rebuilds the cone
+        float     axis[4];  // normal analytically: xyz = unit dir, w = tan(outer)
+    };
+    std::vector<SpotBeam>   m_spot_beams;         // 0..2, rebuilt each frame
+    std::vector<MeshVertex> m_beam_cone;          // unit cone, built on first use
+    IDirect3DVertexShader9* m_beam_vs = nullptr;  // beam.hlsl (optional, like bloom)
+    IDirect3DPixelShader9*  m_beam_ps = nullptr;
+    void BuildBeamCone(); // fill m_beam_cone: 24-segment unit-cone triangle fan
 
     phys::PhysicsWorld           m_phys;
     bool                         m_phys_on = false;
