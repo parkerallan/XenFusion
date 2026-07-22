@@ -36,26 +36,26 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;$(ProjectDir)..\third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;$(ProjectDir)..\third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>d3d9d.lib;d3dx9d.lib;xgraphics.lib;xapilibd.lib;xboxkrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d9d.lib;d3dx9d.lib;xgraphics.lib;xapilibd.lib;xboxkrnl.lib;xaudiod2.lib;xmcored.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;$(ProjectDir)..\third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)..\src;$(ProjectDir)..\third_party;$(ProjectDir)..\third_party\stb;$(ProjectDir)..\third_party\bullet\src;$(ProjectDir)..\third_party\lua\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>MaxSpeed</Optimization>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>d3d9.lib;d3dx9.lib;xgraphics.lib;xapilib.lib;xboxkrnl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d9.lib;d3dx9.lib;xgraphics.lib;xapilib.lib;xboxkrnl.lib;xaudio2.lib;xmcore.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -69,6 +69,8 @@
     <ClCompile Include="src\stb_impl.cpp" />
     <ClCompile Include="..\src\physics\PhysicsWorld.cpp" />
     <ClCompile Include="..\src\script\ScriptVM.cpp" />
+    <ClCompile Include="..\src\video\VideoPlayer.cpp" />
+    <ClCompile Include="..\src\video\AudioOut.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\XboxRenderer.h" />

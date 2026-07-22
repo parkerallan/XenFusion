@@ -3,6 +3,7 @@
 #include "Content.h"
 #include "SceneData.h"
 #include "StreamCache.h"
+#include "video/VideoPlayer.h"
 #include "camera/CameraResolve.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
@@ -10,6 +11,8 @@
 #include "input/InputState.h"
 
 #include <xtl.h>
+
+#include <map>
 
 // The stripped-down runtime renderer: the console analogue of the editor's
 // SceneRenderer, minus everything editor-only. There is no grid, no gizmo, no
@@ -27,6 +30,8 @@ public:
     void  Log(const char* msg);
     int   FindObject(const char* name);
     const char* ObjectName(int index);
+    void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
+    bool  VideoIsPlaying(int objectIndex);
 
     // contentRoot is the deployed game root, e.g. "game:\". Loads the standard
     // material, the startup scene, and builds shared geometry. Returns false if
@@ -175,6 +180,71 @@ private:
 
     std::vector<DrawItem>   m_draw_items;
     std::vector<ShaderItem> m_shader_items;
+
+    // --- Video overlay ("Video" attribute; mirrors the editor's path) ---
+    // Screen-space quads over the finished 3D scene, drawn INSIDE the tiled
+    // pass (they replay per band) through the video.hlsl builtin. The pak's
+    // raw VIDE entry is range-streamed by the shared VideoPlayer; separate
+    // alpha blending zeroes the glow mask under the video so bloom never
+    // halos through it.
+    struct VideoItem
+    {
+        std::string  key;      // stream identity: object name + '#' + attr index
+        std::string  object;   // owning object's name (Lua video.* lookups)
+        std::string  path;     // scene-relative .mpg
+        float x, y, w, h;      // 1280x720 reference space
+        bool  stretch;
+        bool  lock_aspect;
+        float tint[3];
+        float alpha;
+        int   priority;        // higher = drawn behind
+        int   play_mode;
+        float volume;
+        bool  muted;
+        VideoItem() : x(0), y(0), w(0), h(0), stretch(false), lock_aspect(true),
+                      alpha(1.0f), priority(1), play_mode(2), volume(1.0f), muted(false)
+        { tint[0] = tint[1] = tint[2] = 1.0f; }
+    };
+
+    // The three L8 plane textures for one stream, double-buffered so an upload
+    // never touches the set the GPU is still reading (LIN_ formats: linear
+    // layout, plain row memcpy, no tiling or endian work — L8 is bytes).
+    struct RtVideoTex
+    {
+        std::string        key;
+        IDirect3DTexture9* y[2];
+        IDirect3DTexture9* cb[2];
+        IDirect3DTexture9* cr[2];
+        int      yW, yH, cW, cH;
+        unsigned lastFrame; // vid::Frame::frameId last uploaded
+        int      cur;       // set the last upload went to (bind this one)
+        bool     used;      // reconcile mark
+        RtVideoTex() : yW(0), yH(0), cW(0), cH(0), lastFrame(0), cur(0), used(false)
+        { y[0] = y[1] = cb[0] = cb[1] = cr[0] = cr[1] = NULL; }
+    };
+
+    void        RenderVideoOverlay(float dt);
+    RtVideoTex* EnsureVideoTex(const std::string& key, const vid::Frame& frame);
+    // The item's stream key / play mode with any script override applied
+    // (evaluated at draw time, after this frame's scripts ran).
+    std::string VideoKeyFor(const VideoItem& item) const;
+    int         VideoModeFor(const VideoItem& item) const;
+
+    std::vector<VideoItem>  m_video_items;
+    std::vector<RtVideoTex> m_video_tex;
+    // Script play/stop overrides (object name -> mode + restart generation);
+    // the parsed scene's play_mode stays authored. The generation is folded
+    // into the stream key so video.play on a stopped/finished video decodes
+    // a fresh stream from the top.
+    struct VideoOverride
+    {
+        int      mode; // vid::PlayMode
+        unsigned gen;
+        VideoOverride() : mode(0), gen(0) {}
+    };
+    std::map<std::string, VideoOverride> m_video_overrides;
+    vid::VideoPlayer        m_video;
+    RtShader                m_video_shader;
 
     // Streaming: the pak is opened once and driven through the residency cache.
     StreamPak   m_pak;

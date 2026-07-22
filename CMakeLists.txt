@@ -138,6 +138,8 @@ add_executable(XenFusion
     src/render/Shader.cpp
     src/render/ShaderCache.cpp
     src/render/ShaderCompiler.cpp
+    src/video/VideoPlayer.cpp
+    src/video/AudioOut.cpp
     src/physics/PhysicsWorld.cpp
     src/script/ScriptVM.cpp
     src/input/ControllerMapping.cpp
@@ -160,7 +162,7 @@ target_include_directories(XenFusion PRIVATE src third_party)
 # build_run.ps1 during development (the runtime is a sibling of the editor source).
 target_compile_definitions(XenFusion PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
-target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp bullet lua Ole32 Shell32 Xinput9_1_0)
+target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp bullet lua Ole32 Shell32 Xinput9_1_0 xaudio2)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
 # Subsystem per config: Debug keeps the console window (log/stdout), all other
@@ -201,6 +203,7 @@ add_custom_command(TARGET XenFusion POST_BUILD
         "${SHADER_SRC_DIR}/bloom_bright.hlsl"
         "${SHADER_SRC_DIR}/bloom_blur.hlsl"
         "${SHADER_SRC_DIR}/bloom_combine.hlsl"
+        "${SHADER_SRC_DIR}/video.hlsl"
         "$<TARGET_FILE_DIR:XenFusion>/shaders"
     VERBATIM
 )

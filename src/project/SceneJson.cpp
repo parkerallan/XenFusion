@@ -92,6 +92,22 @@ namespace project
                     ja["shape"] = a.trig_shape;
                     ja["size"]  = {a.trig_size[0], a.trig_size[1], a.trig_size[2]};
                 }
+                else if (a.type == "Video")
+                {
+                    ja["videoPath"]  = a.video_path;
+                    ja["x"]          = a.video_x;
+                    ja["y"]          = a.video_y;
+                    ja["w"]          = a.video_w;
+                    ja["h"]          = a.video_h;
+                    ja["stretch"]    = a.video_stretch;
+                    ja["lockAspect"] = a.video_lock_aspect;
+                    ja["tint"]       = {a.video_tint[0], a.video_tint[1], a.video_tint[2]};
+                    ja["alpha"]      = a.video_alpha;
+                    ja["priority"]   = a.video_priority;
+                    ja["playMode"]   = a.video_play_mode;
+                    ja["volume"]     = a.video_volume;
+                    ja["muted"]      = a.video_muted;
+                }
                 jo["attributes"].push_back(ja);
             }
             j["objects"].push_back(jo);
@@ -205,6 +221,23 @@ namespace project
                         {
                             a.trig_shape = ja.value("shape", 0);
                             readSize(a.trig_size);
+                        }
+                        else if (a.type == "Video")
+                        {
+                            a.video_path        = ja.value("videoPath", std::string());
+                            a.video_x           = ja.value("x", 320.0f);
+                            a.video_y           = ja.value("y", 180.0f);
+                            a.video_w           = ja.value("w", 640.0f);
+                            a.video_h           = ja.value("h", 360.0f);
+                            a.video_stretch     = ja.value("stretch", false);
+                            a.video_lock_aspect = ja.value("lockAspect", true);
+                            if (ja.contains("tint") && ja["tint"].is_array() && ja["tint"].size() == 3)
+                                for (int k = 0; k < 3; ++k) a.video_tint[k] = ja["tint"][k].get<float>();
+                            a.video_alpha       = ja.value("alpha", 1.0f);
+                            a.video_priority    = ja.value("priority", 1);
+                            a.video_play_mode   = ja.value("playMode", 2);
+                            a.video_volume      = ja.value("volume", 1.0f);
+                            a.video_muted       = ja.value("muted", false);
                         }
                         o.attributes.push_back(a);
                     }

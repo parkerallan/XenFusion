@@ -30,5 +30,14 @@ namespace script
         // The name of the object at objectIndex ("" if out of range). The returned
         // pointer must stay valid for the duration of the call.
         virtual const char* ObjectName(int objectIndex) = 0;
+
+        // Video attribute control (the "video" Lua table). play() starts the
+        // object's video from the top — once by default, looping when loop is
+        // true; on a video that is already playing it only updates the mode.
+        // stop() forces Off (releasing the decoder). Defaults are no-ops so
+        // hosts without a video overlay still build.
+        virtual void VideoSetPlaying(int objectIndex, bool play, bool loop)
+        { (void)objectIndex; (void)play; (void)loop; }
+        virtual bool VideoIsPlaying(int objectIndex) { (void)objectIndex; return false; }
     };
 }

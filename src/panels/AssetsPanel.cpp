@@ -20,7 +20,7 @@ namespace fs = std::filesystem;
 
 namespace
 {
-    enum class AssetKind { Folder, Image, Audio, Model, Shader, Text, Generic };
+    enum class AssetKind { Folder, Image, Audio, Video, Model, Shader, Text, Generic };
 
     AssetKind Classify(const fs::directory_entry& e)
     {
@@ -39,6 +39,7 @@ namespace
 
         if (in({".png", ".jpg", ".jpeg", ".dds", ".bmp", ".tga", ".gif"})) return AssetKind::Image;
         if (in({".wav", ".ogg", ".mp3", ".flac"}))                         return AssetKind::Audio;
+        if (in({".mpg", ".mpeg", ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".wmv"})) return AssetKind::Video;
         if (in({".obj", ".fbx", ".mesh", ".gltf", ".glb", ".dae", ".3ds"})) return AssetKind::Model;
         if (in({".hlsl", ".fx", ".glsl", ".shader", ".vsh", ".fsh", ".vs", ".ps", ".cg"})) return AssetKind::Shader;
         if (in({".txt", ".lua", ".json", ".md", ".ini", ".cfg", ".xml", ".csv", ".h", ".hpp", ".cpp", ".c", ".cs"})) return AssetKind::Text;
@@ -77,6 +78,7 @@ namespace
         case AssetKind::Folder: DrawGlyph(dl, center, ICON_FA_FOLDER, IM_COL32(95, 155, 225, 255), state); break;
         case AssetKind::Image:  DrawGlyph(dl, center, ICON_FA_IMAGE,  IM_COL32(80, 185, 115, 255), state); break;
         case AssetKind::Audio:  DrawGlyph(dl, center, ICON_FA_MUSIC,  IM_COL32(175, 120, 205, 255), state); break;
+        case AssetKind::Video:  DrawGlyph(dl, center, ICON_FA_FILM,   IM_COL32(215, 130, 95, 255),  state); break;
         case AssetKind::Model:  DrawGlyph(dl, center, ICON_FA_CUBE,   IM_COL32(205, 150, 80, 255),  state); break;
         case AssetKind::Shader: DrawSphere(dl, center); break;
         case AssetKind::Text:

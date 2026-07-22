@@ -2,6 +2,7 @@
 
 #include "render/MeshCache.h"
 #include "render/ShaderCache.h"
+#include "video/VideoPlayer.h"
 #include "camera/CameraResolve.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
@@ -11,6 +12,7 @@
 #include <d3d9.h>
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -40,6 +42,8 @@ public:
     void  LogError(const char* msg);
     int   FindObject(const char* name);
     const char* ObjectName(int index);
+    void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
+    bool  VideoIsPlaying(int objectIndex);
 
     void Initialize(IDirect3DDevice9* device);
     void Shutdown();
@@ -281,4 +285,60 @@ private:
     IDirect3DIndexBuffer9*  m_quad_ib = nullptr;
     IDirect3DVertexBuffer9* m_cube_vb = nullptr;
     IDirect3DIndexBuffer9*  m_cube_ib = nullptr;
+
+    // --- Video overlay ("Video" attribute; mirrors the Vulkan Video2D path) ---
+    // Captured in RenderUi, drawn by RenderVideoOverlay after the bloom combine:
+    // screen-space quads sampling the shared VideoPlayer's YUV planes through
+    // the video.hlsl builtin. Edit mode freezes on the first frame (dt = 0);
+    // the Play preview advances the clock.
+    struct VideoItem
+    {
+        std::string key;       // stream identity: object name + '#' + attr index
+        std::string object;    // owning object's name (Lua video.* lookups)
+        std::string path_abs;  // absolute .mpg path
+        float x = 0, y = 0, w = 0, h = 0; // 1280x720 reference space
+        bool  stretch = false;
+        bool  lock_aspect = true;
+        float tint[3] = {1, 1, 1};
+        float alpha = 1.0f;
+        int   priority = 1;    // higher = drawn behind
+        int   play_mode = 2;   // vid::PlayMode
+        float volume = 1.0f;   // audio (Play mode only)
+        bool  muted = false;
+    };
+
+    // The three L8 plane textures for one stream (MANAGED — survive resets).
+    struct VideoTex
+    {
+        std::string        key;
+        IDirect3DTexture9* y  = nullptr;
+        IDirect3DTexture9* cb = nullptr;
+        IDirect3DTexture9* cr = nullptr;
+        int      yW = 0, yH = 0, cW = 0, cH = 0;
+        unsigned lastFrame = 0; // vid::Frame::frameId last uploaded
+        bool     used = false;  // reconcile mark
+    };
+
+    void RenderVideoOverlay(float dt);
+    VideoTex* EnsureVideoTex(const std::string& key, const vid::Frame& frame);
+    // The item's stream key / play mode with any script override applied
+    // (evaluated at draw time, after this frame's scripts ran).
+    std::string VideoKeyFor(const VideoItem& item) const;
+    int         VideoModeFor(const VideoItem& item) const;
+
+    std::vector<VideoItem> m_video_items;
+    std::vector<VideoTex>  m_video_tex;
+    // Script play/stop overrides (object name -> mode + restart generation),
+    // live only for the Play session — the scene's authored play_mode is never
+    // touched. The generation is folded into the stream key, so a video.play
+    // on a stopped/finished video recreates its stream (restart from the top).
+    struct VideoOverride
+    {
+        int      mode = 0; // vid::PlayMode
+        unsigned gen  = 0;
+    };
+    std::map<std::string, VideoOverride> m_video_overrides;
+    vid::VideoPlayer       m_video;
+    IDirect3DVertexShader9* m_video_vs = nullptr;
+    IDirect3DPixelShader9*  m_video_ps = nullptr;
 };

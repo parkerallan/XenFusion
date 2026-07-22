@@ -33,6 +33,10 @@ namespace spak
     // (phase 2 CreateBuffer + copy — see the mesh header below).
     const unsigned int kTypeTex2D = 0x54583244; // 'TX2D' — XPR2 texture
     const unsigned int kTypeMesh  = 0x4D455348; // 'MESH' — VB + IB + texture refs
+    const unsigned int kTypeVideo = 0x56494445; // 'VIDE' — MPEG-1 program stream (.mpg),
+                                                // ALWAYS stored raw (kCodecNone): the
+                                                // VideoPlayer streams it with ranged
+                                                // reads, which per-entry LZX would break
 
     // Mesh payload (big-endian): a fixed 16-byte header, then one 36-byte record
     // per material subset, then vertexCount*44 bytes of native-endian vertices,

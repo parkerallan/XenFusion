@@ -360,6 +360,37 @@ namespace scenedata
                         at.trig_size[1] = NumAt(psz, 1, at.trig_size[1]);
                         at.trig_size[2] = NumAt(psz, 2, at.trig_size[2]);
                     }
+                    else if (at.type == "Video")
+                    {
+                        const JValue* vpp = ja.Find("videoPath");
+                        const JValue* vx  = ja.Find("x");
+                        const JValue* vy  = ja.Find("y");
+                        const JValue* vw  = ja.Find("w");
+                        const JValue* vh  = ja.Find("h");
+                        const JValue* vst = ja.Find("stretch");
+                        const JValue* vla = ja.Find("lockAspect");
+                        const JValue* vti = ja.Find("tint");
+                        const JValue* val = ja.Find("alpha");
+                        const JValue* vpr = ja.Find("priority");
+                        const JValue* vpm = ja.Find("playMode");
+                        const JValue* vvo = ja.Find("volume");
+                        const JValue* vmu = ja.Find("muted");
+                        if (vpp && vpp->type == JValue::Str)    at.video_path = vpp->str;
+                        if (vx  && vx->type  == JValue::Number) at.video_x = (float)vx->num;
+                        if (vy  && vy->type  == JValue::Number) at.video_y = (float)vy->num;
+                        if (vw  && vw->type  == JValue::Number) at.video_w = (float)vw->num;
+                        if (vh  && vh->type  == JValue::Number) at.video_h = (float)vh->num;
+                        if (vst && vst->type == JValue::Bool)   at.video_stretch = vst->b;
+                        if (vla && vla->type == JValue::Bool)   at.video_lock_aspect = vla->b;
+                        at.video_tint[0] = NumAt(vti, 0, 1.0f);
+                        at.video_tint[1] = NumAt(vti, 1, 1.0f);
+                        at.video_tint[2] = NumAt(vti, 2, 1.0f);
+                        if (val && val->type == JValue::Number) at.video_alpha = (float)val->num;
+                        if (vpr && vpr->type == JValue::Number) at.video_priority = (int)vpr->num;
+                        if (vpm && vpm->type == JValue::Number) at.video_play_mode = (int)vpm->num;
+                        if (vvo && vvo->type == JValue::Number) at.video_volume = (float)vvo->num;
+                        if (vmu && vmu->type == JValue::Bool)   at.video_muted = vmu->b;
+                    }
                     o.attributes.push_back(at);
                 }
             }

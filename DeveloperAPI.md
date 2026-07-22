@@ -11,7 +11,8 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 3. [Objects](#3-objects) — `self`, `find`, `:id`
 4. [Physics](#4-physics) — `apply_impulse`, `set_velocity`, `set_transform`, `position`, `velocity`
 5. [Input](#5-input) — `input.button`, `input.axis`, name reference
-6. [Utility](#6-utility) — `log`
+6. [Video](#6-video) — `video.play`, `video.stop`, `video.is_playing`
+7. [Utility](#7-utility) — `log`
 
 ---
 
@@ -246,7 +247,89 @@ project (`input_mappings.ini`); the console ignores them.
 
 ---
 
-## 6. Utility
+## 6. Video
+
+Control an object's **Video** attribute (the screen-space video overlay — see
+`runtime/VIDEO.md` for the format and attribute reference). These are globals
+taking an object **name** (like `find`), not handle methods. On an object with
+no Video attribute they do nothing / return `false`.
+
+Video plays in the editor's **Play** preview and on the console; edit mode
+always shows the frozen first frame. Changes made here are **transient** — the
+scene's authored Play Mode is never modified, and stopping the editor preview
+restores it.
+
+| Function | Effect |
+|---|---|
+| `video.play(name [, loop])` | play the object's video **from the beginning** — once, or looping when `loop` is `true` |
+| `video.stop(name)` | stop and hide it (releases the decoder) |
+| `video.is_playing(name)` → `boolean` | true while it's running |
+
+### `video.play(name [, loop])`
+Starts playback from the first frame with the attribute's volume/mute.
+Plays **once** by default (`is_playing` goes `false` after the last frame);
+pass `true` as the second argument to loop until stopped. Calling it on a
+video that already finished or was stopped **replays it from the top**; on one
+that is currently playing it only switches once/loop (no restart).
+
+A play-once video **hides itself** when it ends (after its last frame has
+displayed) — fire and forget. The usual cutscene pattern: author the attribute
+with **Play Mode: Off** so nothing shows at boot, then trigger it from
+gameplay:
+
+```lua
+-- Attach to an object with a Trigger Volume + this script; the object
+-- "Cutscene" has a Video attribute authored with Play Mode = Off.
+function on_trigger(entrant)
+    if entrant:name() == "fox" then
+        video.play("Cutscene")            -- plays once, hides itself when done
+    end
+end
+```
+
+```lua
+video.play("Menu", true)                  -- background loop until video.stop
+```
+
+### `video.stop(name)`
+Stops playback and hides the overlay. The decoder is released — a later
+`video.play` starts over from the beginning (there is no pause/resume).
+
+```lua
+function on_update(dt)
+    if input.button("B") then
+        video.stop("Cutscene")   -- skip the cutscene
+    end
+end
+```
+
+### `video.is_playing(name)` → `boolean`
+`true` while the video is running. A **Loop** video reports `true` until
+stopped; a **Play Once** video reports `false` after its last frame — the way
+to know a cutscene finished:
+
+```lua
+local started = false
+
+function on_update(dt)
+    if input.button("Start") and not started then
+        started = true
+        video.play("Intro")
+    end
+    if started and not video.is_playing("Intro") then
+        log("intro over - back to gameplay")
+        started = false
+    end
+end
+```
+
+> A `video.play`/`video.stop` is visible to `video.is_playing` in the same
+> frame, but the overlay itself changes on the next drawn frame. See
+> `assets/scripts/videotoggle.lua` in the test project for a runnable example.
+
+---
+
+## 7. Utility
 
 ### `log(msg)`
 Print to the editor **Log** panel as a `[LOG]` entry (or the console's debug

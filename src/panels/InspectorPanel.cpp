@@ -6,10 +6,55 @@
 
 #include "imgui.h"
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 #include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
+
+namespace
+{
+    // Transcode any video ffmpeg can read into the .mpg (MPEG-1 + MP2) the
+    // engine plays, next to the source in assets/. Blocks until done (fine for
+    // clip-length sources); requires ffmpeg on PATH. Mirrors the cook settings
+    // the console uses.
+    bool TranscodeToMpg(const std::filesystem::path& src,
+                        const std::filesystem::path& dst,
+                        EngineState& state)
+    {
+        std::string cmd = "ffmpeg -y -i \"" + src.string() +
+            "\" -f mpeg -c:v mpeg1video -q:v 6 -vf \"scale=640:-2\" -r 30"
+            " -c:a mp2 -b:a 224k -ar 44100 -ac 2 \"" + dst.string() + "\"";
+
+        STARTUPINFOA si = {};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi = {};
+        std::vector<char> buf(cmd.begin(), cmd.end());
+        buf.push_back('\0');
+        if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        {
+            state.AddLog("ffmpeg not found on PATH - cannot import video", LogLevel::Error);
+            return false;
+        }
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        if (code != 0 || !std::filesystem::exists(dst))
+        {
+            state.AddLog("ffmpeg failed transcoding " + src.filename().string(), LogLevel::Error);
+            return false;
+        }
+        return true;
+    }
+}
 
 void InspectorPanel::Render(EngineState& state)
 {
@@ -425,6 +470,108 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
+        else if (attr.type == "Video")
+        {
+            // Read-only path display; set by dragging a video from the Assets
+            // panel. Non-.mpg sources are transcoded via ffmpeg on drop.
+            char buf[260];
+            const std::string shown = attr.video_path.empty() ? "(drag a video from Assets)" : attr.video_path;
+            std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##video_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+
+                    if (ext == ".mpg" || ext == ".mpeg")
+                    {
+                        attr.video_path = dropped;
+                        save();
+                    }
+                    else
+                    {
+                        static const char* kSourceExts[] =
+                            {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".wmv"};
+                        bool is_video = false;
+                        for (const char* e : kSourceExts) if (ext == e) { is_video = true; break; }
+
+                        if (is_video)
+                        {
+                            // Transcode next to the source; the attribute points
+                            // at the .mpg (the only format the engine decodes).
+                            std::filesystem::path rel(dropped);
+                            rel.replace_extension(".mpg");
+                            state.AddLog("Transcoding " + dropped + " -> " + rel.generic_string() + " ...");
+                            if (TranscodeToMpg(state.project_root / dropped,
+                                               state.project_root / rel, state))
+                            {
+                                attr.video_path = rel.generic_string();
+                                save();
+                                state.AddLog("Video imported: " + attr.video_path);
+                            }
+                        }
+                        else
+                        {
+                            state.AddLog("Not a video file: " + dropped, LogLevel::Error);
+                        }
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            bool edited = false, commit = false;
+            if (ImGui::Checkbox("Stretch To Screen", &attr.video_stretch)) { edited = commit = true; }
+            ImGui::BeginDisabled(attr.video_stretch);
+            float pos[2] = { attr.video_x, attr.video_y };
+            if (ImGui::DragFloat2("Position", pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            {
+                attr.video_x = pos[0]; attr.video_y = pos[1];
+                edited = true;
+            }
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (attr.video_lock_aspect)
+            {
+                edited |= ImGui::DragFloat("Width", &attr.video_w, 1.0f, 16.0f, 4000.0f, "%.0f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else
+            {
+                float size[2] = { attr.video_w, attr.video_h };
+                if (ImGui::DragFloat2("Size", size, 1.0f, 16.0f, 4000.0f, "%.0f"))
+                {
+                    attr.video_w = size[0]; attr.video_h = size[1];
+                    edited = true;
+                }
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.video_lock_aspect)) { edited = commit = true; }
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
+            edited |= ImGui::ColorEdit3("Tint", attr.video_tint);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Alpha", &attr.video_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragInt("Priority", &attr.video_priority, 0.1f, 0, 100);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TextDisabled("Higher priority draws behind lower.");
+            const char* modes = "Off\0Play Once\0Loop\0";
+            if (ImGui::Combo("Play Mode", &attr.video_play_mode, modes)) { edited = commit = true; }
+            edited |= ImGui::DragFloat("Volume", &attr.video_volume, 0.005f, 0.0f, 1.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (ImGui::Checkbox("Muted", &attr.video_muted)) { edited = commit = true; }
+            ImGui::TextDisabled("Edit mode shows the first frame; plays in Play mode.");
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
         else if (attr.type == "Trigger Volume")
         {
             ImGui::TextDisabled("Reports overlaps; no physical response.");
@@ -527,6 +674,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Trigger Volume";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Video"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Video";
             obj->attributes.push_back(attr);
             save();
         }

@@ -234,6 +234,9 @@ struct Entry
     std::vector<unsigned char> payload; // uncompressed
     unsigned int sysMemSize;
     unsigned int vidMemSize;
+    bool         noCompress; // video: stored raw so the runtime can range-read it
+
+    Entry() : hash(0), type(0), sysMemSize(0), vidMemSize(0), noCompress(false) {}
 };
 
 bool EntryLess(const Entry& a, const Entry& b) { return a.hash < b.hash; }
@@ -378,6 +381,23 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     return true;
 }
 
+// Add a video entry: the .mpg's bytes verbatim (the format is already
+// compressed; storing it raw is what lets the runtime stream it with ranged
+// reads instead of loading the whole clip).
+bool AddVideo(std::vector<Entry>& entries, const std::string& rootAbs, const std::string& videoRel)
+{
+    const std::string videoAbs = AbsFrom(rootAbs, videoRel);
+    Entry e;
+    if (!ReadFileBytes(videoAbs, e.payload) || e.payload.empty())
+    { fprintf(stderr, "spakc: cannot read video %s\n", videoAbs.c_str()); return false; }
+    e.hash = spak::NameHash(videoRel.c_str());
+    e.type = spak::kTypeVideo;
+    e.noCompress = true;
+    entries.push_back(e);
+    printf("spakc: video %s — %u bytes (raw)\n", videoRel.c_str(), (unsigned int)e.payload.size());
+    return true;
+}
+
 bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool compress)
 {
     if (entries.empty()) { fprintf(stderr, "spakc: nothing to write\n"); return false; }
@@ -392,7 +412,7 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
     for (unsigned int i = 0; i < count; ++i)
     {
         uncompSize[i] = (unsigned int)entries[i].payload.size();
-        if (compress)
+        if (compress && !entries[i].noCompress)
         {
             if (LzxCompress(&entries[i].payload[0], entries[i].payload.size(), diskPayload[i]) == 0)
                 return false;
@@ -474,22 +494,32 @@ int main(int argc, char** argv)
         const std::string root    = argv[3];
         bool compress = true;
         std::vector<std::string> meshes;
+        std::vector<std::string> videos; // .mpg args become raw VIDE entries
         for (int i = 4; i < argc; ++i)
         {
-            if (std::string(argv[i]) == "--raw") compress = false;
-            else meshes.push_back(argv[i]);
+            const std::string arg = argv[i];
+            if (arg == "--raw") { compress = false; continue; }
+            std::string ext = arg.size() >= 4 ? arg.substr(arg.size() - 4) : "";
+            for (size_t c = 0; c < ext.size(); ++c)
+                if (ext[c] >= 'A' && ext[c] <= 'Z') ext[c] = (char)(ext[c] - 'A' + 'a');
+            if (ext == ".mpg") videos.push_back(arg);
+            else               meshes.push_back(arg);
         }
-        if (meshes.empty()) { fprintf(stderr, "spakc: no meshes given\n"); return 2; }
+        if (meshes.empty() && videos.empty())
+        { fprintf(stderr, "spakc: no assets given\n"); return 2; }
         if (!ResolveBundler()) return 1;
         g_tmpBase = outSpak;
 
         const std::string rootAbs = AbsPath(root);
         std::vector<Entry> entries;
         std::set<unsigned int> seenTex;
-        int okMeshes = 0;
+        int okMeshes = 0, okVideos = 0;
         for (size_t i = 0; i < meshes.size(); ++i)
             if (AddMesh(entries, seenTex, rootAbs, meshes[i])) ++okMeshes;
-        if (okMeshes == 0) { fprintf(stderr, "spakc: no meshes cooked\n"); return 1; }
+        for (size_t i = 0; i < videos.size(); ++i)
+            if (AddVideo(entries, rootAbs, videos[i])) ++okVideos;
+        if (okMeshes == 0 && okVideos == 0)
+        { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;
     }
 

@@ -363,6 +363,7 @@ void SceneRenderer::LoadStandardShader()
     reload("bloom_blur",    m_bloom_blur_vs,    m_bloom_blur_ps);
     reload("bloom_combine", m_bloom_combine_vs, m_bloom_combine_ps);
     reload("beam", m_beam_vs, m_beam_ps); // spot volumetric shaft (optional)
+    reload("video", m_video_vs, m_video_ps); // Video attribute overlay (optional)
     if (m_vs && (!m_bloom_bright_ps || !m_bloom_blur_ps || !m_bloom_combine_ps))
         applog::Warn("Bloom shaders not compiled — emissive glow off until 'Compile shaders'");
 }
@@ -383,6 +384,16 @@ void SceneRenderer::CompileShaders()
 
 void SceneRenderer::Shutdown()
 {
+    m_video.Shutdown();
+    for (VideoTex& t : m_video_tex)
+    {
+        if (t.y)  t.y->Release();
+        if (t.cb) t.cb->Release();
+        if (t.cr) t.cr->Release();
+    }
+    m_video_tex.clear();
+    if (m_video_ps)   { m_video_ps->Release();   m_video_ps = nullptr; }
+    if (m_video_vs)   { m_video_vs->Release();   m_video_vs = nullptr; }
     if (m_cube_ib)    { m_cube_ib->Release();    m_cube_ib = nullptr; }
     if (m_cube_vb)    { m_cube_vb->Release();    m_cube_vb = nullptr; }
     if (m_quad_ib)    { m_quad_ib->Release();    m_quad_ib = nullptr; }
@@ -504,6 +515,7 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_shader_items.clear();
     m_spot_gizmos.clear();
     m_spot_beams.clear();
+    m_video_items.clear();
     m_phys_debug.clear(); // rebuilt from the scene each frame (authoring wireframes)
     if (SceneFile* scene = state.SelectedScene())
     {
@@ -609,6 +621,25 @@ void SceneRenderer::RenderUi(EngineState& state)
                     // Every instance sums into the one ambient term (c2).
                     for (int k = 0; k < 3; ++k) m_ambient[k] += a.light_color[k] * a.light_intensity;
                     have_env = true;
+                }
+                else if (a.type == "Video" && !a.video_path.empty())
+                {
+                    VideoItem vi;
+                    const int attr_index = (int)(&a - &o.attributes[0]);
+                    vi.key      = o.name + "#" + std::to_string(attr_index);
+                    vi.object   = o.name;
+                    vi.path_abs = (state.project_root / a.video_path).string();
+                    vi.x = a.video_x; vi.y = a.video_y;
+                    vi.w = a.video_w; vi.h = a.video_h;
+                    vi.stretch     = a.video_stretch;
+                    vi.lock_aspect = a.video_lock_aspect;
+                    for (int k = 0; k < 3; ++k) vi.tint[k] = a.video_tint[k];
+                    vi.alpha     = a.video_alpha;
+                    vi.priority  = a.video_priority;
+                    vi.play_mode = a.video_play_mode;
+                    vi.volume    = a.video_volume;
+                    vi.muted     = a.video_muted;
+                    m_video_items.push_back(vi);
                 }
                 else if (a.type == "Rigid Body" || a.type == "Trigger Volume")
                 {
@@ -1480,6 +1511,10 @@ void SceneRenderer::RenderGpu(float dt)
     // Emissive glow: blur the exported glow mask and lay it over the scene.
     RenderBloom();
 
+    // Video attribute overlays, composited on top of the finished frame. The
+    // clock only advances in the Play preview; edit mode holds the first frame.
+    RenderVideoOverlay(m_phys_on ? dt : 0.0f);
+
     // ImGui composites the viewport texture with alpha and manages most of its
     // own states, but not the color-write mask — leave it fully enabled.
     m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
@@ -1669,6 +1704,220 @@ void SceneRenderer::RenderBloom()
     m_device->EndScene();
 }
 
+// Create (or resize) the three L8 plane textures for a video stream and upload
+// the frame when its id changed. MANAGED pool: uploads are a plain LockRect row
+// copy and the textures survive device resets.
+SceneRenderer::VideoTex* SceneRenderer::EnsureVideoTex(const std::string& key, const vid::Frame& frame)
+{
+    VideoTex* t = nullptr;
+    for (VideoTex& vt : m_video_tex)
+        if (vt.key == key) { t = &vt; break; }
+    if (!t)
+    {
+        m_video_tex.push_back(VideoTex());
+        t = &m_video_tex.back();
+        t->key = key;
+    }
+
+    if (t->y && (t->yW != frame.yW || t->yH != frame.yH))
+    {
+        t->y->Release();  t->y = nullptr;
+        t->cb->Release(); t->cb = nullptr;
+        t->cr->Release(); t->cr = nullptr;
+    }
+    if (!t->y)
+    {
+        if (FAILED(m_device->CreateTexture(frame.yW, frame.yH, 1, 0, D3DFMT_L8,
+                                           D3DPOOL_MANAGED, &t->y, nullptr)) ||
+            FAILED(m_device->CreateTexture(frame.cW, frame.cH, 1, 0, D3DFMT_L8,
+                                           D3DPOOL_MANAGED, &t->cb, nullptr)) ||
+            FAILED(m_device->CreateTexture(frame.cW, frame.cH, 1, 0, D3DFMT_L8,
+                                           D3DPOOL_MANAGED, &t->cr, nullptr)))
+        {
+            if (t->y)  { t->y->Release();  t->y = nullptr; }
+            if (t->cb) { t->cb->Release(); t->cb = nullptr; }
+            return nullptr;
+        }
+        t->yW = frame.yW; t->yH = frame.yH;
+        t->cW = frame.cW; t->cH = frame.cH;
+        t->lastFrame = frame.frameId - 1; // force the first upload
+    }
+
+    if (t->lastFrame != frame.frameId)
+    {
+        auto upload = [&](IDirect3DTexture9* tex, const unsigned char* src, int w, int h)
+        {
+            D3DLOCKED_RECT lr;
+            if (FAILED(tex->LockRect(0, &lr, nullptr, 0)))
+                return;
+            for (int row = 0; row < h; ++row)
+                std::memcpy((unsigned char*)lr.pBits + row * lr.Pitch, src + row * w, w);
+            tex->UnlockRect(0);
+        };
+        upload(t->y,  frame.y,  frame.yW, frame.yH);
+        upload(t->cb, frame.cb, frame.cW, frame.cH);
+        upload(t->cr, frame.cr, frame.cW, frame.cH);
+        t->lastFrame = frame.frameId;
+    }
+    return t;
+}
+
+// The item's stream key with the script override's restart generation folded
+// in — bumping the generation changes the key, so the player closes the old
+// stream and decodes a fresh one from the top (that's how video.play replays
+// a finished/stopped video).
+std::string SceneRenderer::VideoKeyFor(const VideoItem& item) const
+{
+    const auto ov = m_video_overrides.find(item.object);
+    if (ov == m_video_overrides.end() || ov->second.gen == 0)
+        return item.key;
+    return item.key + "#g" + std::to_string(ov->second.gen);
+}
+int SceneRenderer::VideoModeFor(const VideoItem& item) const
+{
+    const auto ov = m_video_overrides.find(item.object);
+    return ov != m_video_overrides.end() ? ov->second.mode : item.play_mode;
+}
+
+// The Video attribute overlays: reconcile the player's streams with this
+// frame's items, then draw each as a screen-space quad over the finished
+// scene (after bloom), higher priority first (= behind). Alpha writes are
+// masked so the viewport texture stays opaque for ImGui.
+void SceneRenderer::RenderVideoOverlay(float dt)
+{
+    // Reconcile + advance the decoder even when nothing draws (teardown path).
+    // Keys/modes go through the script override here — after this frame's
+    // scripts ran — so a video.play/stop lands on the same frame's draw.
+    std::vector<std::string> keys;
+    std::vector<vid::Want> wants;
+    for (const VideoItem& item : m_video_items)
+    {
+        keys.push_back(VideoKeyFor(item));
+        vid::Want w;
+        w.key      = keys.back();
+        w.path     = item.path_abs;
+        w.playMode = VideoModeFor(item);
+        // Audio only in the Play preview; the flip restarts the stream, which
+        // is what puts the frozen first frame back after Stop.
+        w.audible  = m_phys_on;
+        w.volume   = item.volume;
+        w.muted    = item.muted;
+        wants.push_back(w);
+    }
+    m_video.Update(wants.empty() ? nullptr : &wants[0], (int)wants.size(), dt);
+
+    // Drop plane textures for streams that vanished.
+    for (VideoTex& t : m_video_tex)
+        t.used = false;
+    for (size_t i = 0; i < m_video_items.size(); ++i)
+        for (VideoTex& t : m_video_tex)
+            if (t.key == keys[i]) { t.used = true; break; }
+    for (size_t i = 0; i < m_video_tex.size(); )
+    {
+        if (!m_video_tex[i].used)
+        {
+            VideoTex& t = m_video_tex[i];
+            if (t.y)  t.y->Release();
+            if (t.cb) t.cb->Release();
+            if (t.cr) t.cr->Release();
+            m_video_tex.erase(m_video_tex.begin() + i);
+        }
+        else
+            ++i;
+    }
+
+    if (m_video_items.empty() || !m_video_vs || !m_video_ps || !m_rtSurface)
+        return;
+
+    // Higher priority draws first, i.e. ends up behind (Vulkan semantics).
+    std::vector<int> order;
+    for (int i = 0; i < (int)m_video_items.size(); ++i)
+        order.push_back(i);
+    std::stable_sort(order.begin(), order.end(),
+                     [this](int a, int b)
+                     { return m_video_items[a].priority > m_video_items[b].priority; });
+
+    if (FAILED(m_device->BeginScene()))
+        return;
+
+    m_device->SetRenderTarget(0, m_rtSurface);
+    m_device->SetDepthStencilSurface(nullptr);
+    D3DVIEWPORT9 vp = { 0, 0, (DWORD)m_width, (DWORD)m_height, 0.0f, 1.0f };
+    m_device->SetViewport(&vp);
+
+    m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+    m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    // Preserve the target's alpha — ImGui samples it (bloom left it opaque).
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+    m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+    for (DWORD st = 0; st < 3; ++st)
+    {
+        m_device->SetSamplerState(st, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(st, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(st, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        m_device->SetSamplerState(st, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    }
+    m_device->SetVertexShader(m_video_vs);
+    m_device->SetPixelShader(m_video_ps);
+    const float halfTexel[4] = { 1.0f / (float)m_width, 1.0f / (float)m_height, 0.0f, 0.0f };
+    m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+
+    struct QuadVtx { float x, y, z, u, v; };
+    for (int idx : order)
+    {
+        const VideoItem* item = &m_video_items[idx];
+        vid::Frame f;
+        if (!m_video.GetFrame(keys[idx], f))
+            continue;
+        VideoTex* t = EnsureVideoTex(keys[idx], f);
+        if (!t)
+            continue;
+
+        // Quad rect in clip space, from the 1280x720 reference mapping.
+        float x0 = -1.0f, y0 = 1.0f, x1 = 1.0f, y1 = -1.0f;
+        if (!item->stretch)
+        {
+            const float w = item->w;
+            const float h = item->lock_aspect && f.width > 0
+                                ? w * (float)f.height / (float)f.width
+                                : item->h;
+            x0 = item->x / 1280.0f * 2.0f - 1.0f;
+            x1 = (item->x + w) / 1280.0f * 2.0f - 1.0f;
+            y0 = 1.0f - item->y / 720.0f * 2.0f;
+            y1 = 1.0f - (item->y + h) / 720.0f * 2.0f;
+        }
+        // The planes are macroblock-padded; the picture is the top-left crop.
+        const float uMax = (float)f.width  / (float)f.yW;
+        const float vMax = (float)f.height / (float)f.yH;
+        const QuadVtx quad[4] = {
+            { x0, y0, 0.0f, 0.0f, 0.0f },
+            { x1, y0, 0.0f, uMax, 0.0f },
+            { x0, y1, 0.0f, 0.0f, vMax },
+            { x1, y1, 0.0f, uMax, vMax },
+        };
+
+        const float tint[4] = { item->tint[0], item->tint[1], item->tint[2], item->alpha };
+        m_device->SetPixelShaderConstantF(0, tint, 1);
+        m_device->SetTexture(0, t->y);
+        m_device->SetTexture(1, t->cb);
+        m_device->SetTexture(2, t->cr);
+        m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+    }
+
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetTexture(0, nullptr);
+    m_device->SetTexture(1, nullptr);
+    m_device->SetTexture(2, nullptr);
+    m_device->EndScene();
+}
+
 // Draw one standalone shader: pick geometry, build its transform + uniforms,
 // set its parsed render states (raw values), and draw. The whole "how a shader
 // draws" story is here in one place.
@@ -1787,6 +2036,7 @@ void SceneRenderer::BuildGrid()
 
 void SceneRenderer::StartPhysics(const SceneFile& scene)
 {
+    m_video_overrides.clear(); // each Play session starts from the authored play modes
     std::vector<phys::BodyDesc> descs;
     m_phys_names.assign(scene.objects.size(), std::string());
 
@@ -1909,6 +2159,7 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
 
 void SceneRenderer::StopPhysics()
 {
+    m_video_overrides.clear(); // edit mode shows the authored state again
     m_script.Clear();
     m_phys.Clear();
     m_phys_poses.clear();
@@ -1922,6 +2173,51 @@ bool  SceneRenderer::InputButton(const char* name) { return m_input.Button(name)
 float SceneRenderer::InputAxis(const char* name)   { return m_input.Axis(name); }
 void  SceneRenderer::Log(const char* msg)          { applog::Script(msg); }        // [LOG]
 void  SceneRenderer::LogError(const char* msg)     { applog::Error(msg); }          // [ERROR]
+// Lua video.play/stop: an override on the object's Video attribute play mode,
+// applied at capture time and dropped when the Play session ends — the
+// authored scene value is never touched (same contract as physics poses).
+// play on a video that isn't currently running bumps the restart generation
+// (new stream key -> decode from the top); play while running only updates
+// the mode (Once <-> Loop applies live, no restart).
+void SceneRenderer::VideoSetPlaying(int objectIndex, bool play, bool loop)
+{
+    const char* name = ObjectName(objectIndex);
+    if (!name || !*name)
+        return;
+    const bool runningNow = VideoIsPlaying(objectIndex);
+    VideoOverride& ov = m_video_overrides[name];
+    if (play)
+    {
+        ov.mode = loop ? vid::PlayLoop : vid::PlayOnce;
+        if (!runningNow)
+            ++ov.gen; // restart from the top
+    }
+    else
+        ov.mode = vid::PlayOff;
+}
+bool SceneRenderer::VideoIsPlaying(int objectIndex)
+{
+    const char* name = ObjectName(objectIndex);
+    if (!name || !*name)
+        return false;
+    // Streams reconcile at draw time, so a play/stop issued this same script
+    // tick is answered from the override; an existing stream (at the current
+    // effective key) still decides Once-finished.
+    const auto ov = m_video_overrides.find(name);
+    for (const VideoItem& item : m_video_items)
+        if (item.object == name)
+        {
+            if (ov != m_video_overrides.end() && ov->second.mode == (int)vid::PlayOff)
+                return false;
+            const std::string key = VideoKeyFor(item);
+            if (m_video.HasStream(key))
+                return m_video.IsPlaying(key);
+            // play() issued; the stream opens at this frame's draw.
+            return ov != m_video_overrides.end();
+        }
+    return false;
+}
+
 int   SceneRenderer::FindObject(const char* name)
 {
     for (std::size_t i = 0; i < m_phys_names.size(); ++i)

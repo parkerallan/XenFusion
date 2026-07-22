@@ -76,6 +76,24 @@ struct ObjectAttribute
     // For "Trigger Volume" (overlap-report only, no physical response).
     int   trig_shape       = 0;    // 0=Box, 1=Sphere
     float trig_size[3]     = {0.5f, 0.5f, 0.5f}; // Box half-extents / Sphere radius (x)
+
+    // For "Video" (screen-space overlay quad, mirrors the Vulkan engine's
+    // Video2D): an .mpg (MPEG-1 + MP2) decoded by the shared VideoPlayer.
+    // Position/size are in a 1280x720 reference space; edit mode shows the
+    // first frame, Play mode (and the console) plays.
+    std::string video_path;                      // project-relative .mpg
+    float video_x      = 320.0f;                 // top-left, reference px
+    float video_y      = 180.0f;
+    float video_w      = 640.0f;                 // size, reference px
+    float video_h      = 360.0f;                 // ignored while aspect-locked
+    bool  video_stretch = false;                 // fill the whole screen
+    bool  video_lock_aspect = true;              // height from the video's aspect
+    float video_tint[3] = {1.0f, 1.0f, 1.0f};
+    float video_alpha   = 1.0f;
+    int   video_priority = 1;                    // higher = drawn behind
+    int   video_play_mode = 2;                   // 0=Off, 1=Play Once, 2=Loop
+    float video_volume  = 1.0f;                  // audio (Phase 3)
+    bool  video_muted   = false;
 };
 
 // A single object within a scene. Objects are not files — they live inside a

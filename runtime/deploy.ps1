@@ -122,18 +122,24 @@ if ($proj) { $s = (Get-Content $proj.FullName -Raw | ConvertFrom-Json).startupSc
 $sceneFile = Join-Path $Project $startup
 
 $meshes = @()
+$videos = @()
 if (Test-Path $sceneFile) {
     $scene = Get-Content $sceneFile -Raw | ConvertFrom-Json
     foreach ($o in $scene.objects) {
-        foreach ($a in $o.attributes) { if ($a.model_path) { $meshes += $a.model_path } }
+        foreach ($a in $o.attributes) {
+            if ($a.model_path) { $meshes += $a.model_path }
+            if ($a.videoPath)  { $videos += $a.videoPath }  # "Video" attribute -> raw VIDE entry
+        }
     }
 }
 $meshes = $meshes | Select-Object -Unique
-if ($meshes.Count -gt 0) {
-    & $spakcExe build (Join-Path $out "game.spak") $Project @meshes
+$videos = $videos | Select-Object -Unique
+$cookArgs = @($meshes) + @($videos)
+if ($cookArgs.Count -gt 0) {
+    & $spakcExe build (Join-Path $out "game.spak") $Project @cookArgs
     if ($LASTEXITCODE -ne 0) { throw "spakc cook failed" }
 } else {
-    Write-Output "Note: startup scene references no meshes; no game.spak written (shader-only scene)"
+    Write-Output "Note: startup scene references no meshes/videos; no game.spak written (shader-only scene)"
 }
 
 Write-Output "Deployed to $out"

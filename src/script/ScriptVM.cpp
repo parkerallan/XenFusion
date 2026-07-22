@@ -151,6 +151,27 @@ namespace
         else        pushObject(L, id);
         return 1;
     }
+
+    // --- video table: control an object's Video attribute by object name ---
+    int l_video_play(lua_State* L) // play(name [, loop]) — once unless loop is true
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->VideoSetPlaying(h->FindObject(luaL_checkstring(L, 1)), true,
+                                  lua_toboolean(L, 2) != 0);
+        return 0;
+    }
+    int l_video_stop(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->VideoSetPlaying(h->FindObject(luaL_checkstring(L, 1)), false, false);
+        return 0;
+    }
+    int l_video_is_playing(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        lua_pushboolean(L, h ? (h->VideoIsPlaying(h->FindObject(luaL_checkstring(L, 1))) ? 1 : 0) : 0);
+        return 1;
+    }
 }
 
 namespace script
@@ -212,6 +233,13 @@ namespace script
         lua_setglobal(L, "input");
         lua_pushcfunction(L, l_log);  lua_setglobal(L, "log");
         lua_pushcfunction(L, l_find); lua_setglobal(L, "find");
+
+        // Global video table (Video attribute play control by object name).
+        lua_newtable(L);
+        lua_pushcfunction(L, l_video_play);       lua_setfield(L, -2, "play");
+        lua_pushcfunction(L, l_video_stop);       lua_setfield(L, -2, "stop");
+        lua_pushcfunction(L, l_video_is_playing); lua_setfield(L, -2, "is_playing");
+        lua_setglobal(L, "video");
 
         // Registry table: objectIndex -> per-script environment.
         lua_newtable(L);

@@ -64,6 +64,20 @@ struct RtAttribute
     int   trig_shape;       // 0=Box, 1=Sphere
     float trig_size[3];
 
+    // For "Video" (screen-space overlay quad; decoded by the shared
+    // VideoPlayer from the pak's raw VIDE entry). Position/size in the
+    // 1280x720 reference space; playMode 0=Off, 1=Play Once, 2=Loop.
+    std::string video_path;
+    float video_x, video_y, video_w, video_h;
+    bool  video_stretch;
+    bool  video_lock_aspect;
+    float video_tint[3];
+    float video_alpha;
+    int   video_priority;   // higher = drawn behind
+    int   video_play_mode;
+    float video_volume;     // audio (Phase 3)
+    bool  video_muted;
+
     RtAttribute()
     {
         cam_fov    = 45.0f;
@@ -98,6 +112,16 @@ struct RtAttribute
         phys_gravity_scale = 1.0f;
         trig_shape = 0;
         trig_size[0] = trig_size[1] = trig_size[2] = 0.5f;
+        video_x = 320.0f; video_y = 180.0f;
+        video_w = 640.0f; video_h = 360.0f;
+        video_stretch = false;
+        video_lock_aspect = true;
+        video_tint[0] = video_tint[1] = video_tint[2] = 1.0f;
+        video_alpha = 1.0f;
+        video_priority = 1;
+        video_play_mode = 2;
+        video_volume = 1.0f;
+        video_muted = false;
     }
 };
 
