@@ -360,6 +360,27 @@ namespace scenedata
                         at.trig_size[1] = NumAt(psz, 1, at.trig_size[1]);
                         at.trig_size[2] = NumAt(psz, 2, at.trig_size[2]);
                     }
+                    else if (at.type == "Audio")
+                    {
+                        const JValue* app = ja.Find("audioPath");
+                        const JValue* apm = ja.Find("playMode");
+                        const JValue* avo = ja.Find("volume");
+                        const JValue* api = ja.Find("pitch");
+                        const JValue* alo = ja.Find("loop");
+                        const JValue* asp = ja.Find("spatial");
+                        const JValue* amn = ja.Find("minDist");
+                        const JValue* amx = ja.Find("maxDist");
+                        const JValue* ado = ja.Find("doppler");
+                        if (app && app->type == JValue::Str)    at.audio_path = app->str;
+                        if (apm && apm->type == JValue::Number) at.audio_play = (int)apm->num;
+                        if (avo && avo->type == JValue::Number) at.audio_volume = (float)avo->num;
+                        if (api && api->type == JValue::Number) at.audio_pitch = (float)api->num;
+                        if (alo && alo->type == JValue::Bool)   at.audio_loop = alo->b;
+                        if (asp && asp->type == JValue::Bool)   at.audio_spatial = asp->b;
+                        if (amn && amn->type == JValue::Number) at.audio_min_dist = (float)amn->num;
+                        if (amx && amx->type == JValue::Number) at.audio_max_dist = (float)amx->num;
+                        if (ado && ado->type == JValue::Number) at.audio_doppler = (float)ado->num;
+                    }
                     else if (at.type == "Video")
                     {
                         const JValue* vpp = ja.Find("videoPath");

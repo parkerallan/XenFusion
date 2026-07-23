@@ -39,5 +39,19 @@ namespace script
         virtual void VideoSetPlaying(int objectIndex, bool play, bool loop)
         { (void)objectIndex; (void)play; (void)loop; }
         virtual bool VideoIsPlaying(int objectIndex) { (void)objectIndex; return false; }
+
+        // Audio attribute control (the "audio" Lua table). play() starts the
+        // object's clip from the top (restarting a stopped/finished one);
+        // stop() silences it; volume/pitch/loop apply live. Defaults are
+        // no-ops so hosts without audio still build.
+        virtual void AudioSetPlaying(int objectIndex, bool play)
+        { (void)objectIndex; (void)play; }
+        virtual bool AudioIsPlaying(int objectIndex) { (void)objectIndex; return false; }
+        virtual void AudioSetVolume(int objectIndex, float volume)
+        { (void)objectIndex; (void)volume; }
+        virtual void AudioSetPitch(int objectIndex, float pitch)
+        { (void)objectIndex; (void)pitch; }
+        virtual void AudioSetLoop(int objectIndex, bool loop)
+        { (void)objectIndex; (void)loop; }
     };
 }

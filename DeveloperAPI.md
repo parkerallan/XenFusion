@@ -12,7 +12,8 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 4. [Physics](#4-physics) — `apply_impulse`, `set_velocity`, `set_transform`, `position`, `velocity`
 5. [Input](#5-input) — `input.button`, `input.axis`, name reference
 6. [Video](#6-video) — `video.play`, `video.stop`, `video.is_playing`
-7. [Utility](#7-utility) — `log`
+7. [Audio](#7-audio) — `audio.play`, `audio.stop`, `audio.is_playing`, `audio.set_volume`, `audio.set_pitch`, `audio.set_loop`
+8. [Utility](#8-utility) — `log`
 
 ---
 
@@ -329,7 +330,55 @@ end
 
 ---
 
-## 7. Utility
+## 7. Audio
+
+Control an object's **Audio** attribute (a 2D or 3D-positional sound source —
+see `runtime/AUDIO.md` for the format and attribute reference). Globals taking
+an object **name**, like the `video` table. On an object with no Audio
+attribute they do nothing / return `false`.
+
+Audio plays in the editor's **Play** preview and on the console; edit mode is
+always silent. Changes are **transient** — the authored attribute values are
+never modified, and stopping the preview restores them. A **3D-spatialized**
+source pans and fades with the camera automatically; scripts only control
+what plays.
+
+| Function | Effect |
+|---|---|
+| `audio.play(name)` | start the clip **from the beginning** (restarts a stopped/finished one) |
+| `audio.stop(name)` | silence it (releases the voice) |
+| `audio.is_playing(name)` → `boolean` | true while it's audible (a non-looping clip reports false after it ends) |
+| `audio.set_volume(name, v)` | linear gain, `0`–`20` |
+| `audio.set_pitch(name, v)` | playback rate, `0.1`–`4` (also speeds/slows the clip) |
+| `audio.set_loop(name, b)` | toggle looping (applies live) |
+
+```lua
+-- One-shot triggered SFX: the object "Chime" has an Audio attribute authored
+-- with Play Mode = Off and Loop = off.
+function on_trigger(entrant)
+    if entrant:name() == "fox" then
+        audio.play("Chime")               -- plays once; is_playing goes false after
+    end
+end
+```
+
+```lua
+-- Engine hum that follows speed: pitch rides the object's velocity.
+function on_update(dt)
+    local vx, vy, vz = self:velocity()
+    local speed = math.sqrt(vx*vx + vy*vy + vz*vz)
+    audio.set_pitch("EngineHum", 0.8 + speed * 0.05)
+end
+```
+
+> `audio.play` on a clip that is already playing does nothing; to restart one
+> mid-play, `audio.stop` it and `audio.play` on a later frame. Whether a clip
+> loops comes from the attribute (or `audio.set_loop`) — `play` doesn't take a
+> loop argument like `video.play` does.
+
+---
+
+## 8. Utility
 
 ### `log(msg)`
 Print to the editor **Log** panel as a `[LOG]` entry (or the console's debug

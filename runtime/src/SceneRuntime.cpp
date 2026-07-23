@@ -162,6 +162,59 @@ const char* SceneRuntime::ObjectName(int index)
     return "";
 }
 
+// Lua audio.*: transient overrides on the object's Audio attribute (the
+// parsed scene keeps its authored values).
+void SceneRuntime::AudioSetPlaying(int objectIndex, bool play)
+{
+    const char* name = ObjectName(objectIndex);
+    if (!name || !*name)
+        return;
+    const bool runningNow = AudioIsPlaying(objectIndex);
+    AudioOverride& ov = m_audio_overrides[name];
+    ov.play = play ? 1 : 0;
+    if (play && !runningNow)
+        ++ov.gen; // restart from the top
+}
+bool SceneRuntime::AudioIsPlaying(int objectIndex)
+{
+    const char* name = ObjectName(objectIndex);
+    if (!name || !*name)
+        return false;
+    std::map<std::string, AudioOverride>::const_iterator ov = m_audio_overrides.find(name);
+    for (size_t i = 0; i < m_audio_items.size(); ++i)
+        if (m_audio_items[i].object == name)
+        {
+            if (ov != m_audio_overrides.end() && ov->second.play == 0)
+                return false;
+            const std::string key = AudioKeyFor(m_audio_items[i]);
+            if (m_audio.HasStream(key))
+                return m_audio.IsPlaying(key);
+            if (ov != m_audio_overrides.end() && ov->second.play == 1)
+                return true;
+            return m_audio_items[i].play &&
+                   (ov == m_audio_overrides.end() || ov->second.play != 0);
+        }
+    return false;
+}
+void SceneRuntime::AudioSetVolume(int objectIndex, float volume)
+{
+    const char* name = ObjectName(objectIndex);
+    if (name && *name)
+        m_audio_overrides[name].volume = volume < 0.0f ? 0.0f : volume;
+}
+void SceneRuntime::AudioSetPitch(int objectIndex, float pitch)
+{
+    const char* name = ObjectName(objectIndex);
+    if (name && *name)
+        m_audio_overrides[name].pitch = pitch < 0.1f ? 0.1f : pitch;
+}
+void SceneRuntime::AudioSetLoop(int objectIndex, bool loop)
+{
+    const char* name = ObjectName(objectIndex);
+    if (name && *name)
+        m_audio_overrides[name].loop = loop ? 1 : 0;
+}
+
 // Lua video.play/stop: an override on the object's Video attribute play mode,
 // consulted when RenderVideoOverlay builds the wanted set each frame. The
 // parsed scene keeps its authored value. play on a video that isn't currently
@@ -521,6 +574,7 @@ void SceneRuntime::RenderEnvCapture()
 
 void SceneRuntime::Shutdown()
 {
+    m_audio.Shutdown();
     m_video.Shutdown();
     for (size_t i = 0; i < m_video_tex.size(); ++i)
         for (int s = 0; s < 2; ++s)
@@ -660,6 +714,7 @@ void SceneRuntime::BuildDrawLists()
     m_draw_items.clear();
     m_shader_items.clear();
     m_video_items.clear();
+    m_audio_items.clear();
     m_has_cam = false;
 
     bool have_dir = false;
@@ -719,6 +774,25 @@ void SceneRuntime::BuildDrawLists()
                 m_light_dir[0] = r._31; m_light_dir[1] = r._32; m_light_dir[2] = r._33;
                 for (int k = 0; k < 3; ++k) m_light_col[k] = at.light_color[k] * at.light_intensity;
                 have_dir = true;
+            }
+            else if (at.type == "Audio" && !at.audio_path.empty())
+            {
+                AudioItem ai;
+                char keybuf[16];
+                sprintf_s(keybuf, sizeof(keybuf), "#%u", (unsigned int)a);
+                ai.key    = o.name + keybuf;
+                ai.object = o.name;
+                ai.path   = at.audio_path;
+                ai.object_index = (int)i;
+                ai.play     = at.audio_play != 0;
+                ai.loop     = at.audio_loop;
+                ai.volume   = at.audio_volume;
+                ai.pitch    = at.audio_pitch;
+                ai.spatial  = at.audio_spatial;
+                ai.min_dist = at.audio_min_dist;
+                ai.max_dist = at.audio_max_dist;
+                ai.doppler  = at.audio_doppler;
+                m_audio_items.push_back(ai);
             }
             else if (at.type == "Video" && !at.video_path.empty())
             {
@@ -1116,6 +1190,87 @@ void SceneRuntime::Render(float dt)
     // --- Video attribute overlays (screen-space, on top of everything) ---
     // Drawn inside the tiled pass — a clip-space quad replays fine per band.
     RenderVideoOverlay(dt);
+
+    // --- Audio attribute sources (the console always plays) ---
+    UpdateAudio(dt, view);
+}
+
+// The Audio attribute reconciler: every playing attribute becomes a wanted
+// stream, fed from the pak's raw AUDI entry (byte window through the player's
+// own handle) or the loose file in dev runs. The listener is the resolved
+// camera; spatial emitters ride the object's live physics pose.
+// The item's stream key with the script override's restart generation folded
+// in (audio.play on a stopped clip decodes a fresh stream from the top).
+std::string SceneRuntime::AudioKeyFor(const AudioItem& item) const
+{
+    std::map<std::string, AudioOverride>::const_iterator ov = m_audio_overrides.find(item.object);
+    if (ov == m_audio_overrides.end() || ov->second.gen == 0)
+        return item.key;
+    char buf[16];
+    sprintf_s(buf, sizeof(buf), "#g%u", ov->second.gen);
+    return item.key + buf;
+}
+
+void SceneRuntime::UpdateAudio(float dt, const D3DMATRIX& view)
+{
+    std::vector<aud::Want> wants;
+    for (size_t i = 0; i < m_audio_items.size(); ++i)
+    {
+        const AudioItem& item = m_audio_items[i];
+        // Script overrides win over the authored attribute state.
+        std::map<std::string, AudioOverride>::const_iterator ov =
+            m_audio_overrides.find(item.object);
+        const bool play = (ov != m_audio_overrides.end() && ov->second.play >= 0)
+                              ? ov->second.play != 0 : item.play;
+        if (!play)
+            continue;
+        aud::Want w;
+        w.key     = AudioKeyFor(item);
+        w.loop    = item.loop;
+        w.volume  = item.volume;
+        w.pitch   = item.pitch;
+        if (ov != m_audio_overrides.end())
+        {
+            if (ov->second.loop   >= 0)    w.loop   = ov->second.loop != 0;
+            if (ov->second.volume >= 0.0f) w.volume = ov->second.volume;
+            if (ov->second.pitch  >= 0.0f) w.pitch  = ov->second.pitch;
+        }
+        w.spatial = item.spatial;
+        w.minDist = item.min_dist;
+        w.maxDist = item.max_dist;
+        w.doppler = item.doppler;
+        if (item.object_index >= 0 && item.object_index < (int)m_scene.objects.size())
+            for (int k = 0; k < 3; ++k)
+                w.pos[k] = m_scene.objects[item.object_index].position[k];
+        for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
+            if (m_phys_poses[pi].objectIndex == item.object_index)
+            {
+                w.pos[0] = m_phys_poses[pi].matrix[12];
+                w.pos[1] = m_phys_poses[pi].matrix[13];
+                w.pos[2] = m_phys_poses[pi].matrix[14];
+                break;
+            }
+        const SpakEntry* e = m_pak.IsOpen() ? m_pak.Find(spak::NameHash(item.path.c_str())) : NULL;
+        if (e && e->type == spak::kTypeAudio && spak::CodecOf(e->flags) == spak::kCodecNone)
+        {
+            w.path   = m_content.Resolve("game.spak");
+            w.offset = e->diskOffset;
+            w.length = e->compressedSize; // raw entry: on-disk bytes ARE the .mp2
+        }
+        else
+            w.path = m_content.Resolve(item.path);
+        wants.push_back(w);
+    }
+
+    // Listener = the resolved camera: LookAtLH's basis lives in the view
+    // matrix columns (col 2 = forward, col 1 = up); position is m_eye.
+    aud::ListenerState listener;
+    listener.pos[0] = m_eye[0]; listener.pos[1] = m_eye[1]; listener.pos[2] = m_eye[2];
+    listener.fwd[0] = view._13; listener.fwd[1] = view._23; listener.fwd[2] = view._33;
+    listener.up[0]  = view._12; listener.up[1]  = view._22; listener.up[2]  = view._32;
+
+    m_audio.Update(wants.empty() ? NULL : &wants[0], (int)wants.size(),
+                   dt, &listener);
 }
 
 // Copy one decoded plane into a linear L8 texture (LockRect is a plain

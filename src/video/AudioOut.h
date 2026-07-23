@@ -27,8 +27,13 @@ namespace vid
     public:
         enum
         {
-            kMaxQueue  = 6,    // throttle: worker stops submitting at this depth
-            kSlabs     = 8,    // owned buffers; > kMaxQueue so reuse is safe
+            // ~620ms of queued audio. Deep on purpose: under Xenia, guest
+            // worker threads schedule in bursts, and a pitched-up voice drains
+            // faster than nominal — a shallow queue (the original 6) starved
+            // intermittently and clicked. Params (volume/pitch/matrix) are
+            // voice-level, not buffered, so responsiveness is unaffected.
+            kMaxQueue  = 24,   // throttle: worker stops submitting at this depth
+            kSlabs     = 32,   // owned buffers; > kMaxQueue so reuse is safe
             kMaxFrames = 1152, // MP2 frame: samples per channel
             kChannels  = 2
         };
@@ -37,13 +42,15 @@ namespace vid
         ~AudioOut();
 
         // Create the source voice (starts immediately). False if the engine or
-        // voice can't be created — the caller runs silent.
-        bool Open(int sampleRate);
+        // voice can't be created — the caller runs silent. channels: 2 for
+        // video/2D audio, 1 for spatialized emitters. maxFreqRatio bounds
+        // SetFrequencyRatio (pitch * doppler); the default matches XAudio2's.
+        bool Open(int sampleRate, int channels = kChannels, float maxFreqRatio = 2.0f);
         void Close();
         bool IsOpen() const { return m_voice != 0; }
 
-        // Copy interleaved stereo s16 into an owned slab and queue it.
-        // frames = samples per channel (<= kMaxFrames).
+        // Copy interleaved s16 (m_channels wide) into an owned slab and queue
+        // it. frames = samples per channel (<= kMaxFrames).
         bool Submit(const short* samples, int frames);
 
         int  QueuedBuffers() const;
@@ -51,10 +58,19 @@ namespace vid
         // Total samples the voice has consumed since Open — the master clock.
         unsigned __int64 SamplesPlayed() const;
 
-        void SetVolume(float volume); // 0..1 (mute = 0)
+        void SetVolume(float volume); // linear gain (mute = 0)
+
+        // Playback-rate multiplier (pitch * doppler), clamped by Open's
+        // maxFreqRatio. No-op before the voice exists.
+        void SetFrequencyRatio(float ratio);
+
+        // Per-channel gains into the stereo mastering voice: srcChannels *
+        // 2 coefficients (the X3DAudio matrix). No-op before the voice exists.
+        void SetOutputMatrix(int srcChannels, const float* gains);
 
     private:
         IXAudio2SourceVoice* m_voice;
+        int   m_channels; // set by Open
         short m_slabs[kSlabs][kMaxFrames * kChannels];
         int   m_next;
 

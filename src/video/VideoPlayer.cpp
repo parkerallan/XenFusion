@@ -3,8 +3,15 @@
 
 #include <stdio.h> // pl_mpeg's declarations use FILE but only its implementation includes stdio
 
+// C4244 inside pl_mpeg is its own seek-estimation / set_time code doing
+// intentional double->integer truncation (byte offsets and frame counts from
+// times) — upstream, deliberate, and not on our decode path. Silenced here so
+// build logs stay readable; the vendored file stays untouched.
+#pragma warning(push)
+#pragma warning(disable: 4244)
 #define PL_MPEG_IMPLEMENTATION
 #include "plmpeg/pl_mpeg.h"
+#pragma warning(pop)
 
 // Per-stream decode worker + a 4-slot frame ring. The worker owns the plm
 // handle and only ever touches Free slots; the host thread (Update/GetFrame)
@@ -300,6 +307,21 @@ namespace vid
 
         void CloseStream(VideoStream* s)
         {
+            // Declick: an audible stop must not cut the waveform mid-sample —
+            // XAudio2 doesn't ramp SetVolume, so step it down quickly before
+            // the voice dies. Video stops are rare (cutscene end/skip); the
+            // ~35ms stall is invisible there.
+            if (s->audioReady)
+            {
+                float v = s->muted ? 0.0f : s->volume;
+                for (int step = 0; step < 6; ++step)
+                {
+                    v *= 0.5f;
+                    s->audio.SetVolume(v);
+                    Sleep(6);
+                }
+                s->audio.SetVolume(0.0f);
+            }
             if (s->thread)
             {
                 InterlockedExchange(&s->stop, 1);

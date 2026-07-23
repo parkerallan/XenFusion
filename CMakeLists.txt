@@ -140,6 +140,8 @@ add_executable(XenFusion
     src/render/ShaderCompiler.cpp
     src/video/VideoPlayer.cpp
     src/video/AudioOut.cpp
+    src/audio/AudioPlayer.cpp
+    src/audio/Spatial3D.cpp
     src/physics/PhysicsWorld.cpp
     src/script/ScriptVM.cpp
     src/input/ControllerMapping.cpp

@@ -37,6 +37,10 @@ namespace spak
                                                 // ALWAYS stored raw (kCodecNone): the
                                                 // VideoPlayer streams it with ranged
                                                 // reads, which per-entry LZX would break
+    const unsigned int kTypeAudio = 0x41554449; // 'AUDI' — raw MP2 elementary stream
+                                                // (.mp2), ALWAYS stored raw: MP2 is
+                                                // already compressed, and the AudioPlayer
+                                                // reads the entry's byte window directly
 
     // Mesh payload (big-endian): a fixed 16-byte header, then one 36-byte record
     // per material subset, then vertexCount*44 bytes of native-endian vertices,

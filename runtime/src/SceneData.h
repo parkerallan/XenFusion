@@ -78,6 +78,18 @@ struct RtAttribute
     float video_volume;     // audio (Phase 3)
     bool  video_muted;
 
+    // For "Audio" (a sound source at the object; .mp2 decoded by the shared
+    // AudioPlayer from the pak's raw AUDI entry). playMode 0=Off, 1=On.
+    std::string audio_path;
+    int   audio_play;
+    float audio_volume;     // linear, 0..20
+    float audio_pitch;      // 0.1..4
+    bool  audio_loop;
+    bool  audio_spatial;    // 3D emitter (spatial phase)
+    float audio_min_dist;
+    float audio_max_dist;
+    float audio_doppler;
+
     RtAttribute()
     {
         cam_fov    = 45.0f;
@@ -122,6 +134,14 @@ struct RtAttribute
         video_play_mode = 2;
         video_volume = 1.0f;
         video_muted = false;
+        audio_play = 0;
+        audio_volume = 1.0f;
+        audio_pitch = 1.0f;
+        audio_loop = false;
+        audio_spatial = true;
+        audio_min_dist = 1.0f;
+        audio_max_dist = 50.0f;
+        audio_doppler = 1.0f;
     }
 };
 

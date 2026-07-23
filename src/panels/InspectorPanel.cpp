@@ -17,18 +17,10 @@
 
 namespace
 {
-    // Transcode any video ffmpeg can read into the .mpg (MPEG-1 + MP2) the
-    // engine plays, next to the source in assets/. Blocks until done (fine for
-    // clip-length sources); requires ffmpeg on PATH. Mirrors the cook settings
-    // the console uses.
-    bool TranscodeToMpg(const std::filesystem::path& src,
-                        const std::filesystem::path& dst,
-                        EngineState& state)
+    // Run an ffmpeg command hidden, blocking until it exits. False if ffmpeg
+    // isn't on PATH or it fails.
+    bool RunFfmpeg(const std::string& cmd, EngineState& state)
     {
-        std::string cmd = "ffmpeg -y -i \"" + src.string() +
-            "\" -f mpeg -c:v mpeg1video -q:v 6 -vf \"scale=640:-2\" -r 30"
-            " -c:a mp2 -b:a 224k -ar 44100 -ac 2 \"" + dst.string() + "\"";
-
         STARTUPINFOA si = {};
         si.cb = sizeof(si);
         si.dwFlags = STARTF_USESHOWWINDOW;
@@ -39,7 +31,7 @@ namespace
         if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
         {
-            state.AddLog("ffmpeg not found on PATH - cannot import video", LogLevel::Error);
+            state.AddLog("ffmpeg not found on PATH - cannot import", LogLevel::Error);
             return false;
         }
         WaitForSingleObject(pi.hProcess, INFINITE);
@@ -47,7 +39,39 @@ namespace
         GetExitCodeProcess(pi.hProcess, &code);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
-        if (code != 0 || !std::filesystem::exists(dst))
+        return code == 0;
+    }
+
+    // Transcode any video ffmpeg can read into the .mpg (MPEG-1 + MP2) the
+    // engine plays, next to the source in assets/. Blocks until done (fine for
+    // clip-length sources). Mirrors the cook settings the console uses.
+    bool TranscodeToMpg(const std::filesystem::path& src,
+                        const std::filesystem::path& dst,
+                        EngineState& state)
+    {
+        const std::string cmd = "ffmpeg -y -i \"" + src.string() +
+            "\" -f mpeg -c:v mpeg1video -q:v 6 -vf \"scale=640:-2\" -r 30"
+            " -c:a mp2 -b:a 224k -ar 44100 -ac 2 \"" + dst.string() + "\"";
+        if (!RunFfmpeg(cmd, state) || !std::filesystem::exists(dst))
+        {
+            state.AddLog("ffmpeg failed transcoding " + src.filename().string(), LogLevel::Error);
+            return false;
+        }
+        return true;
+    }
+
+    // Transcode any audio ffmpeg can read into the raw MP2 elementary stream
+    // the engine plays (pl_mpeg's standalone audio decoder).
+    bool TranscodeToMp2(const std::filesystem::path& src,
+                        const std::filesystem::path& dst,
+                        EngineState& state)
+    {
+        // 48kHz: the 360 mixes natively at 48k — a 44.1k source would eat a
+        // sample-rate conversion on every voice (and Xenia's emulation of
+        // that SRC audibly crackles on mono spatial voices).
+        const std::string cmd = "ffmpeg -y -i \"" + src.string() +
+            "\" -vn -f mp2 -c:a mp2 -b:a 192k -ar 48000 -ac 2 \"" + dst.string() + "\"";
+        if (!RunFfmpeg(cmd, state) || !std::filesystem::exists(dst))
         {
             state.AddLog("ffmpeg failed transcoding " + src.filename().string(), LogLevel::Error);
             return false;
@@ -572,6 +596,84 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
+        else if (attr.type == "Audio")
+        {
+            // Read-only path display; set by dragging audio from the Assets
+            // panel. Non-.mp2 sources are transcoded via ffmpeg on drop.
+            char buf[260];
+            const std::string shown = attr.audio_path.empty() ? "(drag audio from Assets)" : attr.audio_path;
+            std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##audio_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+
+                    if (ext == ".mp2")
+                    {
+                        attr.audio_path = dropped;
+                        save();
+                    }
+                    else
+                    {
+                        static const char* kSourceExts[] =
+                            {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".wma"};
+                        bool is_audio = false;
+                        for (const char* e : kSourceExts) if (ext == e) { is_audio = true; break; }
+
+                        if (is_audio)
+                        {
+                            std::filesystem::path rel(dropped);
+                            rel.replace_extension(".mp2");
+                            state.AddLog("Transcoding " + dropped + " -> " + rel.generic_string() + " ...");
+                            if (TranscodeToMp2(state.project_root / dropped,
+                                               state.project_root / rel, state))
+                            {
+                                attr.audio_path = rel.generic_string();
+                                save();
+                                state.AddLog("Audio imported: " + attr.audio_path);
+                            }
+                        }
+                        else
+                        {
+                            state.AddLog("Not an audio file: " + dropped, LogLevel::Error);
+                        }
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            bool edited = false, commit = false;
+            const char* modes = "Off\0On\0";
+            if (ImGui::Combo("Play Mode", &attr.audio_play, modes)) { edited = commit = true; }
+            edited |= ImGui::DragFloat("Volume", &attr.audio_volume, 0.05f, 0.0f, 20.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Pitch", &attr.audio_pitch, 0.005f, 0.1f, 4.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (ImGui::Checkbox("Loop", &attr.audio_loop)) { edited = commit = true; }
+            if (ImGui::Checkbox("3D Spatialize", &attr.audio_spatial)) { edited = commit = true; }
+            if (attr.audio_spatial)
+            {
+                edited |= ImGui::DragFloat("Min Distance", &attr.audio_min_dist, 0.05f, 0.01f, 1000.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Max Distance", &attr.audio_max_dist, 0.1f, 0.02f, 1000.0f, "%.1f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+                edited |= ImGui::DragFloat("Doppler Factor", &attr.audio_doppler, 0.02f, 0.0f, 10.0f, "%.2f");
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            ImGui::TextDisabled("Plays in Play mode only; position follows the object.");
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
         else if (attr.type == "Trigger Volume")
         {
             ImGui::TextDisabled("Reports overlaps; no physical response.");
@@ -681,6 +783,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Video";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Audio"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Audio";
             obj->attributes.push_back(attr);
             save();
         }

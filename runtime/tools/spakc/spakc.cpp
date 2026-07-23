@@ -398,6 +398,22 @@ bool AddVideo(std::vector<Entry>& entries, const std::string& rootAbs, const std
     return true;
 }
 
+// Add an audio entry: the .mp2's bytes verbatim (already compressed; raw so
+// the AudioPlayer can read the entry's byte window straight out of the pak).
+bool AddAudio(std::vector<Entry>& entries, const std::string& rootAbs, const std::string& audioRel)
+{
+    const std::string audioAbs = AbsFrom(rootAbs, audioRel);
+    Entry e;
+    if (!ReadFileBytes(audioAbs, e.payload) || e.payload.empty())
+    { fprintf(stderr, "spakc: cannot read audio %s\n", audioAbs.c_str()); return false; }
+    e.hash = spak::NameHash(audioRel.c_str());
+    e.type = spak::kTypeAudio;
+    e.noCompress = true;
+    entries.push_back(e);
+    printf("spakc: audio %s — %u bytes (raw)\n", audioRel.c_str(), (unsigned int)e.payload.size());
+    return true;
+}
+
 bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool compress)
 {
     if (entries.empty()) { fprintf(stderr, "spakc: nothing to write\n"); return false; }
@@ -495,6 +511,7 @@ int main(int argc, char** argv)
         bool compress = true;
         std::vector<std::string> meshes;
         std::vector<std::string> videos; // .mpg args become raw VIDE entries
+        std::vector<std::string> audios; // .mp2 args become raw AUDI entries
         for (int i = 4; i < argc; ++i)
         {
             const std::string arg = argv[i];
@@ -502,10 +519,11 @@ int main(int argc, char** argv)
             std::string ext = arg.size() >= 4 ? arg.substr(arg.size() - 4) : "";
             for (size_t c = 0; c < ext.size(); ++c)
                 if (ext[c] >= 'A' && ext[c] <= 'Z') ext[c] = (char)(ext[c] - 'A' + 'a');
-            if (ext == ".mpg") videos.push_back(arg);
-            else               meshes.push_back(arg);
+            if      (ext == ".mpg") videos.push_back(arg);
+            else if (ext == ".mp2") audios.push_back(arg);
+            else                    meshes.push_back(arg);
         }
-        if (meshes.empty() && videos.empty())
+        if (meshes.empty() && videos.empty() && audios.empty())
         { fprintf(stderr, "spakc: no assets given\n"); return 2; }
         if (!ResolveBundler()) return 1;
         g_tmpBase = outSpak;
@@ -513,12 +531,14 @@ int main(int argc, char** argv)
         const std::string rootAbs = AbsPath(root);
         std::vector<Entry> entries;
         std::set<unsigned int> seenTex;
-        int okMeshes = 0, okVideos = 0;
+        int okMeshes = 0, okVideos = 0, okAudios = 0;
         for (size_t i = 0; i < meshes.size(); ++i)
             if (AddMesh(entries, seenTex, rootAbs, meshes[i])) ++okMeshes;
         for (size_t i = 0; i < videos.size(); ++i)
             if (AddVideo(entries, rootAbs, videos[i])) ++okVideos;
-        if (okMeshes == 0 && okVideos == 0)
+        for (size_t i = 0; i < audios.size(); ++i)
+            if (AddAudio(entries, rootAbs, audios[i])) ++okAudios;
+        if (okMeshes == 0 && okVideos == 0 && okAudios == 0)
         { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;
     }

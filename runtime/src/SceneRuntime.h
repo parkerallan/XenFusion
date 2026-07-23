@@ -4,6 +4,7 @@
 #include "SceneData.h"
 #include "StreamCache.h"
 #include "video/VideoPlayer.h"
+#include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
@@ -32,6 +33,11 @@ public:
     const char* ObjectName(int index);
     void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
     bool  VideoIsPlaying(int objectIndex);
+    void  AudioSetPlaying(int objectIndex, bool play); // Lua audio.*
+    bool  AudioIsPlaying(int objectIndex);
+    void  AudioSetVolume(int objectIndex, float volume);
+    void  AudioSetPitch(int objectIndex, float pitch);
+    void  AudioSetLoop(int objectIndex, bool loop);
 
     // contentRoot is the deployed game root, e.g. "game:\". Loads the standard
     // material, the startup scene, and builds shared geometry. Returns false if
@@ -229,6 +235,44 @@ private:
     // (evaluated at draw time, after this frame's scripts ran).
     std::string VideoKeyFor(const VideoItem& item) const;
     int         VideoModeFor(const VideoItem& item) const;
+
+    // --- Audio ("Audio" attribute; the per-frame reconciler) ---
+    // Captured once in BuildDrawLists (scene data is static), reconciled every
+    // frame by UpdateAudio: playing attributes become AudioPlayer streams fed
+    // from the pak's raw AUDI byte windows (loose-file dev fallback). 3D
+    // fields are carried now, applied in the spatial phase.
+    struct AudioItem
+    {
+        std::string key;      // object name + '#' + attr index
+        std::string object;   // owning object's name (Lua lookups)
+        std::string path;     // scene-relative .mp2
+        int   object_index;   // live pose lookup (spatial phase)
+        bool  play;
+        bool  loop;
+        float volume;
+        float pitch;
+        bool  spatial;
+        float min_dist, max_dist, doppler;
+        AudioItem() : object_index(-1), play(false), loop(false),
+                      volume(1.0f), pitch(1.0f), spatial(true),
+                      min_dist(1.0f), max_dist(50.0f), doppler(1.0f) {}
+    };
+    void UpdateAudio(float dt, const D3DMATRIX& view);
+    // Script overrides (object name -> partial state); -1 = "no override".
+    // The generation restarts a stopped clip from the top (new stream key).
+    struct AudioOverride
+    {
+        int      play;
+        int      loop;
+        float    volume;
+        float    pitch;
+        unsigned gen;
+        AudioOverride() : play(-1), loop(-1), volume(-1.0f), pitch(-1.0f), gen(0) {}
+    };
+    std::string AudioKeyFor(const AudioItem& item) const;
+    std::map<std::string, AudioOverride> m_audio_overrides;
+    std::vector<AudioItem> m_audio_items;
+    aud::AudioPlayer       m_audio;
 
     std::vector<VideoItem>  m_video_items;
     std::vector<RtVideoTex> m_video_tex;

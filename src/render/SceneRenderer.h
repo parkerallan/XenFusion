@@ -3,6 +3,7 @@
 #include "render/MeshCache.h"
 #include "render/ShaderCache.h"
 #include "video/VideoPlayer.h"
+#include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
@@ -44,6 +45,11 @@ public:
     const char* ObjectName(int index);
     void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
     bool  VideoIsPlaying(int objectIndex);
+    void  AudioSetPlaying(int objectIndex, bool play); // Lua audio.*
+    bool  AudioIsPlaying(int objectIndex);
+    void  AudioSetVolume(int objectIndex, float volume);
+    void  AudioSetPitch(int objectIndex, float pitch);
+    void  AudioSetLoop(int objectIndex, bool loop);
 
     void Initialize(IDirect3DDevice9* device);
     void Shutdown();
@@ -325,6 +331,44 @@ private:
     // (evaluated at draw time, after this frame's scripts ran).
     std::string VideoKeyFor(const VideoItem& item) const;
     int         VideoModeFor(const VideoItem& item) const;
+
+    // --- Audio ("Audio" attribute; mirrors the Vulkan engine's reconciler) ---
+    // Captured in RenderUi, reconciled by UpdateAudio each frame: sounds exist
+    // only while the Play preview runs (edit mode passes an empty set, which
+    // silences everything — the Vulkan editor's exact behavior). 3D fields are
+    // carried now, applied in the spatial phase.
+    struct AudioItem
+    {
+        std::string key;      // object name + '#' + attr index
+        std::string object;   // owning object's name (Lua lookups)
+        std::string path_abs; // absolute .mp2 path
+        bool  play = false;   // playMode On
+        bool  loop = false;
+        float volume = 1.0f;
+        float pitch = 1.0f;
+        bool  spatial = true;
+        float min_dist = 1.0f;
+        float max_dist = 50.0f;
+        float doppler = 1.0f;
+        float pos[3] = {0, 0, 0}; // authored position (live pose wins in Play)
+        int   object_index = -1;  // physics pose lookup
+    };
+    void UpdateAudio(float dt);
+    // Script overrides (object name -> partial state), transient per Play
+    // session like the video ones; -1 floats/ints mean "no override". The
+    // generation restarts a stopped/finished clip from the top (new key).
+    struct AudioOverride
+    {
+        int      play   = -1; // 0/1
+        int      loop   = -1;
+        float    volume = -1.0f;
+        float    pitch  = -1.0f;
+        unsigned gen    = 0;
+    };
+    std::string AudioKeyFor(const AudioItem& item) const;
+    std::map<std::string, AudioOverride> m_audio_overrides;
+    std::vector<AudioItem> m_audio_items;
+    aud::AudioPlayer       m_audio;
 
     std::vector<VideoItem> m_video_items;
     std::vector<VideoTex>  m_video_tex;

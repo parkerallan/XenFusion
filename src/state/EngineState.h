@@ -94,6 +94,20 @@ struct ObjectAttribute
     int   video_play_mode = 2;                   // 0=Off, 1=Play Once, 2=Loop
     float video_volume  = 1.0f;                  // audio (Phase 3)
     bool  video_muted   = false;
+
+    // For "Audio" (a positional/2D sound source, mirroring the Vulkan
+    // engine's Audio attribute): an .mp2 clip decoded by the shared
+    // AudioPlayer. Plays only in Play mode (and on the console); playMode On
+    // at scene start = autoplay.
+    std::string audio_path;                      // project-relative .mp2
+    int   audio_play      = 0;                   // 0=Off, 1=On
+    float audio_volume    = 1.0f;                // linear, 0..20
+    float audio_pitch     = 1.0f;                // 0.1..4
+    bool  audio_loop      = false;
+    bool  audio_spatial   = true;                // 3D emitter at the object
+    float audio_min_dist  = 1.0f;                // full volume inside this
+    float audio_max_dist  = 50.0f;               // inaudible beyond this
+    float audio_doppler   = 1.0f;                // doppler scale (0 = off)
 };
 
 // A single object within a scene. Objects are not files — they live inside a

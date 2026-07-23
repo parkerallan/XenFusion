@@ -172,6 +172,47 @@ namespace
         lua_pushboolean(L, h ? (h->VideoIsPlaying(h->FindObject(luaL_checkstring(L, 1))) ? 1 : 0) : 0);
         return 1;
     }
+
+    // --- audio table: control an object's Audio attribute by object name ---
+    int l_audio_play(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AudioSetPlaying(h->FindObject(luaL_checkstring(L, 1)), true);
+        return 0;
+    }
+    int l_audio_stop(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AudioSetPlaying(h->FindObject(luaL_checkstring(L, 1)), false);
+        return 0;
+    }
+    int l_audio_is_playing(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        lua_pushboolean(L, h ? (h->AudioIsPlaying(h->FindObject(luaL_checkstring(L, 1))) ? 1 : 0) : 0);
+        return 1;
+    }
+    int l_audio_set_volume(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AudioSetVolume(h->FindObject(luaL_checkstring(L, 1)),
+                                 (float)luaL_checknumber(L, 2));
+        return 0;
+    }
+    int l_audio_set_pitch(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AudioSetPitch(h->FindObject(luaL_checkstring(L, 1)),
+                                (float)luaL_checknumber(L, 2));
+        return 0;
+    }
+    int l_audio_set_loop(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AudioSetLoop(h->FindObject(luaL_checkstring(L, 1)),
+                               lua_toboolean(L, 2) != 0);
+        return 0;
+    }
 }
 
 namespace script
@@ -240,6 +281,16 @@ namespace script
         lua_pushcfunction(L, l_video_stop);       lua_setfield(L, -2, "stop");
         lua_pushcfunction(L, l_video_is_playing); lua_setfield(L, -2, "is_playing");
         lua_setglobal(L, "video");
+
+        // Global audio table (Audio attribute control by object name).
+        lua_newtable(L);
+        lua_pushcfunction(L, l_audio_play);       lua_setfield(L, -2, "play");
+        lua_pushcfunction(L, l_audio_stop);       lua_setfield(L, -2, "stop");
+        lua_pushcfunction(L, l_audio_is_playing); lua_setfield(L, -2, "is_playing");
+        lua_pushcfunction(L, l_audio_set_volume); lua_setfield(L, -2, "set_volume");
+        lua_pushcfunction(L, l_audio_set_pitch);  lua_setfield(L, -2, "set_pitch");
+        lua_pushcfunction(L, l_audio_set_loop);   lua_setfield(L, -2, "set_loop");
+        lua_setglobal(L, "audio");
 
         // Registry table: objectIndex -> per-script environment.
         lua_newtable(L);

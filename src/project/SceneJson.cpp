@@ -92,6 +92,18 @@ namespace project
                     ja["shape"] = a.trig_shape;
                     ja["size"]  = {a.trig_size[0], a.trig_size[1], a.trig_size[2]};
                 }
+                else if (a.type == "Audio")
+                {
+                    ja["audioPath"] = a.audio_path;
+                    ja["playMode"]  = a.audio_play;
+                    ja["volume"]    = a.audio_volume;
+                    ja["pitch"]     = a.audio_pitch;
+                    ja["loop"]      = a.audio_loop;
+                    ja["spatial"]   = a.audio_spatial;
+                    ja["minDist"]   = a.audio_min_dist;
+                    ja["maxDist"]   = a.audio_max_dist;
+                    ja["doppler"]   = a.audio_doppler;
+                }
                 else if (a.type == "Video")
                 {
                     ja["videoPath"]  = a.video_path;
@@ -221,6 +233,18 @@ namespace project
                         {
                             a.trig_shape = ja.value("shape", 0);
                             readSize(a.trig_size);
+                        }
+                        else if (a.type == "Audio")
+                        {
+                            a.audio_path     = ja.value("audioPath", std::string());
+                            a.audio_play     = ja.value("playMode", 0);
+                            a.audio_volume   = ja.value("volume", 1.0f);
+                            a.audio_pitch    = ja.value("pitch", 1.0f);
+                            a.audio_loop     = ja.value("loop", false);
+                            a.audio_spatial  = ja.value("spatial", true);
+                            a.audio_min_dist = ja.value("minDist", 1.0f);
+                            a.audio_max_dist = ja.value("maxDist", 50.0f);
+                            a.audio_doppler  = ja.value("doppler", 1.0f);
                         }
                         else if (a.type == "Video")
                         {

@@ -43,7 +43,7 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>d3d9d.lib;d3dx9d.lib;xgraphics.lib;xapilibd.lib;xboxkrnl.lib;xaudiod2.lib;xmcored.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d9d.lib;d3dx9d.lib;xgraphics.lib;xapilibd.lib;xboxkrnl.lib;xaudiod2.lib;xmcored.lib;x3daudiod.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
@@ -55,7 +55,7 @@
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>d3d9.lib;d3dx9.lib;xgraphics.lib;xapilib.lib;xboxkrnl.lib;xaudio2.lib;xmcore.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d9.lib;d3dx9.lib;xgraphics.lib;xapilib.lib;xboxkrnl.lib;xaudio2.lib;xmcore.lib;x3daudio.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -71,6 +71,8 @@
     <ClCompile Include="..\src\script\ScriptVM.cpp" />
     <ClCompile Include="..\src\video\VideoPlayer.cpp" />
     <ClCompile Include="..\src\video\AudioOut.cpp" />
+    <ClCompile Include="..\src\audio\AudioPlayer.cpp" />
+    <ClCompile Include="..\src\audio\Spatial3D.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\XboxRenderer.h" />

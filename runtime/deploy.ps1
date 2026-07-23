@@ -123,18 +123,21 @@ $sceneFile = Join-Path $Project $startup
 
 $meshes = @()
 $videos = @()
+$audios = @()
 if (Test-Path $sceneFile) {
     $scene = Get-Content $sceneFile -Raw | ConvertFrom-Json
     foreach ($o in $scene.objects) {
         foreach ($a in $o.attributes) {
             if ($a.model_path) { $meshes += $a.model_path }
             if ($a.videoPath)  { $videos += $a.videoPath }  # "Video" attribute -> raw VIDE entry
+            if ($a.audioPath)  { $audios += $a.audioPath }  # "Audio" attribute -> raw AUDI entry
         }
     }
 }
 $meshes = $meshes | Select-Object -Unique
 $videos = $videos | Select-Object -Unique
-$cookArgs = @($meshes) + @($videos)
+$audios = $audios | Select-Object -Unique
+$cookArgs = @($meshes) + @($videos) + @($audios)
 if ($cookArgs.Count -gt 0) {
     & $spakcExe build (Join-Path $out "game.spak") $Project @cookArgs
     if ($LASTEXITCODE -ne 0) { throw "spakc cook failed" }

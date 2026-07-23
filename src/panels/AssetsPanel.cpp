@@ -38,7 +38,7 @@ namespace
         };
 
         if (in({".png", ".jpg", ".jpeg", ".dds", ".bmp", ".tga", ".gif"})) return AssetKind::Image;
-        if (in({".wav", ".ogg", ".mp3", ".flac"}))                         return AssetKind::Audio;
+        if (in({".wav", ".ogg", ".mp3", ".flac", ".mp2"}))                 return AssetKind::Audio;
         if (in({".mpg", ".mpeg", ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".wmv"})) return AssetKind::Video;
         if (in({".obj", ".fbx", ".mesh", ".gltf", ".glb", ".dae", ".3ds"})) return AssetKind::Model;
         if (in({".hlsl", ".fx", ".glsl", ".shader", ".vsh", ".fsh", ".vs", ".ps", ".cg"})) return AssetKind::Shader;
