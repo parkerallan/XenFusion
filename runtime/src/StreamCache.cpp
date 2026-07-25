@@ -24,11 +24,15 @@ namespace
 StreamCache::StreamCache()
     : m_device(NULL), m_pak(NULL), m_placeholder(NULL),
       m_thread(NULL), m_wake(NULL), m_running(0), m_inited(false),
-      m_frame(0), m_budgetBytes(0), m_residentBytes(0)
+    m_frame(0), m_budgetBytes(0), m_residentBytes(0),
+    m_rangeBudgetBytes(8u * 1024u * 1024u), m_rangeResidentBytes(0)
 {
 }
 
-namespace { const unsigned int kEvictGraceFrames = 2; } // don't evict just-used assets
+namespace
+{
+    const unsigned int kEvictGraceFrames = 2; // don't evict just-used assets
+}
 
 StreamCache::~StreamCache()
 {
@@ -63,7 +67,8 @@ void StreamCache::WorkerLoop()
             {
                 size_t best = 0;
                 for (size_t i = 1; i < m_requests.size(); ++i)
-                    if (m_requests[i].entry->diskOffset < m_requests[best].entry->diskOffset)
+                    if (m_requests[i].entry->diskOffset + m_requests[i].offset <
+                        m_requests[best].entry->diskOffset + m_requests[best].offset)
                         best = i;
                 r = m_requests[best];
                 m_requests[best] = m_requests.back();
@@ -78,22 +83,36 @@ void StreamCache::WorkerLoop()
             LARGE_INTEGER t0, t1;
             QueryPerformanceCounter(&t0);
             std::vector<BYTE> blob;
-            bool ok = m_pak->ReadBlob(r.entry, blob);
+            bool ok = false;
+            if (r.range)
+            {
+                blob.resize(r.bytes);
+                ok = m_pak->ReadRawRange(r.entry, r.offset,
+                    blob.empty() ? NULL : &blob[0], r.bytes);
+                if (!ok) blob.clear();
+            }
+            else ok = m_pak->ReadBlob(r.entry, blob);
             QueryPerformanceCounter(&t1);
 
-            const double ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
-            const double mb = (double)r.entry->uncompressedSize / (1024.0 * 1024.0);
-            char msg[160];
-            sprintf_s(msg, sizeof(msg),
-                      "cache: worker loaded 0x%08x  %u->%u bytes in %.2f ms (%.1f MB/s decoded)%s\n",
-                      r.hash, r.entry->compressedSize, r.entry->uncompressedSize, ms,
-                      ms > 0.0 ? mb / (ms / 1000.0) : 0.0, ok ? "" : "  [FAIL]");
-            OutputDebugStringA(msg);
+            if (!r.range)
+            {
+                const double ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
+                const double mb = (double)r.entry->uncompressedSize / (1024.0 * 1024.0);
+                char msg[160];
+                sprintf_s(msg, sizeof(msg),
+                          "cache: worker loaded 0x%08x  %u->%u bytes in %.2f ms (%.1f MB/s decoded)%s\n",
+                          r.hash, r.entry->compressedSize, r.entry->uncompressedSize, ms,
+                          ms > 0.0 ? mb / (ms / 1000.0) : 0.0, ok ? "" : "  [FAIL]");
+                OutputDebugStringA(msg);
+            }
 
             EnterCriticalSection(&m_compLock);
             m_completions.resize(m_completions.size() + 1);
             m_completions.back().hash = r.hash;
+            m_completions.back().offset = r.offset;
+            m_completions.back().bytes = r.bytes;
             m_completions.back().ok   = ok;
+            m_completions.back().range = r.range;
             m_completions.back().payload.swap(blob);
             LeaveCriticalSection(&m_compLock);
         }
@@ -109,6 +128,7 @@ void StreamCache::Init(IDirect3DDevice9* device, StreamPak* pak, unsigned int bu
     m_pak    = pak;
     m_budgetBytes   = (size_t)budgetMB * 1024u * 1024u;
     m_residentBytes = 0;
+    m_rangeResidentBytes = 0;
     m_frame = 0;
     m_placeholder = MakeMagenta2x2(device);
 
@@ -153,11 +173,13 @@ void StreamCache::Shutdown()
     for (std::map<unsigned int, CacheTex>::iterator it = m_textures.begin(); it != m_textures.end(); ++it)
         it->second.tex.Release();
     m_textures.clear();
+    m_ranges.clear();
 
     if (m_placeholder) { m_placeholder->Release(); m_placeholder = NULL; }
     m_requests.clear();
     m_completions.clear();
     m_residentBytes = 0;
+    m_rangeResidentBytes = 0;
     m_device = NULL;
     m_pak    = NULL;
 }
@@ -168,10 +190,84 @@ void StreamCache::Shutdown()
 void StreamCache::Enqueue(unsigned int hash, const SpakEntry* entry)
 {
     EnterCriticalSection(&m_reqLock);
-    Request r; r.hash = hash; r.entry = entry;
+    Request r; r.hash = hash; r.entry = entry; r.offset = r.bytes = 0; r.range = false;
     m_requests.push_back(r);
     LeaveCriticalSection(&m_reqLock);
     if (m_wake) SetEvent(m_wake);
+}
+
+void StreamCache::EnqueueRange(const RangeKey& key, const SpakEntry* entry)
+{
+    EnterCriticalSection(&m_reqLock);
+    Request request;
+    request.hash = key.hash;
+    request.offset = key.offset;
+    request.bytes = key.bytes;
+    request.entry = entry;
+    request.range = true;
+    m_requests.push_back(request);
+    LeaveCriticalSection(&m_reqLock);
+    if (m_wake) SetEvent(m_wake);
+}
+
+bool StreamCache::GetRawRange(const SpakEntry* entry, unsigned int offset,
+                              unsigned int bytes, void* out)
+{
+    if (!entry || spak::CodecOf(entry->flags) != spak::kCodecNone ||
+        offset > entry->uncompressedSize || bytes > entry->uncompressedSize - offset)
+        return false;
+    if (bytes == 0) return true;
+
+    const unsigned int requestedEnd = offset + bytes;
+    bool ready = true;
+    for (unsigned int pageOffset = (offset / spak::kStreamPageBytes) * spak::kStreamPageBytes;
+         pageOffset < requestedEnd; pageOffset += spak::kStreamPageBytes)
+    {
+        RangeKey key;
+        key.hash = entry->nameHash;
+        key.offset = pageOffset;
+        key.bytes = spak::kStreamPageBytes;
+        if (key.bytes > entry->uncompressedSize - pageOffset)
+            key.bytes = entry->uncompressedSize - pageOffset;
+        std::map<RangeKey, RangePage>::iterator found = m_ranges.find(key);
+        if (found == m_ranges.end())
+        {
+            RangePage page;
+            page.lastUse = m_frame;
+            m_ranges.insert(std::make_pair(key, page));
+            EnqueueRange(key, entry);
+            ready = false;
+            continue;
+        }
+        found->second.lastUse = m_frame;
+        if (found->second.state == StMissing)
+        {
+            found->second.state = StLoading;
+            EnqueueRange(key, entry);
+        }
+        if (found->second.state != StResident || found->second.payload.size() != key.bytes)
+            ready = false;
+    }
+    if (!ready) return false;
+
+    if (out)
+        for (unsigned int pageOffset = (offset / spak::kStreamPageBytes) * spak::kStreamPageBytes;
+             pageOffset < requestedEnd; pageOffset += spak::kStreamPageBytes)
+        {
+            RangeKey key;
+            key.hash = entry->nameHash;
+            key.offset = pageOffset;
+            key.bytes = spak::kStreamPageBytes;
+            if (key.bytes > entry->uncompressedSize - pageOffset)
+                key.bytes = entry->uncompressedSize - pageOffset;
+            std::map<RangeKey, RangePage>::iterator found = m_ranges.find(key);
+            const unsigned int copyStart = offset > pageOffset ? offset : pageOffset;
+            const unsigned int pageEnd = pageOffset + key.bytes;
+            const unsigned int copyEnd = requestedEnd < pageEnd ? requestedEnd : pageEnd;
+            memcpy((unsigned char*)out + copyStart - offset,
+                   &found->second.payload[copyStart - pageOffset], copyEnd - copyStart);
+        }
+    return true;
 }
 
 void StreamCache::Update(unsigned int budget)
@@ -186,7 +282,10 @@ void StreamCache::Update(unsigned int budget)
         if (!m_completions.empty())
         {
             c.hash = m_completions.back().hash;
+            c.offset = m_completions.back().offset;
+            c.bytes = m_completions.back().bytes;
             c.ok   = m_completions.back().ok;
+            c.range = m_completions.back().range;
             c.payload.swap(m_completions.back().payload);
             m_completions.pop_back();
             have = true;
@@ -195,6 +294,25 @@ void StreamCache::Update(unsigned int budget)
         if (!have)
             break;
         ++processed;
+
+        if (c.range)
+        {
+            RangeKey key;
+            key.hash = c.hash; key.offset = c.offset; key.bytes = c.bytes;
+            std::map<RangeKey, RangePage>::iterator range = m_ranges.find(key);
+            if (range != m_ranges.end())
+            {
+                if (c.ok && c.payload.size() == c.bytes)
+                {
+                    range->second.payload.swap(c.payload);
+                    range->second.state = StResident;
+                    range->second.lastUse = m_frame;
+                    m_rangeResidentBytes += c.bytes;
+                }
+                else range->second.state = StMissing;
+            }
+            continue;
+        }
 
         // Accounted size = the entry's sysmem + vidmem (texels / VB+IB). Set lastUse
         // to the current frame so a just-loaded asset isn't immediately evicted.
@@ -239,6 +357,19 @@ void StreamCache::Update(unsigned int budget)
     }
 
     EvictIfOverBudget();
+
+    while (m_rangeResidentBytes > m_rangeBudgetBytes)
+    {
+        std::map<RangeKey, RangePage>::iterator oldest = m_ranges.end();
+        for (std::map<RangeKey, RangePage>::iterator it = m_ranges.begin(); it != m_ranges.end(); ++it)
+            if (it->second.state == StResident &&
+                it->second.lastUse + kEvictGraceFrames <= m_frame &&
+                (oldest == m_ranges.end() || it->second.lastUse < oldest->second.lastUse))
+                oldest = it;
+        if (oldest == m_ranges.end()) break;
+        m_rangeResidentBytes -= oldest->second.payload.size();
+        m_ranges.erase(oldest);
+    }
 }
 
 // LRU-evict resident assets that haven't been drawn in the last few frames until

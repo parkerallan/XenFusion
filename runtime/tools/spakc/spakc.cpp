@@ -470,7 +470,7 @@ bool AddAnimation(std::vector<Entry>& entries, const std::string& source,
     if (!ReadFileBytes(source, e.payload) || e.payload.size() < 8)
     { fprintf(stderr, "spakc: cannot read animation %s\n", source.c_str()); return false; }
     const unsigned int magic = ReadU32BE(&e.payload[0]);
-    if (magic != 0x414E4D31u && magic != 0x414E4331u) // ANM1 clip or ANC1 controller
+    if (magic != 0x414E4D31u && magic != 0x414E4D32u && magic != 0x414E4331u) // ANM1/ANM2 clip or ANC1 controller
     { fprintf(stderr, "spakc: bad animation magic %s\n", source.c_str()); return false; }
     e.hash = spak::NameHash(logicalName.c_str());
     e.type = spak::kTypeAnim;

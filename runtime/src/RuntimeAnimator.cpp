@@ -4,6 +4,7 @@
 #include "AnimatorCookFormat.h"
 #include "Endian.h"
 #include "SpakFormat.h"
+#include "StreamCache.h"
 
 #include <math.h>
 #include <string.h>
@@ -93,25 +94,44 @@ namespace
     }
 }
 
+std::map<const SpakEntry*, RuntimeAnimator::Resource*> RuntimeAnimator::s_resources;
+
 RuntimeAnimator::RuntimeAnimator()
-    : m_pak(NULL), m_entry(NULL), m_activeState(0), m_previousState(0),
+        : m_pak(NULL), m_streamCache(NULL), m_entry(NULL), m_resource(NULL),
+            m_activeState(0), m_previousState(0),
       m_stateTime(0), m_previousTime(0), m_previousSpeed(1),
       m_blendDuration(0), m_blendRemaining(0), m_playbackSpeed(1), m_autoPlay(true)
 {
 }
 
-bool RuntimeAnimator::Load(StreamPak* pak, const std::string& controllerPath,
+bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
+                           const std::string& controllerPath,
                            const std::string& initialState, float playbackSpeed, bool autoPlay)
 {
+    m_entry = NULL;
+    m_resource = NULL;
     m_pak = pak;
+    m_streamCache = streamCache;
     m_entry = pak && pak->IsOpen() ? pak->Find(spak::NameHash(controllerPath.c_str())) : NULL;
     if (!m_entry || m_entry->type != spak::kTypeAnim || (m_entry->flags & spak::kFlagCompressed))
         return false;
+    std::map<const SpakEntry*, Resource*>::iterator shared = s_resources.find(m_entry);
+    if (shared != s_resources.end())
+    {
+        m_resource = shared->second;
+        m_activeState = spak::NameHash(initialState.c_str());
+        if (!FindState(m_activeState)) m_activeState = m_resource->defaultState;
+        if (!FindState(m_activeState)) m_activeState = m_resource->states[0].nameHash;
+        m_playbackSpeed = playbackSpeed > 0.0f ? playbackSpeed : 0.0f;
+        m_autoPlay = autoPlay;
+        return true;
+    }
+    m_resource = new Resource();
     unsigned char header[animcook::kHeaderBytes];
     if (!m_pak->ReadRawRange(m_entry, 0, header, sizeof(header)) ||
         endian::LoadU32BE(header) != animcook::kMagic ||
         endian::LoadU32BE(header + 4) != animcook::kVersion)
-        return false;
+        return FailResourceLoad();
     const unsigned int stateCount = endian::LoadU32BE(header + 12);
     const unsigned int transitionCount = endian::LoadU32BE(header + 16);
     const unsigned int clipCount = endian::LoadU32BE(header + 20);
@@ -122,11 +142,11 @@ bool RuntimeAnimator::Load(StreamPak* pak, const std::string& controllerPath,
         stateOffset + stateCount * animcook::kStateBytes > m_entry->uncompressedSize ||
         transitionOffset + transitionCount * animcook::kTransitionBytes > m_entry->uncompressedSize ||
         clipOffset + clipCount * animcook::kClipBytes > m_entry->uncompressedSize)
-        return false;
+        return FailResourceLoad();
 
     std::vector<unsigned char> records;
     records.resize(stateCount * animcook::kStateBytes);
-    if (!m_pak->ReadRawRange(m_entry, stateOffset, &records[0], (unsigned int)records.size())) return false;
+    if (!m_pak->ReadRawRange(m_entry, stateOffset, &records[0], (unsigned int)records.size())) return FailResourceLoad();
     for (unsigned int index = 0; index < stateCount; ++index)
     {
         const unsigned char* record = &records[index * animcook::kStateBytes];
@@ -135,10 +155,10 @@ bool RuntimeAnimator::Load(StreamPak* pak, const std::string& controllerPath,
         state.clipHash = endian::LoadU32BE(record + 4);
         state.speed = ReadFloatBE(record + 8);
         state.flags = endian::LoadU32BE(record + 12);
-        m_states.push_back(state);
+        m_resource->states.push_back(state);
     }
     records.resize(transitionCount * animcook::kTransitionBytes);
-    if (transitionCount && !m_pak->ReadRawRange(m_entry, transitionOffset, &records[0], (unsigned int)records.size())) return false;
+    if (transitionCount && !m_pak->ReadRawRange(m_entry, transitionOffset, &records[0], (unsigned int)records.size())) return FailResourceLoad();
     for (unsigned int index = 0; index < transitionCount; ++index)
     {
         const unsigned char* record = &records[index * animcook::kTransitionBytes];
@@ -151,10 +171,10 @@ bool RuntimeAnimator::Load(StreamPak* pak, const std::string& controllerPath,
         transition.blendDuration = ReadFloatBE(record + 20);
         transition.exitTime = ReadFloatBE(record + 24);
         transition.flags = endian::LoadU32BE(record + 28);
-        m_transitions.push_back(transition);
+        m_resource->transitions.push_back(transition);
     }
     records.resize(clipCount * animcook::kClipBytes);
-    if (!m_pak->ReadRawRange(m_entry, clipOffset, &records[0], (unsigned int)records.size())) return false;
+    if (!m_pak->ReadRawRange(m_entry, clipOffset, &records[0], (unsigned int)records.size())) return FailResourceLoad();
     for (unsigned int index = 0; index < clipCount; ++index)
     {
         const unsigned char* record = &records[index * animcook::kClipBytes];
@@ -162,28 +182,58 @@ bool RuntimeAnimator::Load(StreamPak* pak, const std::string& controllerPath,
         clip.idHash = endian::LoadU32BE(record);
         clip.offset = endian::LoadU32BE(record + 8);
         clip.size = endian::LoadU32BE(record + 12);
-        if (clip.offset + clip.size > m_entry->uncompressedSize || clip.size < animfmt::kHeaderBytes) return false;
-        m_clips.push_back(clip);
+        if (clip.offset + clip.size > m_entry->uncompressedSize || clip.size < animfmt::kHeaderBytes) return FailResourceLoad();
+        m_resource->clips.push_back(clip);
     }
+    m_resource->defaultState = endian::LoadU32BE(header + 8);
     m_activeState = spak::NameHash(initialState.c_str());
-    if (!FindState(m_activeState)) m_activeState = endian::LoadU32BE(header + 8);
-    if (!FindState(m_activeState)) m_activeState = m_states[0].nameHash;
+    if (!FindState(m_activeState)) m_activeState = m_resource->defaultState;
+    if (!FindState(m_activeState)) m_activeState = m_resource->states[0].nameHash;
     m_playbackSpeed = playbackSpeed > 0.0f ? playbackSpeed : 0.0f;
     m_autoPlay = autoPlay;
+    for (size_t clipIndex = 0; clipIndex < m_resource->clips.size(); ++clipIndex)
+        if (!LoadClip(m_resource->clips[clipIndex])) return FailResourceLoad();
+    s_resources[m_entry] = m_resource;
+    const State* initial = FindState(m_activeState);
+    Clip* initialClip = initial ? FindClip(initial->clipHash) : NULL;
+    if (initialClip && LoadClip(*initialClip) && initialClip->frameMajor && m_streamCache)
+    {
+        unsigned int firstFrame = 0, offset = 0, bytes = 0;
+        PageForFrame(*initialClip, 0, firstFrame, offset, bytes);
+        m_streamCache->GetRawRange(m_entry, offset, bytes, NULL);
+    }
+    for (size_t clipIndex = 0; clipIndex < m_resource->clips.size(); ++clipIndex)
+    {
+        Clip& clip = m_resource->clips[clipIndex];
+        if (&clip == initialClip || !clip.frameMajor || !m_streamCache) continue;
+        unsigned int firstFrame = 0, offset = 0, bytes = 0;
+        PageForFrame(clip, 0, firstFrame, offset, bytes);
+        m_streamCache->GetRawRange(m_entry, offset, bytes, NULL);
+    }
     return true;
+}
+
+bool RuntimeAnimator::FailResourceLoad()
+{
+    delete m_resource;
+    m_resource = NULL;
+    m_entry = NULL;
+    return false;
 }
 
 const RuntimeAnimator::State* RuntimeAnimator::FindState(unsigned int hash) const
 {
-    for (size_t index = 0; index < m_states.size(); ++index)
-        if (m_states[index].nameHash == hash) return &m_states[index];
+    if (!m_resource) return NULL;
+    for (size_t index = 0; index < m_resource->states.size(); ++index)
+        if (m_resource->states[index].nameHash == hash) return &m_resource->states[index];
     return NULL;
 }
 
 RuntimeAnimator::Clip* RuntimeAnimator::FindClip(unsigned int hash)
 {
-    for (size_t index = 0; index < m_clips.size(); ++index)
-        if (m_clips[index].idHash == hash) return &m_clips[index];
+    if (!m_resource) return NULL;
+    for (size_t index = 0; index < m_resource->clips.size(); ++index)
+        if (m_resource->clips[index].idHash == hash) return &m_resource->clips[index];
     return NULL;
 }
 
@@ -234,9 +284,9 @@ void RuntimeAnimator::Update(float deltaTime)
         if (m_blendRemaining <= 0.0f)
         { m_blendRemaining = m_blendDuration = 0.0f; m_previousState = 0; }
     }
-    for (size_t index = 0; index < m_transitions.size(); ++index)
+    for (size_t index = 0; index < m_resource->transitions.size(); ++index)
     {
-        const Transition& transition = m_transitions[index];
+        const Transition& transition = m_resource->transitions[index];
         if (transition.fromHash != m_activeState ||
             ((transition.flags & animcook::kTransitionHasExitTime) && m_stateTime < transition.exitTime) ||
             !Evaluate(transition) || !FindState(transition.toHash)) continue;
@@ -257,16 +307,25 @@ bool RuntimeAnimator::LoadClip(Clip& clip)
     if (clip.loaded) return !clip.tracks.empty();
     clip.loaded = true;
     unsigned char header[animfmt::kHeaderBytes];
-    if (!m_pak->ReadRawRange(m_entry, clip.offset, header, sizeof(header)) ||
-        endian::LoadU32BE(header) != animfmt::kMagic || endian::LoadU32BE(header + 4) != animfmt::kVersion)
+    if (!m_pak->ReadRawRange(m_entry, clip.offset, header, sizeof(header)))
+        return false;
+    const unsigned int magic = endian::LoadU32BE(header);
+    const unsigned int version = endian::LoadU32BE(header + 4);
+    clip.frameMajor = magic == animfmt::kMagicV2 && version == animfmt::kVersionV2;
+    if (!clip.frameMajor && (magic != animfmt::kMagicV1 || version != animfmt::kVersionV1))
         return false;
     const unsigned int trackCount = endian::LoadU32BE(header + 8);
     clip.frameCount = endian::LoadU32BE(header + 12);
     clip.duration = ReadFloatBE(header + 16);
     clip.sampleRate = ReadFloatBE(header + 20);
     const unsigned int tableOffset = endian::LoadU32BE(header + 24);
+    clip.dataOffset = endian::LoadU32BE(header + 28);
+    clip.frameStride = trackCount * animfmt::kSampleBytes;
     if (trackCount == 0 || trackCount > 4096 || clip.frameCount == 0 ||
         tableOffset + trackCount * animfmt::kTrackBytes > clip.size) return false;
+    if (clip.frameMajor && (clip.dataOffset > clip.size ||
+        clip.frameStride > clip.size - clip.dataOffset ||
+        clip.frameCount > (clip.size - clip.dataOffset) / clip.frameStride)) return false;
     std::vector<unsigned char> records(trackCount * animfmt::kTrackBytes);
     if (!m_pak->ReadRawRange(m_entry, clip.offset + tableOffset, &records[0], (unsigned int)records.size())) return false;
     for (unsigned int index = 0; index < trackCount; ++index)
@@ -279,18 +338,16 @@ bool RuntimeAnimator::LoadClip(Clip& clip)
         for (int axis = 0; axis < 3; ++axis) track.scaleMin[axis] = ReadFloatBE(record + 28 + axis * 4);
         for (int axis = 0; axis < 3; ++axis) track.scaleExtent[axis] = ReadFloatBE(record + 40 + axis * 4);
         track.sampleOffset = endian::LoadU32BE(record + 52);
-        if (track.sampleOffset + clip.frameCount * animfmt::kSampleBytes > clip.size) return false;
+        if ((!clip.frameMajor && track.sampleOffset + clip.frameCount * animfmt::kSampleBytes > clip.size) ||
+            (clip.frameMajor && track.sampleOffset + animfmt::kSampleBytes > clip.frameStride)) return false;
         clip.tracks.push_back(track);
     }
     return true;
 }
 
-bool RuntimeAnimator::ReadTransform(const Clip& clip, const Track& track,
-                                    unsigned int frame, Transform& output)
+void RuntimeAnimator::DecodeTransform(const Track& track, const unsigned char* sample,
+                                      Transform& output) const
 {
-    unsigned char sample[animfmt::kSampleBytes];
-    if (!m_pak->ReadRawRange(m_entry, clip.offset + track.sampleOffset + frame * animfmt::kSampleBytes,
-                             sample, sizeof(sample))) return false;
     for (int axis = 0; axis < 3; ++axis)
         output.translation[axis] = track.translationMin[axis] + track.translationExtent[axis] *
             ((float)endian::LoadU16BE(sample + axis * 2) / 65535.0f);
@@ -305,14 +362,51 @@ bool RuntimeAnimator::ReadTransform(const Clip& clip, const Track& track,
     for (int axis = 0; axis < 3; ++axis)
         output.scale[axis] = track.scaleMin[axis] + track.scaleExtent[axis] *
             ((float)endian::LoadU16BE(sample + 14 + axis * 2) / 65535.0f);
+}
+
+void RuntimeAnimator::PageForFrame(const Clip& clip, unsigned int frame,
+                                   unsigned int& firstFrame, unsigned int& offset,
+                                   unsigned int& bytes) const
+{
+    unsigned int framesPerPage = spak::kStreamPageBytes / clip.frameStride;
+    if (framesPerPage == 0) framesPerPage = 1;
+    firstFrame = (frame / framesPerPage) * framesPerPage;
+    unsigned int frameCount = framesPerPage;
+    if (frameCount > clip.frameCount - firstFrame)
+        frameCount = clip.frameCount - firstFrame;
+    offset = clip.offset + clip.dataOffset + firstFrame * clip.frameStride;
+    bytes = frameCount * clip.frameStride;
+}
+
+bool RuntimeAnimator::ReadTransform(const Clip& clip, const Track& track,
+                                    unsigned int frame, Transform& output)
+{
+    unsigned char sample[animfmt::kSampleBytes];
+    if (!m_pak->ReadRawRange(m_entry, clip.offset + track.sampleOffset + frame * animfmt::kSampleBytes,
+                             sample, sizeof(sample))) return false;
+    DecodeTransform(track, sample, output);
     return true;
 }
 
 bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, float time,
-                                    std::vector<float>& output)
+                                    std::vector<float>& output, FrameCache& frameCache)
 {
     Clip* clip = FindClip(state.clipHash);
     if (!clip || !LoadClip(*clip)) return false;
+    if (clip->mappedSkeletonFingerprint != mesh.skeletonFingerprint ||
+        clip->mappedJointCount != (unsigned int)mesh.joints.size())
+    {
+        clip->jointTracks.assign(mesh.joints.size(), -1);
+        for (size_t jointIndex = 0; jointIndex < mesh.joints.size(); ++jointIndex)
+            for (size_t trackIndex = 0; trackIndex < clip->tracks.size(); ++trackIndex)
+                if (clip->tracks[trackIndex].nameHash == mesh.joints[jointIndex].nameHash)
+                {
+                    clip->jointTracks[jointIndex] = (int)trackIndex;
+                    break;
+                }
+        clip->mappedSkeletonFingerprint = mesh.skeletonFingerprint;
+        clip->mappedJointCount = (unsigned int)mesh.joints.size();
+    }
     float sampleTime = time;
     if (state.flags & animcook::kStateLoop)
         sampleTime = clip->duration > 0.0f ? fmodf(sampleTime, clip->duration) : 0.0f;
@@ -322,19 +416,70 @@ bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, floa
     if (frame0 >= clip->frameCount) frame0 = clip->frameCount - 1;
     const unsigned int frame1 = frame0 + 1 < clip->frameCount ? frame0 + 1 : frame0;
     const float alpha = framePosition - (float)frame0;
-    std::vector<Matrix> globals(mesh.joints.size());
+    if (clip->frameMajor)
+    {
+        bool ready0 = true, ready1 = true;
+        if (frameCache.clipHash != clip->idHash || frameCache.frame0 != frame0 ||
+            frameCache.frame1 != frame1)
+        {
+            frameCache.samples0.resize(clip->frameStride);
+            frameCache.samples1.resize(clip->frameStride);
+            const unsigned int frameOffset0 = clip->offset + clip->dataOffset + frame0 * clip->frameStride;
+            const unsigned int frameOffset1 = clip->offset + clip->dataOffset + frame1 * clip->frameStride;
+            ready0 = m_streamCache
+                ? m_streamCache->GetRawRange(m_entry, frameOffset0, clip->frameStride, &frameCache.samples0[0])
+                : m_pak->ReadRawRange(m_entry, frameOffset0, &frameCache.samples0[0], clip->frameStride);
+            ready1 = m_streamCache
+                ? m_streamCache->GetRawRange(m_entry, frameOffset1, clip->frameStride, &frameCache.samples1[0])
+                : m_pak->ReadRawRange(m_entry, frameOffset1, &frameCache.samples1[0], clip->frameStride);
+            if (ready0 && ready1)
+            {
+                frameCache.clipHash = clip->idHash;
+                frameCache.frame0 = frame0;
+                frameCache.frame1 = frame1;
+            }
+        }
+        if (m_streamCache)
+        {
+            unsigned int nextFirst = 0, nextOffset = 0, nextBytes = 0;
+            PageForFrame(*clip, frame1, nextFirst, nextOffset, nextBytes);
+            unsigned int framesPerPage = spak::kStreamPageBytes / clip->frameStride;
+            if (framesPerPage == 0) framesPerPage = 1;
+            unsigned int nextFrame = nextFirst + framesPerPage;
+            if (nextFrame >= clip->frameCount && (state.flags & animcook::kStateLoop)) nextFrame = 0;
+            if (nextFrame < clip->frameCount)
+            {
+                PageForFrame(*clip, nextFrame, nextFirst, nextOffset, nextBytes);
+                if (frameCache.prefetchClipHash != clip->idHash ||
+                    frameCache.prefetchPageOffset != nextOffset)
+                {
+                    m_streamCache->GetRawRange(m_entry, nextOffset, nextBytes, NULL);
+                    frameCache.prefetchClipHash = clip->idHash;
+                    frameCache.prefetchPageOffset = nextOffset;
+                }
+            }
+        }
+        if (!ready0 || !ready1) return false;
+    }
+    m_globalMatrices.resize(mesh.joints.size() * 16);
     output.resize(mesh.joints.size() * 12);
     for (size_t jointIndex = 0; jointIndex < mesh.joints.size(); ++jointIndex)
     {
         const RtJoint& joint = mesh.joints[jointIndex];
         Matrix local;
         memcpy(local.m, joint.bindLocal, sizeof(local.m));
-        for (size_t trackIndex = 0; trackIndex < clip->tracks.size(); ++trackIndex)
+        const int trackIndex = clip->jointTracks[jointIndex];
+        if (trackIndex >= 0)
         {
-            const Track& track = clip->tracks[trackIndex];
-            if (track.nameHash != joint.nameHash) continue;
+            const Track& track = clip->tracks[(size_t)trackIndex];
             Transform first, second, blended;
-            if (!ReadTransform(*clip, track, frame0, first) || !ReadTransform(*clip, track, frame1, second)) return false;
+            if (clip->frameMajor)
+            {
+                DecodeTransform(track, &frameCache.samples0[track.sampleOffset], first);
+                DecodeTransform(track, &frameCache.samples1[track.sampleOffset], second);
+            }
+            else if (!ReadTransform(*clip, track, frame0, first) ||
+                     !ReadTransform(*clip, track, frame1, second)) return false;
             for (int axis = 0; axis < 3; ++axis)
             {
                 blended.translation[axis] = first.translation[axis] + (second.translation[axis] - first.translation[axis]) * alpha;
@@ -342,12 +487,18 @@ bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, floa
             }
             InterpolateQuaternion(first.rotation, second.rotation, alpha, blended.rotation);
             local = Compose(blended);
-            break;
         }
-        globals[jointIndex] = joint.parent >= 0 ? MultiplyMatrix(globals[(size_t)joint.parent], local) : local;
+        Matrix global = local;
+        if (joint.parent >= 0)
+        {
+            Matrix parentGlobal;
+            memcpy(parentGlobal.m, &m_globalMatrices[(size_t)joint.parent * 16], sizeof(parentGlobal.m));
+            global = MultiplyMatrix(parentGlobal, local);
+        }
+        memcpy(&m_globalMatrices[jointIndex * 16], global.m, sizeof(global.m));
         Matrix inverseBind;
         memcpy(inverseBind.m, joint.inverseBind, sizeof(inverseBind.m));
-        const Matrix skin = MultiplyMatrix(globals[jointIndex], inverseBind);
+        const Matrix skin = MultiplyMatrix(global, inverseBind);
         float* palette = &output[jointIndex * 12];
         for (int row = 0; row < 3; ++row)
             for (int column = 0; column < 4; ++column)
@@ -359,19 +510,23 @@ bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, floa
 bool RuntimeAnimator::BuildPalette(const RtMesh& mesh, std::vector<float>& output)
 {
     const State* active = FindState(m_activeState);
-    if (!active || !SamplePalette(mesh, *active, m_stateTime, output)) return false;
+    bool success = active && SamplePalette(mesh, *active, m_stateTime, m_activePalette, m_activeFrames);
     const State* previous = FindState(m_previousState);
-    if (previous && m_blendDuration > 0.0f)
+    const bool blending = success && previous && m_blendDuration > 0.0f;
+    if (blending)
     {
-        std::vector<float> previousPalette;
-        if (SamplePalette(mesh, *previous, m_previousTime, previousPalette) && previousPalette.size() == output.size())
+        if (SamplePalette(mesh, *previous, m_previousTime, m_previousPalette, m_previousFrames) &&
+            m_previousPalette.size() == m_activePalette.size())
         {
             const float alpha = 1.0f - Clamp(m_blendRemaining / m_blendDuration, 0.0f, 1.0f);
-            for (size_t index = 0; index < output.size(); ++index)
-                output[index] = previousPalette[index] + (output[index] - previousPalette[index]) * alpha;
+            for (size_t index = 0; index < m_activePalette.size(); ++index)
+                m_activePalette[index] = m_previousPalette[index] +
+                    (m_activePalette[index] - m_previousPalette[index]) * alpha;
         }
+        else success = false;
     }
-    return true;
+    if (success) output.swap(m_activePalette);
+    return success;
 }
 
 void RuntimeAnimator::SetFloat(const char* name, float value)
@@ -400,4 +555,12 @@ void RuntimeAnimator::SetState(const char* name)
     m_activeState = hash;
     m_previousState = 0;
     m_stateTime = m_previousTime = m_blendDuration = m_blendRemaining = 0.0f;
+}
+
+void RuntimeAnimator::ClearSharedResources()
+{
+    for (std::map<const SpakEntry*, Resource*>::iterator it = s_resources.begin();
+         it != s_resources.end(); ++it)
+        delete it->second;
+    s_resources.clear();
 }

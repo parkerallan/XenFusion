@@ -41,6 +41,12 @@ public:
     // pak, so wait rather than fall back to a raw load).
     RtMesh* GetMesh(const std::string& relPath, bool* inPak);
 
+    // Request a raw byte range through the shared worker's fixed 16 KiB,
+    // sector-aligned page cache. Returns true and copies the resident bytes when
+    // ready; false means queued/loading/failed. NULL out is a prefetch request.
+    bool GetRawRange(const SpakEntry* entry, unsigned int offset, unsigned int bytes,
+                     void* out);
+
 private:
     enum State { StMissing = -1, StLoading = 0, StResident = 2 };
 
@@ -63,11 +69,39 @@ private:
         unsigned int     lastUse;
         CacheTex() : state(StLoading), entry(NULL), bytes(0), lastUse(0) {}
     };
-    struct Request    { unsigned int hash; const SpakEntry* entry; };
-    struct Completion { unsigned int hash; std::vector<BYTE> payload; bool ok; };
+    struct RangeKey
+    {
+        unsigned int hash, offset, bytes;
+        bool operator<(const RangeKey& other) const
+        {
+            if (hash != other.hash) return hash < other.hash;
+            if (offset != other.offset) return offset < other.offset;
+            return bytes < other.bytes;
+        }
+    };
+    struct RangePage
+    {
+        int state;
+        unsigned int lastUse;
+        std::vector<BYTE> payload;
+        RangePage() : state(StLoading), lastUse(0) {}
+    };
+    struct Request
+    {
+        unsigned int hash, offset, bytes;
+        const SpakEntry* entry;
+        bool range;
+    };
+    struct Completion
+    {
+        unsigned int hash, offset, bytes;
+        std::vector<BYTE> payload;
+        bool ok, range;
+    };
 
     IDirect3DTexture9* GetTextureByHash(unsigned int hash); // borrowed / placeholder
     void  Enqueue(unsigned int hash, const SpakEntry* entry);
+    void  EnqueueRange(const RangeKey& key, const SpakEntry* entry);
     void  BuildMeshFromPayload(const std::vector<BYTE>& payload, CacheMesh& cm);
     void  RefreshMeshTextures(CacheMesh& cm);
     void  EvictIfOverBudget();
@@ -78,11 +112,14 @@ private:
     StreamPak*                        m_pak;
     std::map<unsigned int, CacheMesh> m_meshes;    // key = nameHash(relPath)
     std::map<unsigned int, CacheTex>  m_textures;  // key = texture nameHash
+    std::map<RangeKey, RangePage>     m_ranges;
     IDirect3DTexture9*                m_placeholder; // 2x2 magenta
 
     unsigned int m_frame;         // render-frame counter (LRU timestamps)
     size_t       m_budgetBytes;   // resident memory cap
     size_t       m_residentBytes; // current resident total
+    size_t       m_rangeBudgetBytes;
+    size_t       m_rangeResidentBytes;
 
     // Worker + cross-thread queues.
     HANDLE                  m_thread;

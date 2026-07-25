@@ -24,6 +24,7 @@ namespace spak
     const unsigned int kMagic       = 0x5350414B; // 'SPAK'
     const unsigned int kVersion     = 1;
     const unsigned int kSectorSize  = 2048;       // DVD sector; data is aligned to it
+    const unsigned int kStreamPageBytes = kSectorSize * 8; // 16 KiB ranged-I/O cache page
 
     const unsigned int kHeaderBytes = 20;         // 5 * u32
     const unsigned int kEntryBytes  = 32;         // 8 * u32

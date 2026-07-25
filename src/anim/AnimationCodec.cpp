@@ -99,8 +99,8 @@ namespace animation
 
         output.clear();
         output.reserve(animfmt::kHeaderBytes + table_bytes + sample_bytes * clip.tracks.size());
-        PushU32(output, animfmt::kMagic);
-        PushU32(output, animfmt::kVersion);
+        PushU32(output, animfmt::kMagicV2);
+        PushU32(output, animfmt::kVersionV2);
         PushU32(output, (unsigned int)clip.tracks.size());
         PushU32(output, clip.frame_count);
         PushFloat(output, clip.duration_seconds);
@@ -108,7 +108,7 @@ namespace animation
         PushU32(output, animfmt::kHeaderBytes);
         PushU32(output, animfmt::kHeaderBytes + (unsigned int)table_bytes);
 
-        unsigned int sample_offset = animfmt::kHeaderBytes + (unsigned int)table_bytes;
+        unsigned int sample_offset = 0;
         for (size_t track_index = 0; track_index < clip.tracks.size(); ++track_index)
         {
             PushU32(output, clip.tracks[track_index].name_hash);
@@ -118,14 +118,15 @@ namespace animation
             for (int axis = 0; axis < 3; ++axis) PushFloat(output, bound.smin[axis]);
             for (int axis = 0; axis < 3; ++axis) PushFloat(output, bound.sext[axis]);
             PushU32(output, sample_offset);
-            sample_offset += (unsigned int)sample_bytes;
+            sample_offset += animfmt::kSampleBytes;
         }
 
-        for (size_t track_index = 0; track_index < clip.tracks.size(); ++track_index)
+        for (unsigned int frame = 0; frame < clip.frame_count; ++frame)
         {
-            const Bounds& bound = bounds[track_index];
-            for (const AnimationTransform& sample : clip.tracks[track_index].samples)
+            for (size_t track_index = 0; track_index < clip.tracks.size(); ++track_index)
             {
+                const Bounds& bound = bounds[track_index];
+                const AnimationTransform& sample = clip.tracks[track_index].samples[frame];
                 for (int axis = 0; axis < 3; ++axis)
                     PushU16(output, Quantize(sample.translation[axis], bound.tmin[axis], bound.text[axis]));
                 for (int component = 0; component < 4; ++component)
@@ -144,17 +145,27 @@ namespace animation
                       std::string& error)
     {
         error.clear();
-        if (!data || size < animfmt::kHeaderBytes || ReadU32(data) != animfmt::kMagic ||
-            ReadU32(data + 4) != animfmt::kVersion)
-        { error = "invalid ANM1 header"; return false; }
+        if (!data || size < animfmt::kHeaderBytes)
+        { error = "invalid animation header"; return false; }
+        const unsigned int magic = ReadU32(data);
+        const unsigned int version = ReadU32(data + 4);
+        const bool frame_major = magic == animfmt::kMagicV2 && version == animfmt::kVersionV2;
+        if (!frame_major && (magic != animfmt::kMagicV1 || version != animfmt::kVersionV1))
+        { error = "invalid animation header"; return false; }
         const unsigned int track_count = ReadU32(data + 8);
         const unsigned int frame_count = ReadU32(data + 12);
         const float duration = ReadFloat(data + 16);
         const float rate = ReadFloat(data + 20);
         const unsigned int table_offset = ReadU32(data + 24);
+        const unsigned int data_offset = ReadU32(data + 28);
+        const size_t frame_stride = (size_t)track_count * animfmt::kSampleBytes;
         if (track_count == 0 || frame_count == 0 || table_offset > size ||
             (size_t)table_offset + (size_t)track_count * animfmt::kTrackBytes > size)
-        { error = "invalid ANM1 table"; return false; }
+        { error = "invalid animation table"; return false; }
+        if (frame_major && ((size_t)data_offset > size ||
+            frame_stride > size - data_offset ||
+            (size_t)frame_count > (size - data_offset) / frame_stride))
+        { error = "ANM2 frame block is truncated"; return false; }
 
         AnimationClip decoded;
         decoded.duration_seconds = duration;
@@ -172,12 +183,15 @@ namespace animation
             for (int axis = 0; axis < 3; ++axis) smin[axis] = ReadFloat(record + 28 + axis * 4);
             for (int axis = 0; axis < 3; ++axis) sext[axis] = ReadFloat(record + 40 + axis * 4);
             const unsigned int sample_offset = ReadU32(record + 52);
-            if ((size_t)sample_offset + (size_t)frame_count * animfmt::kSampleBytes > size)
+            if ((!frame_major && (size_t)sample_offset + (size_t)frame_count * animfmt::kSampleBytes > size) ||
+                (frame_major && ((size_t)sample_offset + animfmt::kSampleBytes > frame_stride)))
             { error = "ANM1 sample block is truncated"; return false; }
             track.samples.resize(frame_count);
             for (unsigned int frame = 0; frame < frame_count; ++frame)
             {
-                const unsigned char* source = data + sample_offset + (size_t)frame * animfmt::kSampleBytes;
+                const unsigned char* source = frame_major
+                    ? data + data_offset + (size_t)frame * frame_stride + sample_offset
+                    : data + sample_offset + (size_t)frame * animfmt::kSampleBytes;
                 AnimationTransform& sample = track.samples[frame];
                 for (int axis = 0; axis < 3; ++axis)
                     sample.translation[axis] = Dequantize(ReadU16(source + axis * 2), tmin[axis], text[axis]);

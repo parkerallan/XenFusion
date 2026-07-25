@@ -634,6 +634,7 @@ void SceneRuntime::Shutdown()
     m_bloom_blur.Release();
     m_bloom_bright.Release();
     m_beam.Release();
+    RuntimeAnimator::ClearSharedResources();
     m_cache.Shutdown();
     m_pak.Close();
     if (m_beam_vb)   { m_beam_vb->Release();   m_beam_vb = NULL; }
@@ -949,7 +950,7 @@ void SceneRuntime::BuildDrawLists()
             di.object_index = (int)i;
             for (int k = 0; k < 3; ++k) di.scale[k] = o.scale[k];
             if (animator_attribute)
-                di.animator.Load(&m_pak, animator_attribute->animator_controller_path,
+                di.animator.Load(&m_pak, &m_cache, animator_attribute->animator_controller_path,
                                  animator_attribute->animator_initial_state,
                                  animator_attribute->animator_playback_speed,
                                  animator_attribute->animator_auto_play);
@@ -993,7 +994,6 @@ void SceneRuntime::Render(float dt)
     for (size_t index = 0; index < m_draw_items.size(); ++index)
     {
         DrawItem& item = m_draw_items[index];
-        item.skin_palette.clear();
         if (!item.animator.IsValid()) continue;
         item.animator.Update(dt);
         RtMesh* mesh = ResolveMesh(item.model_path);
