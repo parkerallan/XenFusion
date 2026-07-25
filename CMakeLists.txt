@@ -142,10 +142,14 @@ add_executable(XenFusion
     src/video/AudioOut.cpp
     src/audio/AudioPlayer.cpp
     src/audio/Spatial3D.cpp
+    src/anim/AnimatorController.cpp
+    src/anim/AnimationClip.cpp
+    src/anim/AnimatorRuntime.cpp
     src/physics/PhysicsWorld.cpp
     src/script/ScriptVM.cpp
     src/input/ControllerMapping.cpp
     src/panels/MapperPanel.cpp
+    src/panels/AnimatorPanel.cpp
     src/platform/Dialogs.cpp
     src/project/ProjectIO.cpp
     src/project/SceneJson.cpp
@@ -165,6 +169,28 @@ target_include_directories(XenFusion PRIVATE src third_party)
 target_compile_definitions(XenFusion PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
 target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp bullet lua Ole32 Shell32 Xinput9_1_0 xaudio2)
+
+# Tests are deliberately absent from normal engine/game builds. Enable them in
+# a dedicated build tree with -DXENFUSION_BUILD_TESTS=ON.
+option(XENFUSION_BUILD_TESTS "Generate XenFusion test executables" OFF)
+if(XENFUSION_BUILD_TESTS)
+    enable_testing()
+    include(CMakeLists.tests.cmake)
+else()
+    # CMake does not remove this generated file when testing is switched off in
+    # an existing build tree, which leaves ctest listing obsolete executables.
+    file(REMOVE "${CMAKE_BINARY_DIR}/CTestTestfile.cmake")
+endif()
+
+add_executable(animc
+    tools/animc.cpp
+    src/anim/AnimatorController.cpp
+    src/anim/AnimatorCooker.cpp
+    src/anim/AnimationClip.cpp
+    src/anim/AnimationCodec.cpp
+)
+target_include_directories(animc PRIVATE src runtime/src)
+target_link_libraries(animc PRIVATE assimp nlohmann_json::nlohmann_json)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
 # Subsystem per config: Debug keeps the console window (log/stdout), all other

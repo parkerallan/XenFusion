@@ -42,7 +42,7 @@ namespace
         if (in({".mpg", ".mpeg", ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".wmv"})) return AssetKind::Video;
         if (in({".obj", ".fbx", ".mesh", ".gltf", ".glb", ".dae", ".3ds"})) return AssetKind::Model;
         if (in({".hlsl", ".fx", ".glsl", ".shader", ".vsh", ".fsh", ".vs", ".ps", ".cg"})) return AssetKind::Shader;
-        if (in({".txt", ".lua", ".json", ".md", ".ini", ".cfg", ".xml", ".csv", ".h", ".hpp", ".cpp", ".c", ".cs"})) return AssetKind::Text;
+        if (in({".txt", ".lua", ".anim", ".json", ".md", ".ini", ".cfg", ".xml", ".csv", ".h", ".hpp", ".cpp", ".c", ".cs"})) return AssetKind::Text;
         return AssetKind::Generic;
     }
 
@@ -318,11 +318,21 @@ void AssetsPanel::Render(EngineState& state)
         {
             if (kind == AssetKind::Shader || kind == AssetKind::Text || kind == AssetKind::Generic)
             {
-                if (ImGui::MenuItem("Open in editor"))
+                const bool animator = p.extension() == ".anim";
+                if (ImGui::MenuItem(animator ? "Open Animator" : "Open in editor"))
                 {
-                    state.open_file_path = p;
-                    state.show_editor_panel = true;
-                    ImGui::SetWindowFocus("Editor");
+                    if (animator)
+                    {
+                        state.open_animator_path = p;
+                        state.show_animator_panel = true;
+                        ImGui::SetWindowFocus("Animator");
+                    }
+                    else
+                    {
+                        state.open_file_path = p;
+                        state.show_editor_panel = true;
+                        ImGui::SetWindowFocus("Editor");
+                    }
                 }
                 ImGui::Separator();
             }
@@ -355,9 +365,18 @@ void AssetsPanel::Render(EngineState& state)
             if (kind == AssetKind::Folder) { pending_nav = state.assets_cwd / nm; do_nav = true; }
             else if (kind == AssetKind::Text || kind == AssetKind::Shader || kind == AssetKind::Generic)
             {
-                state.open_file_path = p;
-                state.show_editor_panel = true;
-                ImGui::SetWindowFocus("Editor");
+                if (p.extension() == ".anim")
+                {
+                    state.open_animator_path = p;
+                    state.show_animator_panel = true;
+                    ImGui::SetWindowFocus("Animator");
+                }
+                else
+                {
+                    state.open_file_path = p;
+                    state.show_editor_panel = true;
+                    ImGui::SetWindowFocus("Editor");
+                }
             }
         }
 

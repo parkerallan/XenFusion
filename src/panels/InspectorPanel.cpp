@@ -267,6 +267,66 @@ void InspectorPanel::Render(EngineState& state)
             }
             ImGui::TextDisabled("Runs on_start / on_update(dt) / on_trigger during Play.");
         }
+        else if (attr.type == "Animator")
+        {
+            char path_buf[260];
+            const std::string shown = attr.animator_controller_path.empty()
+                ? "(drag a .anim controller from Assets)" : attr.animator_controller_path;
+            std::strncpy(path_buf, shown.c_str(), sizeof(path_buf) - 1);
+            path_buf[sizeof(path_buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##animator_controller_path", path_buf, sizeof(path_buf),
+                             ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+                    if (ext == ".anim")
+                    {
+                        attr.animator_controller_path = dropped;
+                        save();
+                    }
+                    else
+                    {
+                        state.AddLog("Not an animator controller: " + dropped, LogLevel::Error);
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            char state_buf[128];
+            std::strncpy(state_buf, attr.animator_initial_state.c_str(), sizeof(state_buf) - 1);
+            state_buf[sizeof(state_buf) - 1] = '\0';
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::InputTextWithHint("##animator_initial_state", "Initial state (controller default)",
+                                         state_buf, sizeof(state_buf)))
+            {
+                attr.animator_initial_state = state_buf;
+                save();
+            }
+
+            bool edited = false;
+            if (ImGui::DragFloat("Playback Speed", &attr.animator_playback_speed,
+                                 0.01f, 0.01f, 10.0f, "%.2fx"))
+            {
+                if (attr.animator_playback_speed < 0.01f)
+                    attr.animator_playback_speed = 0.01f;
+                edited = true;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                save();
+            if (ImGui::Checkbox("Auto Play", &attr.animator_auto_play))
+                save();
+            if (edited && scene)
+                scene->dirty = true;
+            ImGui::TextDisabled("Bind pose in edit mode; controller starts when Play begins.");
+        }
         else if (attr.type == "Camera")
         {
             // Edits mark the scene dirty every tick; the file is written once,
@@ -726,6 +786,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Script";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Animator"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Animator";
             obj->attributes.push_back(attr);
             save();
         }

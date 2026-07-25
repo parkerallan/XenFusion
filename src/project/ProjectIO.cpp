@@ -29,7 +29,7 @@ namespace project
         const std::string name = root.filename().string();
 
         for (const char* sub : {"scenes", "assets", "assets/models", "assets/textures",
-                                "assets/audio", "assets/scripts"})
+                                "assets/audio", "assets/scripts", "assets/animators"})
             fs::create_directories(root / sub, ec);
 
         // Manifest.
@@ -80,6 +80,7 @@ namespace project
         // Ensure the conventional asset folders exist (idempotent) so older
         // projects gain assets/scripts for Lua gameplay scripts.
         fs::create_directories(root / "assets" / "scripts", ec);
+        fs::create_directories(root / "assets" / "animators", ec);
 
         LoadScenes(state);
         AddRecent(state, root);

@@ -36,7 +36,11 @@ namespace mesh
         MeshHeader h{};
         in.read(reinterpret_cast<char*>(&h), sizeof(h));
         if (!in || std::memcmp(h.magic, "M360", 4) != 0 || h.version != MESH_VERSION ||
-            h.vertexCount == 0 || h.indexCount == 0)
+            h.vertexCount == 0 || h.indexCount == 0 ||
+            (h.flags & ~MESH_FLAG_SKINNED) != 0 ||
+            h.jointCount > MAX_SKIN_JOINTS ||
+            ((h.flags & MESH_FLAG_SKINNED) == 0 && h.jointCount != 0) ||
+            ((h.flags & MESH_FLAG_SKINNED) != 0 && h.jointCount == 0))
             return false; // wrong/old version -> caller re-bakes
 
         std::vector<MeshVertex> vertices(h.vertexCount);
@@ -67,6 +71,32 @@ namespace mesh
             out_subsets.push_back(std::move(s));
         }
 
+        std::vector<MeshSkinInfluence> influences;
+        if ((h.flags & MESH_FLAG_SKINNED) != 0)
+        {
+            influences.resize(h.vertexCount);
+            in.read(reinterpret_cast<char*>(influences.data()),
+                    (std::streamsize)(influences.size() * sizeof(MeshSkinInfluence)));
+            if (!in)
+                return false;
+
+            out.skeleton.fingerprint = h.skeletonFingerprint;
+            out.skeleton.joints.resize(h.jointCount);
+            for (MeshJoint& joint : out.skeleton.joints)
+            {
+                ReadStr(in, joint.name);
+                in.read(reinterpret_cast<char*>(&joint.parent), sizeof(joint.parent));
+                in.read(reinterpret_cast<char*>(joint.inverseBind), sizeof(joint.inverseBind));
+                in.read(reinterpret_cast<char*>(joint.bindLocal), sizeof(joint.bindLocal));
+                if (!in || joint.name.empty() || joint.parent < -1 ||
+                    joint.parent >= (int32_t)h.jointCount)
+                {
+                    out.Release();
+                    return false;
+                }
+            }
+        }
+
         const UINT vb_bytes = (UINT)(vertices.size() * sizeof(MeshVertex));
         if (FAILED(device->CreateVertexBuffer(vb_bytes, 0, 0 /*non-FVF, uses a decl*/, D3DPOOL_MANAGED, &out.vb, nullptr)))
             return false;
@@ -74,6 +104,20 @@ namespace mesh
         out.vb->Lock(0, 0, &dst, 0);
         std::memcpy(dst, vertices.data(), vb_bytes);
         out.vb->Unlock();
+
+        if (!influences.empty())
+        {
+            const UINT skin_bytes = (UINT)(influences.size() * sizeof(MeshSkinInfluence));
+            if (FAILED(device->CreateVertexBuffer(skin_bytes, 0, 0, D3DPOOL_MANAGED,
+                                                  &out.skinVb, nullptr)))
+            {
+                out.Release();
+                return false;
+            }
+            out.skinVb->Lock(0, 0, &dst, 0);
+            std::memcpy(dst, influences.data(), skin_bytes);
+            out.skinVb->Unlock();
+        }
 
         const UINT ib_bytes = (UINT)(indices.size() * sizeof(uint32_t));
         if (FAILED(device->CreateIndexBuffer(ib_bytes, 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &out.ib, nullptr)))

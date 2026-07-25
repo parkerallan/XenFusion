@@ -360,6 +360,17 @@ namespace scenedata
                         at.trig_size[1] = NumAt(psz, 1, at.trig_size[1]);
                         at.trig_size[2] = NumAt(psz, 2, at.trig_size[2]);
                     }
+                    else if (at.type == "Animator")
+                    {
+                        const JValue* acp = ja.Find("controllerPath");
+                        const JValue* ais = ja.Find("initialState");
+                        const JValue* aps = ja.Find("playbackSpeed");
+                        const JValue* aap = ja.Find("autoPlay");
+                        if (acp && acp->type == JValue::Str)    at.animator_controller_path = acp->str;
+                        if (ais && ais->type == JValue::Str)    at.animator_initial_state = ais->str;
+                        if (aps && aps->type == JValue::Number) at.animator_playback_speed = (float)aps->num;
+                        if (aap && aap->type == JValue::Bool)   at.animator_auto_play = aap->b;
+                    }
                     else if (at.type == "Audio")
                     {
                         const JValue* app = ja.Find("audioPath");

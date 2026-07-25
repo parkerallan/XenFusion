@@ -146,8 +146,11 @@ namespace shader
         const std::string name = hlsl.string();
         ID3DBlob* vs = Compile(src.data(), src.size(), name.c_str(), "VSMain", "vs_3_0");
         ID3DBlob* ps = Compile(src.data(), src.size(), name.c_str(), "PSMain", "ps_3_0");
+        ID3DBlob* skin_vs = nullptr;
+        if (hlsl.stem() == "standard")
+            skin_vs = Compile(src.data(), src.size(), name.c_str(), "SkinVSMain", "vs_3_0");
 
-        bool ok = (vs && ps); // Compile() already logged any compile error
+        bool ok = (vs && ps && (hlsl.stem() != "standard" || skin_vs));
         if (ok)
         {
             std::error_code ec;
@@ -155,6 +158,8 @@ namespace shader
             const std::string stem = hlsl.stem().string();
             ok = WriteBlob(out_dir / (stem + "_vs.cso"), vs) &&
                  WriteBlob(out_dir / (stem + "_ps.cso"), ps);
+            if (ok && skin_vs)
+                ok = WriteBlob(out_dir / "standard_skin_vs.cso", skin_vs);
             if (!ok) err = "cannot write .cso to " + out_dir.string();
         }
         else
@@ -163,6 +168,7 @@ namespace shader
         }
         if (vs) vs->Release();
         if (ps) ps->Release();
+        if (skin_vs) skin_vs->Release();
         return ok;
     }
 }

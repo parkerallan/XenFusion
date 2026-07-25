@@ -146,6 +146,7 @@ void StreamCache::Shutdown()
     for (std::map<unsigned int, CacheMesh>::iterator it = m_meshes.begin(); it != m_meshes.end(); ++it)
     {
         if (it->second.mesh.ib) { it->second.mesh.ib->Release(); it->second.mesh.ib = NULL; }
+        if (it->second.mesh.skinVb) { it->second.mesh.skinVb->Release(); it->second.mesh.skinVb = NULL; }
         if (it->second.mesh.vb) { it->second.mesh.vb->Release(); it->second.mesh.vb = NULL; }
     }
     m_meshes.clear();
@@ -274,6 +275,7 @@ void StreamCache::EvictIfOverBudget()
         {
             std::map<unsigned int, CacheMesh>::iterator it = m_meshes.find(bestHash);
             if (it->second.mesh.ib) { it->second.mesh.ib->Release(); it->second.mesh.ib = NULL; }
+            if (it->second.mesh.skinVb) { it->second.mesh.skinVb->Release(); it->second.mesh.skinVb = NULL; }
             if (it->second.mesh.vb) { it->second.mesh.vb->Release(); it->second.mesh.vb = NULL; }
             freed = it->second.bytes;
             m_meshes.erase(it); // next request re-enqueues it
@@ -300,25 +302,36 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
     if (blob.size() < spak::kMeshHeaderBytes)
         return;
     const unsigned char* p = &blob[0];
-    if (endian::LoadU32BE(p + 0) != spak::kMeshMagic)
+    const unsigned int magic = endian::LoadU32BE(p + 0);
+    const bool skinned = magic == spak::kSkinMeshMagic;
+    if (magic != spak::kMeshMagic && !skinned)
+        return;
+    const unsigned int headerBytes = skinned ? spak::kSkinMeshHeaderBytes : spak::kMeshHeaderBytes;
+    if (blob.size() < headerBytes)
         return;
     const unsigned int vcount      = endian::LoadU32BE(p + 4);
     const unsigned int icount      = endian::LoadU32BE(p + 8);
     const unsigned int subsetCount = endian::LoadU32BE(p + 12);
+    const unsigned int jointCount  = skinned ? endian::LoadU32BE(p + 16) : 0;
+    const unsigned int fingerprint = skinned ? endian::LoadU32BE(p + 20) : 0;
     if (vcount == 0 || icount == 0 || subsetCount == 0 || subsetCount > 1024)
+        return;
+    if (skinned && (jointCount == 0 || jointCount > spak::kMaxSkinJoints))
         return;
 
     const size_t subBytes = (size_t)subsetCount * spak::kMeshSubsetBytes;
     const size_t vbytes   = (size_t)vcount * spak::kMeshVertexBytes;
+    const size_t skinBytes = skinned ? (size_t)vcount * spak::kSkinInfluenceBytes : 0;
     const size_t ibytes   = (size_t)icount * 4;
-    if (spak::kMeshHeaderBytes + subBytes + vbytes + ibytes > blob.size())
+    const size_t jointBytes = skinned ? (size_t)jointCount * spak::kSkinJointBytes : 0;
+    if (headerBytes + subBytes + vbytes + skinBytes + ibytes + jointBytes > blob.size())
         return;
 
     // Per-material subsets: index range + alpha mode + texture hashes.
     cm.texHash.assign((size_t)subsetCount * 6, 0);
     for (unsigned int i = 0; i < subsetCount; ++i)
     {
-        const unsigned char* sp = p + spak::kMeshHeaderBytes + (size_t)i * spak::kMeshSubsetBytes;
+        const unsigned char* sp = p + headerBytes + (size_t)i * spak::kMeshSubsetBytes;
         RtSubset sub;
         sub.indexStart = endian::LoadU32BE(sp + 0);
         sub.indexCount = endian::LoadU32BE(sp + 4);
@@ -338,7 +351,7 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
         cm.mesh.subsets.push_back(sub);
     }
 
-    const size_t bufOff = spak::kMeshHeaderBytes + subBytes;
+    const size_t bufOff = headerBytes + subBytes;
 
     // Payload VB/IB are already native-endian (baked big-endian) — copy straight in.
     if (FAILED(m_device->CreateVertexBuffer((UINT)vbytes, 0, 0, D3DPOOL_MANAGED, &cm.mesh.vb, NULL)))
@@ -352,8 +365,22 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
         memcpy(dst, p + bufOff, vbytes);
         cm.mesh.vb->Unlock();
     }
+    if (skinned)
+    {
+        if (FAILED(m_device->CreateVertexBuffer((UINT)skinBytes, 0, 0, D3DPOOL_MANAGED, &cm.mesh.skinVb, NULL)))
+        {
+            cm.mesh.vb->Release(); cm.mesh.vb = NULL;
+            cm.mesh.subsets.clear();
+            return;
+        }
+        void* dst = NULL;
+        cm.mesh.skinVb->Lock(0, 0, &dst, 0);
+        memcpy(dst, p + bufOff + vbytes, skinBytes);
+        cm.mesh.skinVb->Unlock();
+    }
     if (FAILED(m_device->CreateIndexBuffer((UINT)ibytes, 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &cm.mesh.ib, NULL)))
     {
+        if (cm.mesh.skinVb) { cm.mesh.skinVb->Release(); cm.mesh.skinVb = NULL; }
         cm.mesh.vb->Release(); cm.mesh.vb = NULL;
         cm.mesh.subsets.clear();
         return;
@@ -361,8 +388,28 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
     {
         void* dst = NULL;
         cm.mesh.ib->Lock(0, 0, &dst, 0);
-        memcpy(dst, p + bufOff + vbytes, ibytes);
+        memcpy(dst, p + bufOff + vbytes + skinBytes, ibytes);
         cm.mesh.ib->Unlock();
+    }
+
+    if (skinned)
+    {
+        const unsigned char* jp = p + bufOff + vbytes + skinBytes + ibytes;
+        for (unsigned int i = 0; i < jointCount; ++i, jp += spak::kSkinJointBytes)
+        {
+            RtJoint joint;
+            joint.nameHash = endian::LoadU32BE(jp + 0);
+            joint.parent = (int)endian::LoadU32BE(jp + 4);
+            if (joint.parent >= (int)i)
+            {
+                cm.mesh.Release();
+                return;
+            }
+            memcpy(joint.inverseBind, jp + 8, 64);
+            memcpy(joint.bindLocal, jp + 72, 64);
+            cm.mesh.joints.push_back(joint);
+        }
+        cm.mesh.skeletonFingerprint = fingerprint;
     }
 
     cm.mesh.vertexCount = vcount;

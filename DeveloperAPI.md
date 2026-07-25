@@ -13,7 +13,8 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 5. [Input](#5-input) — `input.button`, `input.axis`, name reference
 6. [Video](#6-video) — `video.play`, `video.stop`, `video.is_playing`
 7. [Audio](#7-audio) — `audio.play`, `audio.stop`, `audio.is_playing`, `audio.set_volume`, `audio.set_pitch`, `audio.set_loop`
-8. [Utility](#8-utility) — `log`
+8. [Animator](#8-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`
+9. [Utility](#9-utility) — `log`
 
 ---
 
@@ -378,7 +379,136 @@ end
 
 ---
 
-## 8. Utility
+## 8. Animator
+
+Control an object's **Animator** attribute and its authored controller. Animator
+functions are globals taking the target object **name**, followed by a parameter
+or state name. The target must have an Animator attribute with a valid controller;
+otherwise the call does nothing.
+
+The table name and method names are case-sensitive: use `Animator.SetBool`, not
+`anim.set_bool`, `anim.set_state`, or `Engine.Animator.SetBool`.
+
+| Function | Effect |
+|---|---|
+| `Animator.SetFloat(object, parameter, value)` | set a numeric controller parameter |
+| `Animator.SetBool(object, parameter, value)` | set a boolean controller parameter |
+| `Animator.SetTrigger(object, parameter)` | set a one-shot controller trigger |
+| `Animator.SetState(object, state)` | switch directly to a state and restart it |
+
+Parameter and state names should use the exact spelling and capitalization from
+the Animator controller. Parameters persist until changed. Setting a float and a
+bool with the same name replaces the previous parameter type.
+
+### `Animator.SetFloat(object, parameter, value)`
+
+Sets a numeric parameter used by transition conditions such as `speed > 0.2` or
+`health <= 0`. Call it whenever the gameplay value changes, or every frame when
+the value is derived from movement.
+
+```lua
+function on_update(dt)
+    local vx, vy, vz = self:velocity()
+    local speed = math.sqrt(vx * vx + vz * vz)
+    Animator.SetFloat(self:name(), "speed", speed)
+end
+```
+
+### `Animator.SetBool(object, parameter, value)`
+
+Sets a persistent boolean parameter. A bare condition such as `isMoving` passes
+when the value is `true`; `!isMoving` passes when it is `false`.
+
+```lua
+local move_speed = 6.0
+
+function on_update(dt)
+    local vx, vy, vz = self:velocity()
+    local mx = input.axis("LX") * move_speed
+    local mz = -input.axis("LY") * move_speed
+    self:set_velocity(mx, vy, mz)
+
+    local speed = math.sqrt(mx * mx + mz * mz)
+    Animator.SetBool(self:name(), "isMoving", speed > 0.2)
+    Animator.SetBool(self:name(), "isRunning", speed > 4.5)
+end
+```
+
+For example, a controller can use these ordered transitions:
+
+| From | To | Condition |
+|---|---|---|
+| `Survey` | `Walk` | `isMoving` |
+| `Walk` | `Survey` | `!isMoving` |
+| `Walk` | `Run` | `isRunning` |
+| `Run` | `Walk` | `!isRunning` |
+
+### `Animator.SetTrigger(object, parameter)`
+
+Sets a one-shot trigger. A transition with a bare condition matching the trigger
+name can consume it. The trigger remains set until a matching transition is
+evaluated, so it can be fired before that transition's source state or exit time
+is active.
+
+```lua
+local attack_was_down = false
+
+function on_update(dt)
+    local attack_is_down = input.button("X")
+    if attack_is_down and not attack_was_down then
+        Animator.SetTrigger(self:name(), "attack")
+    end
+    attack_was_down = attack_is_down
+end
+```
+
+The edge check in this example prevents a held button from setting the trigger
+again every frame.
+
+### `Animator.SetState(object, state)`
+
+Immediately switches to an existing controller state. The new state starts at
+time zero, any active cross-fade is cancelled, and no transition condition or
+exit time is evaluated. An unknown state name does nothing.
+
+```lua
+function on_start()
+    Animator.SetState(self:name(), "Survey")
+end
+```
+
+Prefer parameters and authored transitions for normal gameplay because they keep
+the controller's blend duration, transition order, and exit-time behavior.
+`SetState` is intended for hard overrides such as resets or teleports; do not call
+it every frame, because each call restarts the state.
+
+### Transition conditions
+
+Each transition supports one condition expression. Logical `and`/`or` expressions
+are not supported; use ordered transitions and intermediate states when more than
+one decision is needed.
+
+| Parameter kind | Supported condition forms |
+|---|---|
+| Always | empty condition |
+| Boolean | `grounded`, `!grounded`, `grounded == true`, `grounded != false` |
+| Float | `speed == 1`, `speed != 0`, `speed >= 4.5`, `speed <= 1`, `speed > 0.2`, `speed < 8` |
+| Trigger | bare trigger name, such as `attack` |
+
+Transitions are checked in controller order, and at most one transition occurs
+per animation update. A transition with **Has Exit Time** enabled is considered
+only after the active state's playback time reaches its exit time. When a
+transition succeeds, its authored blend duration cross-fades the previous and new
+clips.
+
+Animator parameters written by `on_update` are evaluated on the next animation
+update. This keeps behavior consistent between editor Play preview and the Xbox
+360 runtime. Animator calls are transient and do not modify the saved controller
+or scene.
+
+---
+
+## 9. Utility
 
 ### `log(msg)`
 Print to the editor **Log** panel as a `[LOG]` entry (or the console's debug

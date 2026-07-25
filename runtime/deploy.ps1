@@ -93,6 +93,7 @@ if ($fxc -and (Test-Path $fxc)) {
     $engineShaderDir = Join-Path (Split-Path -Parent $root) "src\shaders"
     if (-not (Test-Path (Join-Path $engineShaderDir "standard.hlsl"))) { throw "Built-in material not found in: $engineShaderDir" }
     Get-ChildItem $engineShaderDir -Filter *.hlsl | ForEach-Object { Compile-Xeno $_.FullName $false }
+    & $fxc /Tvs_3_0 /ESkinVSMain /Zpc "/Fo$(Join-Path $shaderOut 'standard_skin_vs.cso')" (Join-Path $engineShaderDir "standard.hlsl") 2>&1 | Out-Null
     Get-ChildItem (Join-Path $Project "assets") -Filter *.hlsl -Recurse -ErrorAction SilentlyContinue |
         ForEach-Object { Compile-Xeno $_.FullName $true }           # custom shaders (+ //@ sidecar)
     Write-Output "Compiled Xenos shaders (.cso) + baked //@ sidecars"
@@ -124,6 +125,7 @@ $sceneFile = Join-Path $Project $startup
 $meshes = @()
 $videos = @()
 $audios = @()
+$animators = @()
 if (Test-Path $sceneFile) {
     $scene = Get-Content $sceneFile -Raw | ConvertFrom-Json
     foreach ($o in $scene.objects) {
@@ -131,19 +133,46 @@ if (Test-Path $sceneFile) {
             if ($a.model_path) { $meshes += $a.model_path }
             if ($a.videoPath)  { $videos += $a.videoPath }  # "Video" attribute -> raw VIDE entry
             if ($a.audioPath)  { $audios += $a.audioPath }  # "Audio" attribute -> raw AUDI entry
+            if ($a.controllerPath) { $animators += $a.controllerPath }
         }
     }
 }
-$meshes = $meshes | Select-Object -Unique
-$videos = $videos | Select-Object -Unique
-$audios = $audios | Select-Object -Unique
-$cookArgs = @($meshes) + @($videos) + @($audios)
+$meshes = @($meshes | Select-Object -Unique)
+$videos = @($videos | Select-Object -Unique)
+$audios = @($audios | Select-Object -Unique)
+$animators = @($animators | Select-Object -Unique)
+
+# Animator controllers are PC-cooked from JSON + Assimp source clips into one
+# big-endian ANC1 payload each. The temporary files are fed to spakc with their
+# original logical controller paths, then removed after the raw ANIM entries are
+# written. Assimp and nlohmann/json remain host-only.
+$animArgs = @()
+$animCookDir = Join-Path $out ".animcook"
+if ($animators.Count -gt 0) {
+    $engineRoot = Split-Path -Parent $root
+    $hostBuild = Join-Path $engineRoot "build"
+    & cmake --build $hostBuild --config Release --target animc | Out-Null
+    $animc = Join-Path $hostBuild "Release\animc.exe"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $animc)) { throw "animc build failed" }
+    New-Item -ItemType Directory -Force $animCookDir | Out-Null
+    for ($index = 0; $index -lt $animators.Count; ++$index) {
+        $logical = [string]$animators[$index]
+        $source = Join-Path $Project $logical
+        $cooked = Join-Path $animCookDir ("controller_{0}.anc" -f $index)
+        & $animc $Project $source $cooked
+        if ($LASTEXITCODE -ne 0) { throw "animc failed for $logical" }
+        $animArgs += @("--anim", $cooked, $logical)
+    }
+}
+
+$cookArgs = @($meshes) + @($videos) + @($audios) + @($animArgs)
 if ($cookArgs.Count -gt 0) {
     & $spakcExe build (Join-Path $out "game.spak") $Project @cookArgs
     if ($LASTEXITCODE -ne 0) { throw "spakc cook failed" }
 } else {
     Write-Output "Note: startup scene references no meshes/videos; no game.spak written (shader-only scene)"
 }
+if (Test-Path $animCookDir) { Remove-Item -Recurse -Force $animCookDir }
 
 Write-Output "Deployed to $out"
 Write-Output "Launch in Xenia:  <xenia.exe> `"$($out)\default.xex`""

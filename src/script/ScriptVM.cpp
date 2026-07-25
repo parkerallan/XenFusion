@@ -213,6 +213,33 @@ namespace
                                lua_toboolean(L, 2) != 0);
         return 0;
     }
+
+    int l_animator_set_float(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AnimatorSetFloat(h->FindObject(luaL_checkstring(L, 1)),
+                                   luaL_checkstring(L, 2), (float)luaL_checknumber(L, 3));
+        return 0;
+    }
+    int l_animator_set_bool(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AnimatorSetBool(h->FindObject(luaL_checkstring(L, 1)),
+                                  luaL_checkstring(L, 2), lua_toboolean(L, 3) != 0);
+        return 0;
+    }
+    int l_animator_set_trigger(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AnimatorSetTrigger(h->FindObject(luaL_checkstring(L, 1)), luaL_checkstring(L, 2));
+        return 0;
+    }
+    int l_animator_set_state(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->AnimatorSetState(h->FindObject(luaL_checkstring(L, 1)), luaL_checkstring(L, 2));
+        return 0;
+    }
 }
 
 namespace script
@@ -291,6 +318,13 @@ namespace script
         lua_pushcfunction(L, l_audio_set_pitch);  lua_setfield(L, -2, "set_pitch");
         lua_pushcfunction(L, l_audio_set_loop);   lua_setfield(L, -2, "set_loop");
         lua_setglobal(L, "audio");
+
+        lua_newtable(L);
+        lua_pushcfunction(L, l_animator_set_float);   lua_setfield(L, -2, "SetFloat");
+        lua_pushcfunction(L, l_animator_set_bool);    lua_setfield(L, -2, "SetBool");
+        lua_pushcfunction(L, l_animator_set_trigger); lua_setfield(L, -2, "SetTrigger");
+        lua_pushcfunction(L, l_animator_set_state);   lua_setfield(L, -2, "SetState");
+        lua_setglobal(L, "Animator");
 
         // Registry table: objectIndex -> per-script environment.
         lua_newtable(L);

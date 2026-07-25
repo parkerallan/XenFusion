@@ -14,6 +14,13 @@ struct RtAttribute
     std::string shader_path; // for "Shader"
     std::string script_path; // for "Script": .lua gameplay script
 
+    // For "Animator": the source controller path is resolved to a cooked ANIM
+    // entry by the runtime animation cache. Instances are created per object.
+    std::string animator_controller_path;
+    std::string animator_initial_state;
+    float       animator_playback_speed;
+    bool        animator_auto_play;
+
     // For "Camera": the object's transform places/aims it (rotation 0 looks
     // down +Z). Defaults match the old fixed-camera projection.
     float cam_fov;    // vertical FOV, degrees
@@ -92,6 +99,8 @@ struct RtAttribute
 
     RtAttribute()
     {
+        animator_playback_speed = 1.0f;
+        animator_auto_play = true;
         cam_fov    = 45.0f;
         cam_near   = 0.5f;
         cam_far    = 100.0f;

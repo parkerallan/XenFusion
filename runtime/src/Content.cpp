@@ -1,5 +1,6 @@
 #include "Content.h"
 #include "Endian.h"
+#include "SpakFormat.h"
 
 #include "stb_image.h"
 
@@ -76,22 +77,28 @@ void RtMesh::Release()
         if (s.diffuse)  { s.diffuse->Release();  s.diffuse = NULL; }
     }
     subsets.clear();
+    joints.clear();
+    skeletonFingerprint = 0;
     if (ib) { ib->Release(); ib = NULL; }
+    if (skinVb) { skinVb->Release(); skinVb = NULL; }
     if (vb) { vb->Release(); vb = NULL; }
     vertexCount = indexCount = 0;
 }
 
 void RtShader::Release()
 {
+    if (skinVsConstants) { skinVsConstants->Release(); skinVsConstants = NULL; }
     if (vsConstants) { vsConstants->Release(); vsConstants = NULL; }
     if (ps) { ps->Release(); ps = NULL; }
+    if (skinVs) { skinVs->Release(); skinVs = NULL; }
     if (vs) { vs->Release(); vs = NULL; }
 }
 
 // ---------------------------------------------------------------------------
 // Mesh blob loading (the editor's "M360" format, read little-endian)
 //
-// Layout: MeshHeader { char magic[4]; u32 version; u32 vertexCount; u32 indexCount }
+// Layout: MeshHeader { char magic[4]; u32 version; u32 vertexCount; u32 indexCount;
+// flags; jointCount; skeletonFingerprint }
 // then vertexCount * 44-byte vertices, indexCount * u32 indices, then a u32
 // subset count followed by one record per material: u32 indexStart, u32
 // indexCount, then six length-prefixed strings (diffuse / normal / specular /
@@ -99,7 +106,7 @@ void RtShader::Release()
 // ---------------------------------------------------------------------------
 namespace
 {
-    const unsigned int kMeshVersion = 7;   // must match the editor's MESH_VERSION
+    const unsigned int kMeshVersion = 8;   // must match the editor's MESH_VERSION
     const unsigned int kVertexBytes = 44;  // MeshVertex
 
     // Advance a cursor over a length-prefixed (u32 LE) string.
@@ -194,7 +201,7 @@ RtMesh* Content::GetMesh(const std::string& relPath)
 
     const std::string abs = Resolve(relPath);
     std::vector<unsigned char> blob;
-    if (!ReadWholeFileBin(abs, blob) || blob.size() < 16)
+    if (!ReadWholeFileBin(abs, blob) || blob.size() < 28)
     {
         Log("mesh: cannot read ", abs);
         m_meshes[relPath] = mesh;
@@ -213,14 +220,25 @@ RtMesh* Content::GetMesh(const std::string& relPath)
     unsigned int version = endian::LoadU32LE(p + 4);
     unsigned int vcount  = endian::LoadU32LE(p + 8);
     unsigned int icount  = endian::LoadU32LE(p + 12);
+    unsigned int flags   = endian::LoadU32LE(p + 16);
+    unsigned int jointCount = endian::LoadU32LE(p + 20);
+    unsigned int skeletonFingerprint = endian::LoadU32LE(p + 24);
     if (version != kMeshVersion || vcount == 0 || icount == 0)
     {
         Log("mesh: version/empty ", relPath);
         m_meshes[relPath] = mesh;
         return NULL;
     }
+    const bool skinned = (flags & 1u) != 0;
+    if ((skinned && (jointCount == 0 || jointCount > spak::kMaxSkinJoints)) ||
+        (!skinned && jointCount != 0))
+    {
+        Log("mesh: invalid skin metadata ", relPath);
+        m_meshes[relPath] = mesh;
+        return NULL;
+    }
 
-    size_t off = 16;
+    size_t off = 28;
     const size_t vbytes = (size_t)vcount * kVertexBytes;
     const size_t ibytes = (size_t)icount * 4;
     if (off + vbytes + ibytes > size)
@@ -309,6 +327,50 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         if (!texMetal.empty())  sub.metallic = LoadTexture(m_device, Join(meshDir, texMetal));
         if (!texCoat.empty())   sub.clearcoat = LoadTexture(m_device, Join(meshDir, texCoat));
         mesh.subsets.push_back(sub);
+    }
+
+    if (skinned)
+    {
+        const size_t skinBytes = (size_t)vcount * spak::kSkinInfluenceBytes;
+        if (off + skinBytes > size ||
+            FAILED(m_device->CreateVertexBuffer((UINT)skinBytes, 0, 0, D3DPOOL_MANAGED, &mesh.skinVb, NULL)))
+        {
+            Log("mesh: skin stream truncated ", relPath);
+            mesh.Release();
+            m_meshes[relPath] = mesh;
+            return NULL;
+        }
+        void* dst = NULL;
+        mesh.skinVb->Lock(0, 0, &dst, 0);
+        memcpy(dst, p + off, skinBytes);
+        mesh.skinVb->Unlock();
+        off += skinBytes;
+
+        for (unsigned int i = 0; i < jointCount; ++i)
+        {
+            RtJoint joint;
+            std::string name = ReadStr(p, size, off);
+            if (name.empty() || off + 4 + 128 > size)
+            {
+                Log("mesh: skeleton truncated ", relPath);
+                mesh.Release();
+                m_meshes[relPath] = mesh;
+                return NULL;
+            }
+            joint.nameHash = spak::NameHash(name.c_str());
+            joint.parent = (int)endian::LoadU32LE(p + off); off += 4;
+            if (joint.parent >= (int)i)
+            {
+                Log("mesh: invalid joint parent ", relPath);
+                mesh.Release();
+                m_meshes[relPath] = mesh;
+                return NULL;
+            }
+            endian::StoreNativeFromLE32(joint.inverseBind, p + off, 64); off += 64;
+            endian::StoreNativeFromLE32(joint.bindLocal, p + off, 64); off += 64;
+            mesh.joints.push_back(joint);
+        }
+        mesh.skeletonFingerprint = skeletonFingerprint;
     }
 
     m_meshes[relPath] = mesh;
@@ -465,6 +527,38 @@ namespace
         }
         return out.vs && out.ps;
     }
+
+    bool LoadSkinVertexCso(IDirect3DDevice9* dev, const std::string& path, RtShader& out)
+    {
+        std::vector<unsigned char> code;
+        if (!ReadWholeFileBin(path, code) ||
+            FAILED(dev->CreateVertexShader((const DWORD*)&code[0], &out.skinVs)))
+            return false;
+        if (SUCCEEDED(D3DXGetShaderConstantTable((const DWORD*)&code[0], &out.skinVsConstants)) &&
+            out.skinVsConstants)
+        {
+            out.hSkinWVP = out.skinVsConstants->GetConstantByName(NULL, "gWVP");
+            out.hSkinWorld = out.skinVsConstants->GetConstantByName(NULL, "gWorld");
+        }
+        return true;
+    }
+
+    bool CompileSkinVertexFile(IDirect3DDevice9* dev, const std::string& path, RtShader& out)
+    {
+        LPD3DXBUFFER code = CompileEntry(path, "SkinVSMain", "vs_3_0", &out.skinVsConstants);
+        if (!code)
+            return false;
+        const HRESULT hr = dev->CreateVertexShader((const DWORD*)code->GetBufferPointer(), &out.skinVs);
+        code->Release();
+        if (FAILED(hr) || !out.skinVs)
+            return false;
+        if (out.skinVsConstants)
+        {
+            out.hSkinWVP = out.skinVsConstants->GetConstantByName(NULL, "gWVP");
+            out.hSkinWorld = out.skinVsConstants->GetConstantByName(NULL, "gWorld");
+        }
+        return true;
+    }
 }
 
 RtShader* Content::GetShader(const std::string& relPath)
@@ -499,13 +593,17 @@ bool Content::LoadStandard()
 {
     m_standard.Release();
     // Precompiled Xenos .cso first (shipping path); fall back to compiling the HLSL.
-    if (LoadShaderCso(m_device, Resolve("shaders/standard_vs.cso"),
-                                Resolve("shaders/standard_ps.cso"), m_standard))
-        return true;
-    if (CompileShaderFile(m_device, Resolve("shaders/standard.hlsl"), m_standard))
-        return true;
-    Log("shader: standard failed", "");
-    return false;
+    if (!LoadShaderCso(m_device, Resolve("shaders/standard_vs.cso"),
+                                 Resolve("shaders/standard_ps.cso"), m_standard) &&
+        !CompileShaderFile(m_device, Resolve("shaders/standard.hlsl"), m_standard))
+    {
+        Log("shader: standard failed", "");
+        return false;
+    }
+    if (!LoadSkinVertexCso(m_device, Resolve("shaders/standard_skin_vs.cso"), m_standard) &&
+        !CompileSkinVertexFile(m_device, Resolve("shaders/standard.hlsl"), m_standard))
+        Log("shader: standard skin vertex shader failed", "");
+    return true;
 }
 
 IDirect3DCubeTexture9* Content::LoadEnvCube()

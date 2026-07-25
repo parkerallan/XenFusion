@@ -59,6 +59,13 @@ namespace project
                         ja["trackRotOffset"] = {a.cam_track_rot_offset[0], a.cam_track_rot_offset[1], a.cam_track_rot_offset[2]};
                     }
                 }
+                else if (a.type == "Animator")
+                {
+                    ja["controllerPath"] = a.animator_controller_path;
+                    ja["initialState"]   = a.animator_initial_state;
+                    ja["playbackSpeed"] = a.animator_playback_speed;
+                    ja["autoPlay"]       = a.animator_auto_play;
+                }
                 else if (a.type == "Directional Light" || a.type == "Point Light" ||
                          a.type == "Spot Light" || a.type == "Environment Light")
                 {
@@ -233,6 +240,13 @@ namespace project
                         {
                             a.trig_shape = ja.value("shape", 0);
                             readSize(a.trig_size);
+                        }
+                        else if (a.type == "Animator")
+                        {
+                            a.animator_controller_path = ja.value("controllerPath", std::string());
+                            a.animator_initial_state   = ja.value("initialState", std::string());
+                            a.animator_playback_speed = ja.value("playbackSpeed", 1.0f);
+                            a.animator_auto_play       = ja.value("autoPlay", true);
                         }
                         else if (a.type == "Audio")
                         {

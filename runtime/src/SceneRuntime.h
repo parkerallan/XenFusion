@@ -3,6 +3,7 @@
 #include "Content.h"
 #include "SceneData.h"
 #include "StreamCache.h"
+#include "RuntimeAnimator.h"
 #include "video/VideoPlayer.h"
 #include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
@@ -38,6 +39,10 @@ public:
     void  AudioSetVolume(int objectIndex, float volume);
     void  AudioSetPitch(int objectIndex, float pitch);
     void  AudioSetLoop(int objectIndex, bool loop);
+    void  AnimatorSetFloat(int objectIndex, const char* name, float value);
+    void  AnimatorSetBool(int objectIndex, const char* name, bool value);
+    void  AnimatorSetTrigger(int objectIndex, const char* name);
+    void  AnimatorSetState(int objectIndex, const char* name);
 
     // contentRoot is the deployed game root, e.g. "game:\". Loads the standard
     // material, the startup scene, and builds shared geometry. Returns false if
@@ -67,6 +72,8 @@ private:
         D3DMATRIX   world;
         int         object_index; // for physics pose override
         float       scale[3];     // authored scale (collider is sized separately)
+        RuntimeAnimator animator;
+        std::vector<float> skin_palette;
     };
     struct ShaderItem
     {
@@ -81,11 +88,12 @@ private:
     void BuildPhysics(); // create the Bullet world from Rigid Body / Trigger attributes
     void BuildScripts(); // load each object's .lua and run on_start
     // Extract CPU collision geometry (positions, + indices for exact) for a mesh
-    // collider straight from the pak's MSH2 blob. Native-endian on the console.
+    // collider straight from the pak's MSH2/MSH3 blob. Native-endian on the console;
+    // skinned collision uses authored bind-pose geometry.
     bool LoadPakMeshGeometry(const std::string& relPath, std::vector<float>& pos,
                              std::vector<unsigned int>& idx, bool wantIndices);
     void DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat,
-                  bool blendPass); // false = opaque+cutout subsets, true = blend subsets
+                  bool blendPass, const std::vector<float>* skinPalette = NULL);
     void DrawShaderItem(const ShaderItem& item, RtShader& shader, const D3DMATRIX& viewProj);
     IDirect3DTexture9* SolidTexture(D3DCOLOR argb);
     bool BuildGeometry();
@@ -121,6 +129,7 @@ private:
     int                          m_spot_beam_count;
 
     IDirect3DVertexDeclaration9* m_mesh_decl;
+    IDirect3DVertexDeclaration9* m_skin_mesh_decl;
     IDirect3DTexture9*           m_def_white;
     IDirect3DTexture9*           m_def_normal;
     IDirect3DTexture9*           m_def_black;

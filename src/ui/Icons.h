@@ -22,3 +22,7 @@
 #define ICON_FA_CLOCK       "\xef\x80\x97" // f017  clock  (recent)
 #define ICON_FA_ARROW_DOWN  "\xef\x81\xa3" // f063  arrow-down (auto-scroll)
 #define ICON_FA_CODE_BRANCH "\xef\x84\xa6" // f126  code-branch (git)
+#define ICON_FA_PLAY        "\xef\x81\x8b" // f04b  play
+#define ICON_FA_PAUSE       "\xef\x81\x8c" // f04c  pause
+#define ICON_FA_ROTATE      "\xef\x80\x9e" // f01e  rotate
+#define ICON_FA_HAMMER      "\xef\x9b\xa3" // f6e3  hammer

@@ -20,6 +20,13 @@ struct ObjectAttribute
     std::string shader_path; // for "Shader": path to a custom .hlsl asset
     std::string script_path; // for "Script": path to a .lua gameplay script
 
+    // For "Animator": a project-relative .anim controller assigned to the
+    // object's skinned 3D Model. Runtime instances remain transient.
+    std::string animator_controller_path;
+    std::string animator_initial_state;
+    float       animator_playback_speed = 1.0f;
+    bool        animator_auto_play = true;
+
     // For "Camera". Rotation (0,0,0) looks down +Z; at most one camera per
     // scene is active — it drives the runtime view (defaults match the old
     // fixed-camera projection).
@@ -158,6 +165,7 @@ struct EngineState
     bool show_performance_panel = true;
     bool show_editor_panel    = true;
     bool show_mapper_panel    = false;
+    bool show_animator_panel  = true;
     bool show_style_editor    = false;
     bool compile_shaders_requested = false; // compile all project shaders next frame
     bool build_run_requested       = false; // build the .xex + launch it in Xenia
@@ -166,6 +174,7 @@ struct EngineState
 
     // Text/code file currently open in the Editor panel (empty = none).
     std::filesystem::path open_file_path;
+    std::filesystem::path open_animator_path;
 
     // --- Project ---
     std::filesystem::path project_root; // empty = no project open

@@ -39,8 +39,9 @@ namespace
         DWORD dwNameOffset;
     };
 
-    // Read `bytes` at absolute `offset` into `dst`. Returns false on short read.
-    bool ReadAt(HANDLE f, unsigned int offset, void* dst, unsigned int bytes)
+    // Caller serializes access because SetFilePointer + ReadFile is one logical
+    // operation on the pak's shared persistent file handle.
+    bool ReadFileAt(HANDLE f, unsigned int offset, void* dst, unsigned int bytes)
     {
         if (SetFilePointer(f, (LONG)offset, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
             return false;
@@ -68,11 +69,21 @@ void StreamTexture::Release()
 StreamPak::StreamPak()
     : m_file(INVALID_HANDLE_VALUE), m_toc(NULL), m_count(0), m_sectorSize(spak::kSectorSize)
 {
+    InitializeCriticalSection(&m_fileLock);
 }
 
 StreamPak::~StreamPak()
 {
     Close();
+    DeleteCriticalSection(&m_fileLock);
+}
+
+bool StreamPak::ReadAt(unsigned int offset, void* dst, unsigned int bytes)
+{
+    EnterCriticalSection(&m_fileLock);
+    const bool ok = ReadFileAt(m_file, offset, dst, bytes);
+    LeaveCriticalSection(&m_fileLock);
+    return ok;
 }
 
 bool StreamPak::Open(const char* path)
@@ -89,7 +100,7 @@ bool StreamPak::Open(const char* path)
 
     // Header (big-endian on disk).
     unsigned char hdr[spak::kHeaderBytes];
-    if (!ReadAt(m_file, 0, hdr, spak::kHeaderBytes))
+    if (!ReadAt(0, hdr, spak::kHeaderBytes))
     {
         Log("header read failed");
         Close();
@@ -111,7 +122,7 @@ bool StreamPak::Open(const char* path)
     // TOC.
     const unsigned int tocBytes = count * spak::kEntryBytes;
     unsigned char* raw = new BYTE[tocBytes];
-    if (!ReadAt(m_file, tocOff, raw, tocBytes))
+    if (!ReadAt(tocOff, raw, tocBytes))
     {
         Log("TOC read failed");
         delete[] raw;
@@ -181,7 +192,7 @@ bool StreamPak::ReadBlob(const SpakEntry* e, std::vector<BYTE>& out)
     // have that slack or it fails intermittently.
     const unsigned int comp = e->compressedSize;
     std::vector<BYTE> readBuf(comp + 16, 0);
-    if (comp && !ReadAt(m_file, e->diskOffset, &readBuf[0], comp))
+    if (comp && !ReadAt(e->diskOffset, &readBuf[0], comp))
     {
         Log("payload read failed");
         return false;
@@ -214,6 +225,16 @@ bool StreamPak::ReadBlob(const SpakEntry* e, std::vector<BYTE>& out)
         out.assign(readBuf.begin(), readBuf.begin() + comp);
     }
     return true;
+}
+
+bool StreamPak::ReadRawRange(const SpakEntry* e, unsigned int offset, void* out,
+                             unsigned int bytes)
+{
+    if (m_file == INVALID_HANDLE_VALUE || e == NULL || out == NULL ||
+        spak::CodecOf(e->flags) != spak::kCodecNone || offset > e->uncompressedSize ||
+        bytes > e->uncompressedSize - offset)
+        return false;
+    return bytes == 0 || ReadAt(e->diskOffset + offset, out, bytes);
 }
 
 // Register an already-decompressed XPR2 blob into a live texture. No file I/O and

@@ -2,6 +2,9 @@
 
 #include "render/MeshCache.h"
 #include "render/ShaderCache.h"
+#include "anim/AnimationClip.h"
+#include "anim/AnimatorController.h"
+#include "anim/AnimatorRuntime.h"
 #include "video/VideoPlayer.h"
 #include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
@@ -50,6 +53,10 @@ public:
     void  AudioSetVolume(int objectIndex, float volume);
     void  AudioSetPitch(int objectIndex, float pitch);
     void  AudioSetLoop(int objectIndex, bool loop);
+    void  AnimatorSetFloat(int objectIndex, const char* name, float value);
+    void  AnimatorSetBool(int objectIndex, const char* name, bool value);
+    void  AnimatorSetTrigger(int objectIndex, const char* name);
+    void  AnimatorSetState(int objectIndex, const char* name);
 
     void Initialize(IDirect3DDevice9* device);
     void Shutdown();
@@ -67,6 +74,10 @@ private:
     // Load the already-compiled standard shader from <project>/shaders (no
     // compile — that only happens on the Reload-shaders action).
     void LoadStandardShader();
+    // Select the static or skinned vertex path and bind both streams. Until
+    // animation sampling lands, skinned meshes receive an identity palette so
+    // the authored bind pose remains unchanged in edit mode.
+    void BindMeshForDraw(GpuMesh* mesh, const std::vector<float>* palette = nullptr);
 
     struct DrawItem
     {
@@ -75,6 +86,11 @@ private:
         bool        selected = false;
         int         object_index = -1;      // for physics pose override
         float       scale[3] = {1.0f, 1.0f, 1.0f};
+        std::string animator_controller_path;
+        std::string animator_initial_state;
+        float       animator_playback_speed = 1.0f;
+        bool        animator_auto_play = true;
+        std::vector<float> skin_palette;
     };
 
     // A custom-shader object. Drawn on built-in geometry (quad/volume) at its
@@ -187,6 +203,8 @@ private:
     IDirect3DTexture9*           m_bloomB     = nullptr; // quarter-res pong
     IDirect3DSurface9*           m_bloomBSurf = nullptr;
     IDirect3DVertexDeclaration9* m_mesh_decl = nullptr;
+    IDirect3DVertexDeclaration9* m_skin_mesh_decl = nullptr;
+    IDirect3DVertexShader9*      m_skin_vs = nullptr;
     IDirect3DTexture9*           m_def_white  = nullptr; // default diffuse
     IDirect3DTexture9*           m_def_normal = nullptr; // default flat normal
     IDirect3DTexture9*           m_def_black  = nullptr; // default specular / emissive / metallic
@@ -285,6 +303,28 @@ private:
     MeshCache               m_meshes;
     ShaderCache             m_shaders;
     float                   m_time = 0.0f; // seconds, for animated custom shaders
+
+    struct ControllerCacheEntry
+    {
+        AnimatorController controller;
+        bool attempted = false;
+        bool valid = false;
+    };
+    struct ClipCacheEntry
+    {
+        AnimationClip clip;
+        bool attempted = false;
+        bool valid = false;
+    };
+    struct AnimatorInstance
+    {
+        std::string controller_path;
+        AnimatorRuntimeState runtime;
+    };
+    std::map<std::string, ControllerCacheEntry> m_animator_controllers;
+    std::map<std::string, ClipCacheEntry>       m_animation_clips;
+    std::map<int, AnimatorInstance>             m_animator_instances;
+    void UpdateAnimations(float dt);
 
     // Unit quad + unit cube (mesh vertex layout) for standalone shaders
     IDirect3DVertexBuffer9* m_quad_vb = nullptr;

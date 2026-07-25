@@ -1,5 +1,9 @@
 #include "render/SceneRenderer.h"
 
+#include <assimp/matrix4x4.h>
+#include <assimp/quaternion.h>
+#include <assimp/vector3.h>
+
 #include "camera/EnvCubeViews.h"
 #include "core/Log.h"
 #include "project/ProjectIO.h"
@@ -71,6 +75,55 @@ namespace
             }
         }
         return true;
+    }
+
+    void BuildAnimationPalette(const GpuMesh& mesh, const AnimationClip& clip,
+                               float sample_time, std::vector<float>& output)
+    {
+        const float frame_position = sample_time * clip.sample_rate;
+        const uint32_t frame0 = (std::min)((uint32_t)frame_position, clip.frame_count - 1);
+        const uint32_t frame1 = (std::min)(frame0 + 1, clip.frame_count - 1);
+        const float blend = frame_position - (float)frame0;
+        std::vector<aiMatrix4x4> globals(mesh.skeleton.joints.size());
+        output.resize(mesh.skeleton.joints.size() * 12);
+
+        for (size_t joint_index = 0; joint_index < mesh.skeleton.joints.size(); ++joint_index)
+        {
+            const MeshJoint& joint = mesh.skeleton.joints[joint_index];
+            aiMatrix4x4 local;
+            std::memcpy(&local, joint.bindLocal, sizeof(local));
+            const uint32_t hash = animation::NameHash(joint.name.c_str());
+            for (const AnimationTrack& track : clip.tracks)
+            {
+                if (track.name_hash != hash) continue;
+                const AnimationTransform& a = track.samples[frame0];
+                const AnimationTransform& b = track.samples[frame1];
+                const aiVector3D translation(
+                    a.translation[0] + (b.translation[0] - a.translation[0]) * blend,
+                    a.translation[1] + (b.translation[1] - a.translation[1]) * blend,
+                    a.translation[2] + (b.translation[2] - a.translation[2]) * blend);
+                const aiVector3D scale(
+                    a.scale[0] + (b.scale[0] - a.scale[0]) * blend,
+                    a.scale[1] + (b.scale[1] - a.scale[1]) * blend,
+                    a.scale[2] + (b.scale[2] - a.scale[2]) * blend);
+                aiQuaternion qa(a.rotation[3], a.rotation[0], a.rotation[1], a.rotation[2]);
+                aiQuaternion qb(b.rotation[3], b.rotation[0], b.rotation[1], b.rotation[2]);
+                aiQuaternion rotation;
+                aiQuaternion::Interpolate(rotation, qa, qb, blend);
+                rotation.Normalize();
+                local = aiMatrix4x4(scale, rotation, translation);
+                break;
+            }
+            globals[joint_index] = joint.parent >= 0
+                ? globals[(size_t)joint.parent] * local : local;
+            aiMatrix4x4 inverse_bind;
+            std::memcpy(&inverse_bind, joint.inverseBind, sizeof(inverse_bind));
+            const aiMatrix4x4 skin = globals[joint_index] * inverse_bind;
+            float* palette = output.data() + joint_index * 12;
+            palette[0] = skin.a1; palette[1] = skin.a2; palette[2] = skin.a3; palette[3] = skin.a4;
+            palette[4] = skin.b1; palette[5] = skin.b2; palette[6] = skin.b3; palette[7] = skin.b4;
+            palette[8] = skin.c1; palette[9] = skin.c2; palette[10] = skin.c3; palette[11] = skin.c4;
+        }
     }
 }
 
@@ -248,6 +301,16 @@ void SceneRenderer::Initialize(IDirect3DDevice9* device)
         D3DDECL_END()
     };
     device->CreateVertexDeclaration(elems, &m_mesh_decl);
+    const D3DVERTEXELEMENT9 skin_elems[] = {
+        {0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL,   0},
+        {0, 24, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT,  0},
+        {0, 36, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+        {1,  0, D3DDECLTYPE_UBYTE4,  D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0},
+        {1,  4, D3DDECLTYPE_UBYTE4N, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT,  0},
+        D3DDECL_END()
+    };
+    device->CreateVertexDeclaration(skin_elems, &m_skin_mesh_decl);
 
     // Fallback textures for meshes missing a map.
     m_def_white  = CreateSolidTexture(device, D3DCOLOR_ARGB(255, 255, 255, 255)); // diffuse
@@ -325,6 +388,7 @@ void SceneRenderer::LoadStandardShader()
         return;
     const std::filesystem::path out = m_project_root / "shaders";
     IDirect3DVertexShader9* vs = shader::LoadVS(m_device, out / "standard_vs.cso");
+    IDirect3DVertexShader9* skin_vs = shader::LoadVS(m_device, out / "standard_skin_vs.cso");
     IDirect3DPixelShader9*  ps = shader::LoadPS(m_device, out / "standard_ps.cso");
     if (vs && ps)
     {
@@ -332,6 +396,12 @@ void SceneRenderer::LoadStandardShader()
         if (m_ps) m_ps->Release();
         m_vs = vs;
         m_ps = ps;
+        if (skin_vs)
+        {
+            if (m_skin_vs) m_skin_vs->Release();
+            m_skin_vs = skin_vs;
+            skin_vs = nullptr;
+        }
     }
     else
     {
@@ -339,6 +409,9 @@ void SceneRenderer::LoadStandardShader()
         if (ps) ps->Release();
         applog::Warn("Shaders not compiled yet — press 'Compile shaders' in Settings");
     }
+    if (skin_vs) skin_vs->Release();
+    if (m_vs && !m_skin_vs)
+        applog::Warn("Skin shader not compiled — rigged models use bind-pose fallback until 'Compile shaders'");
 
     // The bloom post chain (emissive glow). Optional: missing .cso just turns
     // the glow off (older projects until their shaders are recompiled).
@@ -404,6 +477,7 @@ void SceneRenderer::Shutdown()
     if (m_def_black)  { m_def_black->Release();  m_def_black = nullptr; }
     if (m_def_normal) { m_def_normal->Release(); m_def_normal = nullptr; }
     if (m_def_white)  { m_def_white->Release();  m_def_white = nullptr; }
+    if (m_skin_mesh_decl) { m_skin_mesh_decl->Release(); m_skin_mesh_decl = nullptr; }
     if (m_mesh_decl)  { m_mesh_decl->Release();  m_mesh_decl = nullptr; }
     if (m_bloom_combine_ps) { m_bloom_combine_ps->Release(); m_bloom_combine_ps = nullptr; }
     if (m_bloom_combine_vs) { m_bloom_combine_vs->Release(); m_bloom_combine_vs = nullptr; }
@@ -414,11 +488,206 @@ void SceneRenderer::Shutdown()
     if (m_beam_ps)    { m_beam_ps->Release();    m_beam_ps = nullptr; }
     if (m_beam_vs)    { m_beam_vs->Release();    m_beam_vs = nullptr; }
     if (m_ps)         { m_ps->Release();         m_ps = nullptr; }
+    if (m_skin_vs)    { m_skin_vs->Release();    m_skin_vs = nullptr; }
     if (m_vs)         { m_vs->Release();         m_vs = nullptr; }
     m_shaders.Shutdown();
     m_meshes.Shutdown();
     OnDeviceLost();
     m_device = nullptr;
+}
+
+void SceneRenderer::BindMeshForDraw(GpuMesh* mesh, const std::vector<float>* live_palette)
+{
+    const bool use_skin = mesh && mesh->skinVb && mesh->skeleton.IsSkinned() &&
+                          m_skin_mesh_decl && m_skin_vs;
+    m_device->SetVertexDeclaration(use_skin ? m_skin_mesh_decl : m_mesh_decl);
+    m_device->SetVertexShader(use_skin ? m_skin_vs : m_vs);
+    m_device->SetStreamSource(0, mesh->vb, 0, sizeof(MeshVertex));
+    m_device->SetStreamSource(1, use_skin ? mesh->skinVb : nullptr, 0,
+                              use_skin ? sizeof(MeshSkinInfluence) : 0);
+    m_device->SetIndices(mesh->ib);
+
+    if (use_skin)
+    {
+        // Three float4 columns per row-vector affine matrix. Identity keeps the
+        // baked vertices exactly in bind pose until the controller sampler
+        // supplies a live palette on Play.
+        float bind_palette[MAX_SKIN_JOINTS * 12] = {};
+        const float* palette = nullptr;
+        if (live_palette && live_palette->size() == mesh->skeleton.joints.size() * 12)
+            palette = live_palette->data();
+        else
+        {
+            for (size_t joint = 0; joint < mesh->skeleton.joints.size(); ++joint)
+            {
+                float* columns = bind_palette + joint * 12;
+                columns[0] = 1.0f;
+                columns[5] = 1.0f;
+                columns[10] = 1.0f;
+            }
+            palette = bind_palette;
+        }
+        m_device->SetVertexShaderConstantF(8, palette,
+            (UINT)mesh->skeleton.joints.size() * 3);
+    }
+}
+
+void SceneRenderer::UpdateAnimations(float dt)
+{
+    if (!m_phys_on)
+    {
+        m_animator_instances.clear();
+        return;
+    }
+
+    for (DrawItem& item : m_draw_items)
+    {
+        item.skin_palette.clear();
+        if (item.animator_controller_path.empty() || !item.animator_auto_play)
+            continue;
+        GpuMesh* mesh = m_meshes.Get(item.model_path);
+        if (!mesh || !mesh->skeleton.IsSkinned())
+            continue;
+
+        ControllerCacheEntry& controller_entry = m_animator_controllers[item.animator_controller_path];
+        if (!controller_entry.attempted)
+        {
+            controller_entry.attempted = true;
+            std::string error;
+            controller_entry.valid = animator::LoadController(
+                m_project_root / item.animator_controller_path, controller_entry.controller, error);
+            if (!controller_entry.valid)
+                applog::Error("Animator '" + item.animator_controller_path + "': " + error);
+        }
+        if (!controller_entry.valid)
+            continue;
+        const AnimatorController& controller = controller_entry.controller;
+
+        AnimatorInstance& instance = m_animator_instances[item.object_index];
+        if (instance.controller_path != item.animator_controller_path)
+        {
+            instance.controller_path = item.animator_controller_path;
+            animator::InitializeRuntime(controller, item.animator_initial_state, instance.runtime);
+        }
+        animator::AdvanceRuntime(controller, dt, item.animator_playback_speed,
+                                 item.animator_auto_play, instance.runtime);
+
+        const AnimatorStateDefinition* state = nullptr;
+        for (const AnimatorStateDefinition& candidate : controller.states)
+            if (candidate.name == instance.runtime.active_state) { state = &candidate; break; }
+        if (!state)
+            continue;
+        const AnimatorClipReference* clip_reference = nullptr;
+        for (const AnimatorClipReference& candidate : controller.clips)
+            if (candidate.id == state->clip_id) { clip_reference = &candidate; break; }
+        if (!clip_reference)
+            continue;
+
+        const std::string clip_key = clip_reference->source_model_path + "#" + clip_reference->clip_name;
+        ClipCacheEntry& clip_entry = m_animation_clips[clip_key];
+        if (!clip_entry.attempted)
+        {
+            clip_entry.attempted = true;
+            std::string error;
+            clip_entry.valid = animation::BakeClip(m_project_root / clip_reference->source_model_path,
+                clip_reference->clip_name, 30.0f, clip_entry.clip, error);
+            if (!clip_entry.valid)
+                applog::Error("Animation '" + clip_key + "': " + error);
+        }
+        if (!clip_entry.valid)
+            continue;
+        const AnimationClip& clip = clip_entry.clip;
+
+        float sample_time = instance.runtime.state_time;
+        if (state->loop)
+            sample_time = std::fmod(sample_time, clip.duration_seconds);
+        else
+            sample_time = (std::min)(sample_time, clip.duration_seconds);
+
+        BuildAnimationPalette(*mesh, clip, sample_time, item.skin_palette);
+
+        if (!instance.runtime.previous_state.empty() && instance.runtime.blend_duration > 0.0f)
+        {
+            const AnimatorStateDefinition* previous_state = nullptr;
+            for (const AnimatorStateDefinition& candidate : controller.states)
+                if (candidate.name == instance.runtime.previous_state)
+                { previous_state = &candidate; break; }
+            const AnimatorClipReference* previous_reference = nullptr;
+            if (previous_state)
+                for (const AnimatorClipReference& candidate : controller.clips)
+                    if (candidate.id == previous_state->clip_id)
+                    { previous_reference = &candidate; break; }
+            if (previous_state && previous_reference)
+            {
+                const std::string previous_key = previous_reference->source_model_path + "#" +
+                                                 previous_reference->clip_name;
+                ClipCacheEntry& previous_entry = m_animation_clips[previous_key];
+                if (!previous_entry.attempted)
+                {
+                    previous_entry.attempted = true;
+                    std::string error;
+                    previous_entry.valid = animation::BakeClip(
+                        m_project_root / previous_reference->source_model_path,
+                        previous_reference->clip_name, 30.0f, previous_entry.clip, error);
+                    if (!previous_entry.valid)
+                        applog::Error("Animation '" + previous_key + "': " + error);
+                }
+                if (previous_entry.valid)
+                {
+                    float previous_time = instance.runtime.previous_state_time;
+                    if (previous_state->loop)
+                        previous_time = std::fmod(previous_time, previous_entry.clip.duration_seconds);
+                    else
+                        previous_time = (std::min)(previous_time, previous_entry.clip.duration_seconds);
+                    std::vector<float> previous_palette;
+                    BuildAnimationPalette(*mesh, previous_entry.clip, previous_time, previous_palette);
+                    const float alpha = 1.0f - (std::clamp)(
+                        instance.runtime.blend_remaining / instance.runtime.blend_duration,
+                        0.0f, 1.0f);
+                    for (size_t value = 0; value < item.skin_palette.size(); ++value)
+                        item.skin_palette[value] = previous_palette[value] +
+                            (item.skin_palette[value] - previous_palette[value]) * alpha;
+                }
+            }
+        }
+    }
+}
+
+void SceneRenderer::AnimatorSetFloat(int objectIndex, const char* name, float value)
+{
+    auto instance = m_animator_instances.find(objectIndex);
+    if (instance != m_animator_instances.end()) animator::SetFloat(instance->second.runtime, name, value);
+}
+
+void SceneRenderer::AnimatorSetBool(int objectIndex, const char* name, bool value)
+{
+    auto instance = m_animator_instances.find(objectIndex);
+    if (instance != m_animator_instances.end()) animator::SetBool(instance->second.runtime, name, value);
+}
+
+void SceneRenderer::AnimatorSetTrigger(int objectIndex, const char* name)
+{
+    auto instance = m_animator_instances.find(objectIndex);
+    if (instance != m_animator_instances.end()) animator::SetTrigger(instance->second.runtime, name);
+}
+
+void SceneRenderer::AnimatorSetState(int objectIndex, const char* name)
+{
+    auto instance = m_animator_instances.find(objectIndex);
+    if (instance == m_animator_instances.end()) return;
+    auto controller = m_animator_controllers.find(instance->second.controller_path);
+    if (controller == m_animator_controllers.end() || !controller->second.valid) return;
+    for (const AnimatorStateDefinition& state : controller->second.controller.states)
+        if (state.name == name)
+        {
+            instance->second.runtime.active_state = name;
+            instance->second.runtime.previous_state.clear();
+            instance->second.runtime.state_time = 0.0f;
+            instance->second.runtime.previous_state_time = 0.0f;
+            instance->second.runtime.blend_duration = 0.0f;
+            instance->second.runtime.blend_remaining = 0.0f;
+            return;
+        }
 }
 
 void SceneRenderer::OnDeviceLost()
@@ -528,13 +797,22 @@ void SceneRenderer::RenderUi(EngineState& state)
                 continue;
             const bool selected = (i == state.selected_object);
 
-            std::string model_path, shader_path;
+            std::string model_path, shader_path, animator_path, animator_state;
+            float animator_speed = 1.0f;
+            bool animator_auto_play = true;
             for (const ObjectAttribute& a : o.attributes)
             {
                 if (a.type == "3D Model" && !a.model_path.empty() && model_path.empty())
                     model_path = a.model_path;
                 else if (a.type == "Shader" && !a.shader_path.empty() && shader_path.empty())
                     shader_path = a.shader_path;
+                else if (a.type == "Animator" && !a.animator_controller_path.empty() && animator_path.empty())
+                {
+                    animator_path = a.animator_controller_path;
+                    animator_state = a.animator_initial_state;
+                    animator_speed = a.animator_playback_speed;
+                    animator_auto_play = a.animator_auto_play;
+                }
                 else if (a.type == "Camera" && a.cam_active && !have_cam)
                 {
                     for (int k = 0; k < 3; ++k) { cam_pos[k] = o.position[k]; cam_rot[k] = o.rotation[k]; }
@@ -710,6 +988,10 @@ void SceneRenderer::RenderUi(EngineState& state)
                 di.selected     = selected;
                 di.object_index = i;
                 di.scale[0] = o.scale[0]; di.scale[1] = o.scale[1]; di.scale[2] = o.scale[2];
+                di.animator_controller_path = animator_path;
+                di.animator_initial_state = animator_state;
+                di.animator_playback_speed = animator_speed;
+                di.animator_auto_play = animator_auto_play;
                 m_draw_items.push_back(di);
             }
         }
@@ -1105,6 +1387,7 @@ void SceneRenderer::RenderGpu(float dt)
         return;
 
     m_time += dt; // drives animated custom shaders (gTime)
+    UpdateAnimations(dt);
 
     // Physics preview: step Bullet, then override this frame's draw items with the
     // simulated poses (world = Scale * pose, keeping authored scale). Trigger
@@ -1295,8 +1578,7 @@ void SceneRenderer::RenderGpu(float dt)
                 const D3DMATRIX wvp = Multiply(item.world, vp);
                 m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
                 m_device->SetVertexShaderConstantF(4, &item.world.m[0][0], 4);
-                m_device->SetStreamSource(0, gm->vb, 0, sizeof(MeshVertex));
-                m_device->SetIndices(gm->ib);
+                BindMeshForDraw(gm, &item.skin_palette);
             };
             // Bump-offset strength: max UV shift across the height field packed
             // in a normal map's alpha (tune by eye; keep in sync with
@@ -1623,8 +1905,7 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
                     const D3DMATRIX wvp = Multiply(item.world, vp);
                     m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
                     m_device->SetVertexShaderConstantF(4, &item.world.m[0][0], 4);
-                    m_device->SetStreamSource(0, gm->vb, 0, sizeof(MeshVertex));
-                    m_device->SetIndices(gm->ib);
+                    BindMeshForDraw(gm, &item.skin_palette);
                     bound = true;
                 }
                 if (!blendPass)

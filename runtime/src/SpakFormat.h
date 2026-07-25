@@ -41,8 +41,10 @@ namespace spak
                                                 // (.mp2), ALWAYS stored raw: MP2 is
                                                 // already compressed, and the AudioPlayer
                                                 // reads the entry's byte window directly
+    const unsigned int kTypeAnim  = 0x414E494D; // 'ANIM' — raw cooked controller +
+                                                // independently addressable clip blocks
 
-    // Mesh payload (big-endian): a fixed 16-byte header, then one 36-byte record
+    // Static mesh payload (big-endian): a fixed 16-byte header, then one 36-byte record
     // per material subset, then vertexCount*44 bytes of native-endian vertices,
     // then indexCount*4 bytes of native-endian u32 indices. Each subset draws its
     // index range with its own textures (referenced by nameHash into TX2D
@@ -53,6 +55,20 @@ namespace spak
     const unsigned int kMeshHeaderBytes = 16;         // 4 * u32
     const unsigned int kMeshSubsetBytes = 36;         // 9 * u32
     const unsigned int kMeshVertexBytes = 44;         // MeshVertex (pos/nrm/tan/uv)
+
+    // Skinned mesh payload extends the same layout with an 8-byte influence
+    // stream and fixed-size skeleton records:
+    //   u32 magic 'MSH3' | vertexCount | indexCount | subsetCount |
+    //       jointCount | skeletonFingerprint
+    //   subsets | vertices | influences | indices | joints
+    // Each influence is u8 joint[4] + u8 weight[4]. Each joint is nameHash,
+    // signed parent, inverseBind[16], bindLocal[16], all big-endian except the
+    // byte influence stream. Fixed records keep console loading allocation-free.
+    const unsigned int kSkinMeshMagic       = 0x4D534833; // 'MSH3'
+    const unsigned int kSkinMeshHeaderBytes = 24;         // 6 * u32
+    const unsigned int kSkinInfluenceBytes  = 8;
+    const unsigned int kSkinJointBytes      = 136;        // 2 * u32 + 32 floats
+    const unsigned int kMaxSkinJoints       = 72;
 
     // alphaKind values (match RtAlphaKind: Opaque/Cutout/Blend). The low byte is
     // the kind; the byte above carries per-subset flags (record stays 24 bytes —

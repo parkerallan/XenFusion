@@ -53,5 +53,14 @@ namespace script
         { (void)objectIndex; (void)pitch; }
         virtual void AudioSetLoop(int objectIndex, bool loop)
         { (void)objectIndex; (void)loop; }
+
+        virtual void AnimatorSetFloat(int objectIndex, const char* name, float value)
+        { (void)objectIndex; (void)name; (void)value; }
+        virtual void AnimatorSetBool(int objectIndex, const char* name, bool value)
+        { (void)objectIndex; (void)name; (void)value; }
+        virtual void AnimatorSetTrigger(int objectIndex, const char* name)
+        { (void)objectIndex; (void)name; }
+        virtual void AnimatorSetState(int objectIndex, const char* name)
+        { (void)objectIndex; (void)name; }
     };
 }

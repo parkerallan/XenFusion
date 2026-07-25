@@ -4,6 +4,7 @@
 #include <d3dx9.h>
 
 #include <map>
+#include <string.h>
 #include <string>
 #include <vector>
 
@@ -35,18 +36,37 @@ struct RtSubset
                  clearcoat(NULL) {}
 };
 
+struct RtJoint
+{
+    unsigned int nameHash;
+    int          parent;
+    float        inverseBind[16];
+    float        bindLocal[16];
+
+    RtJoint() : nameHash(0), parent(-1)
+    {
+        memset(inverseBind, 0, sizeof(inverseBind));
+        memset(bindLocal, 0, sizeof(bindLocal));
+    }
+};
+
 // A mesh resident in GPU memory. Vertex layout matches the editor's MeshVertex
 // (pos/normal/tangent/uv, 44 bytes), drawn through a vertex declaration. One
 // shared VB/IB; each material subset draws its own index range.
 struct RtMesh
 {
     IDirect3DVertexBuffer9* vb;
+    IDirect3DVertexBuffer9* skinVb;
     IDirect3DIndexBuffer9*  ib;
     std::vector<RtSubset>   subsets;
+    std::vector<RtJoint>    joints;
+    unsigned int            skeletonFingerprint;
     unsigned int            vertexCount;
     unsigned int            indexCount;
 
-    RtMesh() : vb(NULL), ib(NULL), vertexCount(0), indexCount(0) {}
+    RtMesh() : vb(NULL), skinVb(NULL), ib(NULL), skeletonFingerprint(0),
+               vertexCount(0), indexCount(0) {}
+    bool IsSkinned() const { return skinVb != NULL && !joints.empty(); }
     void Release(); // frees buffers + subset textures (Content-owned meshes only)
 };
 
@@ -71,13 +91,18 @@ struct RtShaderState
 struct RtShader
 {
     IDirect3DVertexShader9* vs;
+    IDirect3DVertexShader9* skinVs;
     IDirect3DPixelShader9*  ps;
     LPD3DXCONSTANTTABLE     vsConstants; // matrix upload, packing-correct via SetMatrix
+    LPD3DXCONSTANTTABLE     skinVsConstants;
     D3DXHANDLE              hWVP;        // resolved handles for the two matrices
     D3DXHANDLE              hWorld;
+    D3DXHANDLE              hSkinWVP;
+    D3DXHANDLE              hSkinWorld;
     RtShaderState           state;
 
-    RtShader() : vs(NULL), ps(NULL), vsConstants(NULL), hWVP(0), hWorld(0) {}
+    RtShader() : vs(NULL), skinVs(NULL), ps(NULL), vsConstants(NULL),
+                 skinVsConstants(NULL), hWVP(0), hWorld(0), hSkinWVP(0), hSkinWorld(0) {}
     bool Valid() const { return vs && ps; }
     void Release();
 };

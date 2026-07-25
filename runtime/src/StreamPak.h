@@ -60,6 +60,12 @@ public:
     // false on I/O or decompress failure (logged).
     bool ReadBlob(const SpakEntry* e, std::vector<BYTE>& out);
 
+    // Read a byte range from an uncompressed entry using the pak's persistent
+    // handle. Used by ANIM track blocks so sampling never loads the whole
+    // controller payload. Offset/size are relative to the entry payload.
+    bool ReadRawRange(const SpakEntry* e, unsigned int offset, void* out,
+                      unsigned int bytes);
+
     // Register an already-decompressed XPR2 blob (from ReadBlob) into a live
     // texture via pointer fixup. No I/O — safe to call on the render thread with a
     // blob the async worker produced. Returns false on a malformed blob.
@@ -70,8 +76,11 @@ public:
     bool LoadTextureSync(const SpakEntry* e, StreamTexture& out);
 
 private:
+    bool ReadAt(unsigned int offset, void* dst, unsigned int bytes);
+
     HANDLE       m_file;
     SpakEntry*   m_toc;
     unsigned int m_count;
     unsigned int m_sectorSize;
+    CRITICAL_SECTION m_fileLock;
 };

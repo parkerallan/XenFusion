@@ -143,9 +143,18 @@ namespace
                                   ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen);
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                 {
-                    state.open_file_path = p;
-                    state.show_editor_panel = true;
-                    ImGui::SetWindowFocus("Editor");
+                    if (p.extension() == ".anim")
+                    {
+                        state.open_animator_path = p;
+                        state.show_animator_panel = true;
+                        ImGui::SetWindowFocus("Animator");
+                    }
+                    else
+                    {
+                        state.open_file_path = p;
+                        state.show_editor_panel = true;
+                        ImGui::SetWindowFocus("Editor");
+                    }
                 }
             }
         }

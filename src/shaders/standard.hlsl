@@ -28,6 +28,29 @@ float4x4 gWorld : register(c4);
 struct VSIn  { float3 pos:POSITION; float3 nrm:NORMAL; float3 tan:TANGENT; float2 uv:TEXCOORD0; };
 struct VSOut { float4 pos:POSITION; float2 uv:TEXCOORD0; float3 wpos:TEXCOORD1; float3 wn:TEXCOORD2; float3 wt:TEXCOORD3; };
 
+// Skinned meshes add a second 8-byte stream: four byte joint indices and four
+// normalized byte weights. Each joint occupies three float4 constants holding
+// the columns of a row-vector affine transform. c8-c223 supports 72 joints.
+struct SkinVSIn
+{
+    float3 pos:POSITION;
+    float3 nrm:NORMAL;
+    float3 tan:TANGENT;
+    float2 uv:TEXCOORD0;
+    float4 joints:BLENDINDICES;
+    float4 weights:BLENDWEIGHT;
+};
+float4 gSkinPalette[216] : register(c8);
+
+float3 SkinTransform(float3 value, float vector_w, int joint)
+{
+    int base = joint * 3;
+    float4 source = float4(value, vector_w);
+    return float3(dot(source, gSkinPalette[base + 0]),
+                  dot(source, gSkinPalette[base + 1]),
+                  dot(source, gSkinPalette[base + 2]));
+}
+
 VSOut VSMain(VSIn i)
 {
     VSOut o;
@@ -35,6 +58,28 @@ VSOut VSMain(VSIn i)
     o.wpos = mul(float4(i.pos, 1.0), gWorld).xyz;
     o.wn   = mul(i.nrm, (float3x3)gWorld);
     o.wt   = mul(i.tan, (float3x3)gWorld);
+    o.uv   = i.uv;
+    return o;
+}
+
+VSOut SkinVSMain(SkinVSIn i)
+{
+    VSOut o;
+    float3 skinned_pos = 0;
+    float3 skinned_nrm = 0;
+    float3 skinned_tan = 0;
+    [unroll] for (int influence = 0; influence < 4; ++influence)
+    {
+        int joint = (int)i.joints[influence];
+        float weight = i.weights[influence];
+        skinned_pos += SkinTransform(i.pos, 1.0, joint) * weight;
+        skinned_nrm += SkinTransform(i.nrm, 0.0, joint) * weight;
+        skinned_tan += SkinTransform(i.tan, 0.0, joint) * weight;
+    }
+    o.pos  = mul(float4(skinned_pos, 1.0), gWVP);
+    o.wpos = mul(float4(skinned_pos, 1.0), gWorld).xyz;
+    o.wn   = mul(skinned_nrm, (float3x3)gWorld);
+    o.wt   = mul(skinned_tan, (float3x3)gWorld);
     o.uv   = i.uv;
     return o;
 }

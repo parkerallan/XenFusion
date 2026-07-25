@@ -44,6 +44,8 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>d3d9d.lib;d3dx9d.lib;xgraphics.lib;xapilibd.lib;xboxkrnl.lib;xaudiod2.lib;xmcored.lib;x3daudiod.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(OutDir)game360.map</MapFileName>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
@@ -56,6 +58,8 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>d3d9.lib;d3dx9.lib;xgraphics.lib;xapilib.lib;xboxkrnl.lib;xaudio2.lib;xmcore.lib;x3daudio.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(OutDir)game360.map</MapFileName>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -64,6 +68,7 @@
     <ClCompile Include="src\SceneData.cpp" />
     <ClCompile Include="src\Content.cpp" />
     <ClCompile Include="src\SceneRuntime.cpp" />
+    <ClCompile Include="src\RuntimeAnimator.cpp" />
     <ClCompile Include="src\StreamPak.cpp" />
     <ClCompile Include="src\StreamCache.cpp" />
     <ClCompile Include="src\stb_impl.cpp" />
@@ -79,6 +84,9 @@
     <ClInclude Include="src\SceneData.h" />
     <ClInclude Include="src\Content.h" />
     <ClInclude Include="src\SceneRuntime.h" />
+    <ClInclude Include="src\RuntimeAnimator.h" />
+    <ClInclude Include="src\AnimationFormat.h" />
+    <ClInclude Include="src\AnimatorCookFormat.h" />
     <ClInclude Include="src\RtMath.h" />
     <ClInclude Include="src\Endian.h" />
     <ClInclude Include="src\SpakFormat.h" />

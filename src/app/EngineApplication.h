@@ -13,6 +13,7 @@
 #include "panels/PerformancePanel.h"
 #include "panels/EditorPanel.h"
 #include "panels/MapperPanel.h"
+#include "panels/AnimatorPanel.h"
 
 #include <windows.h>
 
@@ -66,4 +67,5 @@ private:
     PerformancePanel performance_panel_;
     EditorPanel      editor_panel_;
     MapperPanel      mapper_panel_;
+    AnimatorPanel    animator_panel_;
 };

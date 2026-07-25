@@ -37,7 +37,7 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     m_device = device;
     m_root   = contentRoot;
 
-    m_mesh_decl = NULL;
+    m_mesh_decl = m_skin_mesh_decl = NULL;
     m_def_white = m_def_normal = m_def_black = NULL;
     m_def_envcube = NULL; m_env = NULL;
     m_envRT = NULL; m_envDepth = NULL; m_envDynCube = NULL; m_env_captured = false;
@@ -81,6 +81,17 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
         D3DDECL_END()
     };
     if (FAILED(m_device->CreateVertexDeclaration(elems, &m_mesh_decl)))
+        return false;
+    const D3DVERTEXELEMENT9 skinElems[] = {
+        {0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL,   0},
+        {0, 24, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT, 0},
+        {0, 36, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+        {1,  0, D3DDECLTYPE_UBYTE4,  D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0},
+        {1,  4, D3DDECLTYPE_UBYTE4N, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0},
+        D3DDECL_END()
+    };
+    if (FAILED(m_device->CreateVertexDeclaration(skinElems, &m_skin_mesh_decl)))
         return false;
 
     m_def_white  = SolidTexture(D3DCOLOR_ARGB(255, 255, 255, 255)); // diffuse
@@ -160,6 +171,34 @@ const char* SceneRuntime::ObjectName(int index)
     if (index >= 0 && index < (int)m_scene.objects.size())
         return m_scene.objects[index].name.c_str();
     return "";
+}
+
+void SceneRuntime::AnimatorSetFloat(int objectIndex, const char* name, float value)
+{
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+        if (m_draw_items[index].object_index == objectIndex)
+            m_draw_items[index].animator.SetFloat(name, value);
+}
+
+void SceneRuntime::AnimatorSetBool(int objectIndex, const char* name, bool value)
+{
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+        if (m_draw_items[index].object_index == objectIndex)
+            m_draw_items[index].animator.SetBool(name, value);
+}
+
+void SceneRuntime::AnimatorSetTrigger(int objectIndex, const char* name)
+{
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+        if (m_draw_items[index].object_index == objectIndex)
+            m_draw_items[index].animator.SetTrigger(name);
+}
+
+void SceneRuntime::AnimatorSetState(int objectIndex, const char* name)
+{
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+        if (m_draw_items[index].object_index == objectIndex)
+            m_draw_items[index].animator.SetState(name);
 }
 
 // Lua audio.*: transient overrides on the object's Audio attribute (the
@@ -302,17 +341,23 @@ bool SceneRuntime::LoadPakMeshGeometry(const std::string& relPath, std::vector<f
         return false;
 
     const unsigned char* p = &blob[0];
-    if (endian::LoadU32BE(p + 0) != spak::kMeshMagic)
+    const unsigned int magic = endian::LoadU32BE(p + 0);
+    const bool skinned = magic == spak::kSkinMeshMagic;
+    if (magic != spak::kMeshMagic && !skinned)
+        return false;
+    const size_t headerBytes = skinned ? spak::kSkinMeshHeaderBytes : spak::kMeshHeaderBytes;
+    if (blob.size() < headerBytes)
         return false;
     const unsigned int vcount      = endian::LoadU32BE(p + 4);
     const unsigned int icount      = endian::LoadU32BE(p + 8);
     const unsigned int subsetCount = endian::LoadU32BE(p + 12);
     const size_t subBytes = (size_t)subsetCount * spak::kMeshSubsetBytes;
     const size_t vbytes   = (size_t)vcount * spak::kMeshVertexBytes;
+    const size_t skinBytes = skinned ? (size_t)vcount * spak::kSkinInfluenceBytes : 0;
     const size_t ibytes   = (size_t)icount * 4;
-    if ((size_t)spak::kMeshHeaderBytes + subBytes + vbytes + ibytes > blob.size())
+    if (headerBytes + subBytes + vbytes + skinBytes + ibytes > blob.size())
         return false;
-    const size_t bufOff = (size_t)spak::kMeshHeaderBytes + subBytes;
+    const size_t bufOff = headerBytes + subBytes;
 
     // VB/IB are baked big-endian = native on the console — copy straight out.
     pos.resize((size_t)vcount * 3);
@@ -321,7 +366,7 @@ bool SceneRuntime::LoadPakMeshGeometry(const std::string& relPath, std::vector<f
     if (wantIndices && icount > 0)
     {
         idx.resize(icount);
-        memcpy(&idx[0], p + bufOff + vbytes, ibytes);
+        memcpy(&idx[0], p + bufOff + vbytes + skinBytes, ibytes);
     }
     return true;
 }
@@ -476,7 +521,7 @@ void SceneRuntime::DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int s
     {
         if ((int)i == skipItem) continue;
         RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
-        if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, false);
+        if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, false, &m_draw_items[i].skin_palette);
     }
     m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
     m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
@@ -488,7 +533,7 @@ void SceneRuntime::DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int s
     {
         if ((int)i == skipItem) continue;
         RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
-        if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, true);
+        if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, true, &m_draw_items[i].skin_palette);
     }
     m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
     m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -604,6 +649,7 @@ void SceneRuntime::Shutdown()
     if (m_env)         { m_env->Release();         m_env = NULL; }
     if (m_def_envcube) { m_def_envcube->Release(); m_def_envcube = NULL; }
     if (m_def_white) { m_def_white->Release(); m_def_white = NULL; }
+    if (m_skin_mesh_decl) { m_skin_mesh_decl->Release(); m_skin_mesh_decl = NULL; }
     if (m_mesh_decl) { m_mesh_decl->Release(); m_mesh_decl = NULL; }
     m_content.Shutdown();
     m_device = NULL;
@@ -742,11 +788,14 @@ void SceneRuntime::BuildDrawLists()
             continue;
 
         std::string model_path, shader_path;
+        const RtAttribute* animator_attribute = NULL;
         for (size_t a = 0; a < o.attributes.size(); ++a)
         {
             const RtAttribute& at = o.attributes[a];
             if (at.type == "3D Model" && !at.model_path.empty() && model_path.empty())
                 model_path = at.model_path;
+            else if (at.type == "Animator" && !at.animator_controller_path.empty() && !animator_attribute)
+                animator_attribute = &at;
             else if (at.type == "Shader" && !at.shader_path.empty() && shader_path.empty())
                 shader_path = at.shader_path;
             else if (at.type == "Camera" && at.cam_active && !m_has_cam)
@@ -899,6 +948,11 @@ void SceneRuntime::BuildDrawLists()
             di.world = ComposeWorld(o.position, o.rotation, o.scale);
             di.object_index = (int)i;
             for (int k = 0; k < 3; ++k) di.scale[k] = o.scale[k];
+            if (animator_attribute)
+                di.animator.Load(&m_pak, animator_attribute->animator_controller_path,
+                                 animator_attribute->animator_initial_state,
+                                 animator_attribute->animator_playback_speed,
+                                 animator_attribute->animator_auto_play);
             m_draw_items.push_back(di);
         }
     }
@@ -935,6 +989,16 @@ void SceneRuntime::Render(float dt)
     // Register a budgeted batch of finished streaming loads into live resources
     // (the worker thread did the read + decompress off this thread).
     m_cache.Update(8);
+
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+    {
+        DrawItem& item = m_draw_items[index];
+        item.skin_palette.clear();
+        if (!item.animator.IsValid()) continue;
+        item.animator.Update(dt);
+        RtMesh* mesh = ResolveMesh(item.model_path);
+        if (mesh && mesh->IsSkinned()) item.animator.BuildPalette(*mesh, item.skin_palette);
+    }
 
     // Poll the controller, then run scripts before the physics step so their
     // impulses/velocity/transforms are integrated this frame (no-op if none).
@@ -1108,7 +1172,8 @@ void SceneRuntime::Render(float dt)
         {
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (gm)
-                DrawMesh(gm, m_draw_items[i].world, vp, std_mat, false /*opaque+cutout*/);
+                DrawMesh(gm, m_draw_items[i].world, vp, std_mat, false /*opaque+cutout*/,
+                         &m_draw_items[i].skin_palette);
         }
         m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
@@ -1127,7 +1192,8 @@ void SceneRuntime::Render(float dt)
         {
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (gm)
-                DrawMesh(gm, m_draw_items[i].world, vp, std_mat, true /*blend*/);
+                DrawMesh(gm, m_draw_items[i].world, vp, std_mat, true /*blend*/,
+                         &m_draw_items[i].skin_palette);
         }
         m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -1526,7 +1592,8 @@ void SceneRuntime::RenderVideoOverlay(float dt)
 // (via the constant table so packing is correct), then per material subset bind
 // its textures, set its cutout states (opaque pass only), and draw its index
 // range. Pass-level states (blend / depth) are set by the caller.
-void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat, bool blendPass)
+void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat,
+                            bool blendPass, const std::vector<float>* skinPalette)
 {
     // Skip the transform upload when nothing in this mesh belongs to the pass.
     bool any = false;
@@ -1536,13 +1603,41 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
         return;
 
     const D3DMATRIX wvp = Multiply(world, vp);
-    if (mat->vsConstants)
+    const bool useSkin = gm->IsSkinned() && m_skin_mesh_decl && mat->skinVs;
+    LPD3DXCONSTANTTABLE constants = useSkin ? mat->skinVsConstants : mat->vsConstants;
+    if (constants)
     {
-        if (mat->hWVP)   mat->vsConstants->SetMatrix(m_device, mat->hWVP,   (const D3DXMATRIX*)&wvp);
-        if (mat->hWorld) mat->vsConstants->SetMatrix(m_device, mat->hWorld, (const D3DXMATRIX*)&world);
+        D3DXHANDLE hWVP = useSkin ? mat->hSkinWVP : mat->hWVP;
+        D3DXHANDLE hWorld = useSkin ? mat->hSkinWorld : mat->hWorld;
+        if (hWVP)   constants->SetMatrix(m_device, hWVP,   (const D3DXMATRIX*)&wvp);
+        if (hWorld) constants->SetMatrix(m_device, hWorld, (const D3DXMATRIX*)&world);
     }
+    m_device->SetVertexDeclaration(useSkin ? m_skin_mesh_decl : m_mesh_decl);
+    m_device->SetVertexShader(useSkin ? mat->skinVs : mat->vs);
     m_device->SetStreamSource(0, gm->vb, 0, 44);
+    m_device->SetStreamSource(1, useSkin ? gm->skinVb : NULL, 0,
+                              useSkin ? spak::kSkinInfluenceBytes : 0);
     m_device->SetIndices(gm->ib);
+    if (useSkin)
+    {
+        float palette[spak::kMaxSkinJoints * 12];
+        const float* source = NULL;
+        if (skinPalette && skinPalette->size() == gm->joints.size() * 12)
+            source = &(*skinPalette)[0];
+        else
+        {
+            memset(palette, 0, sizeof(palette));
+            for (size_t joint = 0; joint < gm->joints.size(); ++joint)
+            {
+                float* columns = palette + joint * 12;
+                columns[0] = 1.0f;
+                columns[5] = 1.0f;
+                columns[10] = 1.0f;
+            }
+            source = palette;
+        }
+        m_device->SetVertexShaderConstantF(8, source, (UINT)gm->joints.size() * 3);
+    }
 
     for (size_t i = 0; i < gm->subsets.size(); ++i)
     {

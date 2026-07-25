@@ -55,6 +55,7 @@ namespace settings
             {"log",             s.show_log_panel},
             {"performance",     s.show_performance_panel},
             {"editor",          s.show_editor_panel},
+            {"animator",        s.show_animator_panel},
         };
 
         std::ofstream out(SettingsPath(), std::ios::binary | std::ios::trunc);
@@ -110,6 +111,7 @@ namespace settings
             s.show_log_panel             = p.value("log",             s.show_log_panel);
             s.show_performance_panel     = p.value("performance",     s.show_performance_panel);
             s.show_editor_panel          = p.value("editor",          s.show_editor_panel);
+            s.show_animator_panel        = p.value("animator",        s.show_animator_panel);
         }
     }
 }

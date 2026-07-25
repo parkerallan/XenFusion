@@ -361,6 +361,7 @@ void EngineApplication::RenderUI()
     log_panel_.Render(state_);
     performance_panel_.Render(state_);
     mapper_panel_.Render(state_);
+    animator_panel_.Render(state_);
 
     RenderImportModal();
     RenderRecentModal();
@@ -463,6 +464,7 @@ void EngineApplication::RenderMainMenuBar()
         ImGui::MenuItem("Viewport",    nullptr, &state_.show_viewport_panel);
         ImGui::MenuItem("Editor",      nullptr, &state_.show_editor_panel);
         ImGui::MenuItem("Mapping",     nullptr, &state_.show_mapper_panel);
+        ImGui::MenuItem("Animator",    nullptr, &state_.show_animator_panel);
         ImGui::MenuItem("Inspector",   nullptr, &state_.show_inspector_panel);
         ImGui::MenuItem("Files",       nullptr, &state_.show_files_panel);
         ImGui::MenuItem("Version Control", nullptr, &state_.show_version_control_panel);
@@ -824,6 +826,7 @@ void EngineApplication::BuildDefaultDockLayout(ImGuiID dockspace_id)
     ImGui::DockBuilderDockWindow("Viewport",    center_id);
     ImGui::DockBuilderDockWindow("Editor",      center_id);
     ImGui::DockBuilderDockWindow("Settings",    center_id);
+    ImGui::DockBuilderDockWindow("Animator",    center_id);
     ImGui::DockBuilderDockWindow("Inspector",   right_id);
     ImGui::DockBuilderDockWindow("Log",         bottom_id);
     ImGui::DockBuilderDockWindow("Assets",      bottom_id);

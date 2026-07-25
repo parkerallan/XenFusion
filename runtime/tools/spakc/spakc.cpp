@@ -268,26 +268,33 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
 {
     const std::string meshAbs = AbsFrom(rootAbs, meshRel);
     std::vector<unsigned char> blob;
-    if (!ReadFileBytes(meshAbs, blob) || blob.size() < 16)
+    if (!ReadFileBytes(meshAbs, blob) || blob.size() < 28)
     { fprintf(stderr, "spakc: cannot read mesh %s\n", meshAbs.c_str()); return false; }
     if (memcmp(&blob[0], "M360", 4) != 0)
     { fprintf(stderr, "spakc: bad mesh magic %s\n", meshRel.c_str()); return false; }
 
     const unsigned int version = ReadU32LE(&blob[4]);
-    if (version != 7)
-    { fprintf(stderr, "spakc: mesh %s is format v%u (need v7) - open the project in the editor to re-bake it\n",
+    if (version != 8)
+    { fprintf(stderr, "spakc: mesh %s is format v%u (need v8) - open the project in the editor to re-bake it\n",
               meshRel.c_str(), version); return false; }
 
     const unsigned int vcount = ReadU32LE(&blob[8]);
     const unsigned int icount = ReadU32LE(&blob[12]);
+    const unsigned int flags  = ReadU32LE(&blob[16]);
+    const bool skinned = (flags & 1u) != 0;
+    const unsigned int jointCount = ReadU32LE(&blob[20]);
+    const unsigned int skeletonFingerprint = ReadU32LE(&blob[24]);
+    if ((skinned && (jointCount == 0 || jointCount > spak::kMaxSkinJoints)) ||
+        (!skinned && jointCount != 0))
+    { fprintf(stderr, "spakc: mesh has invalid skin metadata %s\n", meshRel.c_str()); return false; }
     const size_t vbytes = (size_t)vcount * spak::kMeshVertexBytes;
     const size_t ibytes = (size_t)icount * 4;
-    if (vcount == 0 || icount == 0 || 16 + vbytes + ibytes > blob.size())
+    if (vcount == 0 || icount == 0 || 28 + vbytes + ibytes > blob.size())
     { fprintf(stderr, "spakc: mesh empty/truncated %s\n", meshRel.c_str()); return false; }
 
     // Material subset table follows the buffers: u32 count, then per subset
     // u32 indexStart, u32 indexCount and 6 texture refs (u32 LE length + bytes).
-    size_t off = 16 + vbytes + ibytes;
+    size_t off = 28 + vbytes + ibytes;
     struct SubsetIn { unsigned int start, count; std::string tex[6]; };
     std::vector<SubsetIn> subs;
     {
@@ -313,6 +320,33 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
             if ((size_t)si.start + si.count > icount)
             { fprintf(stderr, "spakc: mesh subset range out of bounds %s\n", meshRel.c_str()); return false; }
             subs.push_back(si);
+        }
+    }
+
+    std::vector<unsigned char> skinPayload;
+    if (skinned)
+    {
+        const size_t influenceBytes = (size_t)vcount * spak::kSkinInfluenceBytes;
+        if (off + influenceBytes > blob.size())
+        { fprintf(stderr, "spakc: mesh skin stream truncated %s\n", meshRel.c_str()); return false; }
+        skinPayload.insert(skinPayload.end(), blob.begin() + off, blob.begin() + off + influenceBytes);
+        off += influenceBytes;
+
+        for (unsigned int i = 0; i < jointCount; ++i)
+        {
+            if (off + 4 > blob.size())
+            { fprintf(stderr, "spakc: mesh skeleton truncated %s\n", meshRel.c_str()); return false; }
+            const unsigned int nameLen = ReadU32LE(&blob[off]); off += 4;
+            if (nameLen == 0 || nameLen >= 4096 || off + nameLen + 4 + 128 > blob.size())
+            { fprintf(stderr, "spakc: mesh has invalid joint %u %s\n", i, meshRel.c_str()); return false; }
+            const std::string jointName((const char*)&blob[off], nameLen); off += nameLen;
+            const unsigned int parent = ReadU32LE(&blob[off]); off += 4;
+            if (parent != 0xFFFFFFFFu && parent >= i)
+            { fprintf(stderr, "spakc: mesh has invalid joint parent %u %s\n", i, meshRel.c_str()); return false; }
+            PushU32BE(skinPayload, spak::NameHash(jointName.c_str()));
+            PushU32BE(skinPayload, parent);
+            PushSwappedWords(skinPayload, &blob[off], 128);
+            off += 128;
         }
     }
 
@@ -350,14 +384,19 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
         }
     }
 
-    // MESH payload: header (BE) + per-subset records + native-BE VB + native-BE IB.
+    // MESH payload: header (BE) + subsets + native-BE GPU streams + skeleton.
     Entry e;
     e.hash = spak::NameHash(meshRel.c_str());
     e.type = spak::kTypeMesh;
-    PushU32BE(e.payload, spak::kMeshMagic);
+    PushU32BE(e.payload, skinned ? spak::kSkinMeshMagic : spak::kMeshMagic);
     PushU32BE(e.payload, vcount);
     PushU32BE(e.payload, icount);
     PushU32BE(e.payload, (unsigned int)subs.size());
+    if (skinned)
+    {
+        PushU32BE(e.payload, jointCount);
+        PushU32BE(e.payload, skeletonFingerprint);
+    }
     for (size_t i = 0; i < subs.size(); ++i)
     {
         PushU32BE(e.payload, subs[i].start);
@@ -370,14 +409,24 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
         PushU32BE(e.payload, subHash[i * 6 + 4]);
         PushU32BE(e.payload, subHash[i * 6 + 5]);
     }
-    PushSwappedWords(e.payload, &blob[16], vbytes);
-    PushSwappedWords(e.payload, &blob[16 + vbytes], ibytes);
-    e.sysMemSize = spak::kMeshHeaderBytes + (unsigned int)subs.size() * spak::kMeshSubsetBytes;
-    e.vidMemSize = (unsigned int)(vbytes + ibytes);
+    PushSwappedWords(e.payload, &blob[28], vbytes);
+    if (skinned)
+        e.payload.insert(e.payload.end(), skinPayload.begin(),
+                         skinPayload.begin() + (size_t)vcount * spak::kSkinInfluenceBytes);
+    PushSwappedWords(e.payload, &blob[28 + vbytes], ibytes);
+    if (skinned)
+        e.payload.insert(e.payload.end(),
+                         skinPayload.begin() + (size_t)vcount * spak::kSkinInfluenceBytes,
+                         skinPayload.end());
+    const unsigned int headerBytes = skinned ? spak::kSkinMeshHeaderBytes : spak::kMeshHeaderBytes;
+    e.sysMemSize = headerBytes + (unsigned int)subs.size() * spak::kMeshSubsetBytes +
+                   (skinned ? jointCount * spak::kSkinJointBytes : 0);
+    e.vidMemSize = (unsigned int)(vbytes + ibytes +
+                   (skinned ? (size_t)vcount * spak::kSkinInfluenceBytes : 0));
     entries.push_back(e);
 
-    printf("       mesh %s  v=%u i=%u subsets=%u tex=%u\n",
-           meshRel.c_str(), vcount, icount, (unsigned int)subs.size(), texTotal);
+        printf("       mesh %s  v=%u i=%u subsets=%u joints=%u tex=%u\n",
+            meshRel.c_str(), vcount, icount, (unsigned int)subs.size(), jointCount, texTotal);
     return true;
 }
 
@@ -411,6 +460,25 @@ bool AddAudio(std::vector<Entry>& entries, const std::string& rootAbs, const std
     e.noCompress = true;
     entries.push_back(e);
     printf("spakc: audio %s — %u bytes (raw)\n", audioRel.c_str(), (unsigned int)e.payload.size());
+    return true;
+}
+
+bool AddAnimation(std::vector<Entry>& entries, const std::string& source,
+                  const std::string& logicalName)
+{
+    Entry e;
+    if (!ReadFileBytes(source, e.payload) || e.payload.size() < 8)
+    { fprintf(stderr, "spakc: cannot read animation %s\n", source.c_str()); return false; }
+    const unsigned int magic = ReadU32BE(&e.payload[0]);
+    if (magic != 0x414E4D31u && magic != 0x414E4331u) // ANM1 clip or ANC1 controller
+    { fprintf(stderr, "spakc: bad animation magic %s\n", source.c_str()); return false; }
+    e.hash = spak::NameHash(logicalName.c_str());
+    e.type = spak::kTypeAnim;
+    e.noCompress = true;
+    e.sysMemSize = (unsigned int)e.payload.size();
+    entries.push_back(e);
+    printf("spakc: animation %s <- %s — %u bytes (raw)\n", logicalName.c_str(),
+           source.c_str(), (unsigned int)e.payload.size());
     return true;
 }
 
@@ -512,10 +580,22 @@ int main(int argc, char** argv)
         std::vector<std::string> meshes;
         std::vector<std::string> videos; // .mpg args become raw VIDE entries
         std::vector<std::string> audios; // .mp2 args become raw AUDI entries
+        struct AnimationArg { std::string source, logical; };
+        std::vector<AnimationArg> animations;
         for (int i = 4; i < argc; ++i)
         {
             const std::string arg = argv[i];
             if (arg == "--raw") { compress = false; continue; }
+            if (arg == "--anim")
+            {
+                if (i + 2 >= argc)
+                { fprintf(stderr, "spakc: --anim requires <source> <logical-name>\n"); return 2; }
+                AnimationArg animation;
+                animation.source = argv[++i];
+                animation.logical = argv[++i];
+                animations.push_back(animation);
+                continue;
+            }
             std::string ext = arg.size() >= 4 ? arg.substr(arg.size() - 4) : "";
             for (size_t c = 0; c < ext.size(); ++c)
                 if (ext[c] >= 'A' && ext[c] <= 'Z') ext[c] = (char)(ext[c] - 'A' + 'a');
@@ -523,7 +603,7 @@ int main(int argc, char** argv)
             else if (ext == ".mp2") audios.push_back(arg);
             else                    meshes.push_back(arg);
         }
-        if (meshes.empty() && videos.empty() && audios.empty())
+        if (meshes.empty() && videos.empty() && audios.empty() && animations.empty())
         { fprintf(stderr, "spakc: no assets given\n"); return 2; }
         if (!ResolveBundler()) return 1;
         g_tmpBase = outSpak;
@@ -531,14 +611,16 @@ int main(int argc, char** argv)
         const std::string rootAbs = AbsPath(root);
         std::vector<Entry> entries;
         std::set<unsigned int> seenTex;
-        int okMeshes = 0, okVideos = 0, okAudios = 0;
+        int okMeshes = 0, okVideos = 0, okAudios = 0, okAnimations = 0;
         for (size_t i = 0; i < meshes.size(); ++i)
             if (AddMesh(entries, seenTex, rootAbs, meshes[i])) ++okMeshes;
         for (size_t i = 0; i < videos.size(); ++i)
             if (AddVideo(entries, rootAbs, videos[i])) ++okVideos;
         for (size_t i = 0; i < audios.size(); ++i)
             if (AddAudio(entries, rootAbs, audios[i])) ++okAudios;
-        if (okMeshes == 0 && okVideos == 0 && okAudios == 0)
+        for (size_t i = 0; i < animations.size(); ++i)
+            if (AddAnimation(entries, animations[i].source, animations[i].logical)) ++okAnimations;
+        if (okMeshes == 0 && okVideos == 0 && okAudios == 0 && okAnimations == 0)
         { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;
     }

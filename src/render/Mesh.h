@@ -9,7 +9,14 @@
 
 // Current baked-blob version. Bumped whenever MeshVertex or the material
 // section changes so stale blobs are re-baked from their source.
-constexpr uint32_t MESH_VERSION = 7;
+constexpr uint32_t MESH_VERSION = 8;
+constexpr uint32_t MESH_FLAG_SKINNED = 0x1u;
+
+// The first Xbox skinning path uploads one 3x4 matrix per joint to vertex
+// constants. Keep the limit explicit in the shared asset contract so models
+// fail during baking instead of being truncated differently by each renderer.
+constexpr uint32_t MAX_SKIN_JOINTS = 72;
+constexpr uint32_t MAX_SKIN_INFLUENCES = 4;
 
 // Runtime vertex layout: position + normal + tangent + one UV. Tangent is
 // needed for normal mapping. Not FVF-expressible, so meshes are drawn with a
@@ -22,18 +29,54 @@ struct MeshVertex
     float u, v;
 }; // 44 bytes
 
+// Stored in a separate stream so static meshes retain their existing 44-byte
+// vertex layout. Weights are normalized bytes whose sum is exactly 255.
+struct MeshSkinInfluence
+{
+    uint8_t joint[MAX_SKIN_INFLUENCES];
+    uint8_t weight[MAX_SKIN_INFLUENCES];
+}; // 8 bytes
+
+// Skeleton data is stored in skeleton-root space. inverseBind is row-major to
+// match D3D9/D3DX matrix uploads; parent == -1 identifies the root joint.
+struct MeshJoint
+{
+    std::string name;
+    int32_t     parent = -1;
+    float       inverseBind[16] = {};
+    float       bindLocal[16] = {};
+};
+
+struct MeshSkeleton
+{
+    uint32_t fingerprint = 0;
+    std::vector<MeshJoint> joints;
+
+    bool IsSkinned() const { return !joints.empty(); }
+    void Clear()
+    {
+        fingerprint = 0;
+        joints.clear();
+    }
+};
+
 struct MeshHeader
 {
     char     magic[4];   // "M360"
     uint32_t version;    // MESH_VERSION
     uint32_t vertexCount;
     uint32_t indexCount;
+    uint32_t flags;
+    uint32_t jointCount;
+    uint32_t skeletonFingerprint;
 };
 // After the header: vertexCount vertices, indexCount uint32 indices, then a
 // uint32 subset count followed by one subset per source material: uint32
 // indexStart, uint32 indexCount, then six length-prefixed strings (diffuse,
 // normal, specular, emissive, metallic, clearcoat texture paths relative to
-// the mesh file; empty = absent).
+// the mesh file; empty = absent). Skinned meshes then store vertexCount
+// MeshSkinInfluence records followed by jointCount records: length-prefixed
+// name, int32 parent, 16-float inverse bind, and 16-float local bind matrix.
 
 // Diffuse / normal / specular / emissive / metallic / clearcoat texture
 // references for one material.
@@ -83,8 +126,10 @@ struct GpuSubset
 struct GpuMesh
 {
     IDirect3DVertexBuffer9* vb = nullptr;
+    IDirect3DVertexBuffer9* skinVb = nullptr;
     IDirect3DIndexBuffer9*  ib = nullptr;
     std::vector<GpuSubset>  subsets;
+    MeshSkeleton            skeleton;
     uint32_t vertexCount = 0;
     uint32_t indexCount  = 0;
 
@@ -100,7 +145,9 @@ struct GpuMesh
             if (s.diffuse)  { s.diffuse->Release();  s.diffuse = nullptr; }
         }
         subsets.clear();
+        skeleton.Clear();
         if (ib) { ib->Release(); ib = nullptr; }
+        if (skinVb) { skinVb->Release(); skinVb = nullptr; }
         if (vb) { vb->Release(); vb = nullptr; }
         vertexCount = indexCount = 0;
     }
