@@ -13,6 +13,11 @@
 
 using namespace rmath;
 
+SceneRuntime::SceneRuntime()
+    : m_audio(&m_pak)
+{
+}
+
 // ---------------------------------------------------------------------------
 // Shared frame inputs (same registers / values as the editor's standard material)
 // ---------------------------------------------------------------------------
@@ -838,6 +843,9 @@ void SceneRuntime::BuildDrawLists()
                 ai.loop     = at.audio_loop;
                 ai.volume   = at.audio_volume;
                 ai.pitch    = at.audio_pitch;
+                ai.audio_class = at.audio_class;
+                ai.priority = at.audio_priority;
+                ai.load_mode = at.audio_load_mode;
                 ai.spatial  = at.audio_spatial;
                 ai.min_dist = at.audio_min_dist;
                 ai.max_dist = at.audio_max_dist;
@@ -1295,6 +1303,9 @@ void SceneRuntime::UpdateAudio(float dt, const D3DMATRIX& view)
         w.loop    = item.loop;
         w.volume  = item.volume;
         w.pitch   = item.pitch;
+        w.audioClass = item.audio_class;
+        w.priority = item.priority;
+        w.loadMode = item.load_mode;
         if (ov != m_audio_overrides.end())
         {
             if (ov->second.loop   >= 0)    w.loop   = ov->second.loop != 0;

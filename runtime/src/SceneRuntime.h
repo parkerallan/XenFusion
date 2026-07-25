@@ -25,6 +25,8 @@
 class SceneRuntime : public script::ScriptHost
 {
 public:
+    SceneRuntime();
+
     // script::ScriptHost — input is stubbed until the input system lands; log
     // goes to OutputDebugString; find resolves a scene object name to its index.
     bool  InputButton(const char* name);
@@ -260,10 +262,14 @@ private:
         bool  loop;
         float volume;
         float pitch;
+        int   audio_class;
+        int   priority;
+        int   load_mode;
         bool  spatial;
         float min_dist, max_dist, doppler;
         AudioItem() : object_index(-1), play(false), loop(false),
-                      volume(1.0f), pitch(1.0f), spatial(true),
+                      volume(1.0f), pitch(1.0f), audio_class(aud::AudioEffect),
+                      priority(0), load_mode(aud::AudioLoadAuto), spatial(true),
                       min_dist(1.0f), max_dist(50.0f), doppler(1.0f) {}
     };
     void UpdateAudio(float dt, const D3DMATRIX& view);
@@ -281,6 +287,8 @@ private:
     std::string AudioKeyFor(const AudioItem& item) const;
     std::map<std::string, AudioOverride> m_audio_overrides;
     std::vector<AudioItem> m_audio_items;
+    // Opened once and also used as AudioPlayer's serialized range reader.
+    StreamPak              m_pak;
     aud::AudioPlayer       m_audio;
 
     std::vector<VideoItem>  m_video_items;
@@ -299,8 +307,7 @@ private:
     vid::VideoPlayer        m_video;
     RtShader                m_video_shader;
 
-    // Streaming: the pak is opened once and driven through the residency cache.
-    StreamPak   m_pak;
+    // Streaming: the pak is driven through the residency cache.
     StreamCache m_cache;
 
     // Physics (Bullet) — same wrapper the editor preview uses. Built in Init from

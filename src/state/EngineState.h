@@ -111,6 +111,9 @@ struct ObjectAttribute
     float audio_volume    = 1.0f;                // linear, 0..20
     float audio_pitch     = 1.0f;                // 0.1..4
     bool  audio_loop      = false;
+    int   audio_class     = 0;                   // Effect/Music/Ambience/Dialogue
+    int   audio_priority  = 0;                   // admission rank within/above class
+    int   audio_load_mode = 0;                   // Auto/Resident/Stream
     bool  audio_spatial   = true;                // 3D emitter at the object
     float audio_min_dist  = 1.0f;                // full volume inside this
     float audio_max_dist  = 50.0f;               // inaudible beyond this

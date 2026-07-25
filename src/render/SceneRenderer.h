@@ -386,6 +386,9 @@ private:
         bool  loop = false;
         float volume = 1.0f;
         float pitch = 1.0f;
+        int   audio_class = aud::AudioEffect;
+        int   priority = 0;
+        int   load_mode = aud::AudioLoadAuto;
         bool  spatial = true;
         float min_dist = 1.0f;
         float max_dist = 50.0f;

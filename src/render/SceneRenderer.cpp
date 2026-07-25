@@ -932,6 +932,9 @@ void SceneRenderer::RenderUi(EngineState& state)
                     ai.loop     = a.audio_loop;
                     ai.volume   = a.audio_volume;
                     ai.pitch    = a.audio_pitch;
+                    ai.audio_class = a.audio_class;
+                    ai.priority = a.audio_priority;
+                    ai.load_mode = a.audio_load_mode;
                     ai.spatial  = a.audio_spatial;
                     ai.min_dist = a.audio_min_dist;
                     ai.max_dist = a.audio_max_dist;
@@ -2100,6 +2103,9 @@ void SceneRenderer::UpdateAudio(float dt)
             w.loop    = item.loop;
             w.volume  = item.volume;
             w.pitch   = item.pitch;
+            w.audioClass = item.audio_class;
+            w.priority = item.priority;
+            w.loadMode = item.load_mode;
             if (ov != m_audio_overrides.end())
             {
                 if (ov->second.loop   >= 0)    w.loop   = ov->second.loop != 0;

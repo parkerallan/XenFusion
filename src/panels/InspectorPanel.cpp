@@ -720,6 +720,12 @@ void InspectorPanel::Render(EngineState& state)
             edited |= ImGui::DragFloat("Pitch", &attr.audio_pitch, 0.005f, 0.1f, 4.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
             if (ImGui::Checkbox("Loop", &attr.audio_loop)) { edited = commit = true; }
+            const char* audioClasses = "Effect\0Music\0Ambience\0Dialogue\0";
+            if (ImGui::Combo("Class", &attr.audio_class, audioClasses)) { edited = commit = true; }
+            edited |= ImGui::DragInt("Priority", &attr.audio_priority, 1.0f, -100, 100);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            const char* loadModes = "Auto\0Resident\0Stream\0";
+            if (ImGui::Combo("Load Mode", &attr.audio_load_mode, loadModes)) { edited = commit = true; }
             if (ImGui::Checkbox("3D Spatialize", &attr.audio_spatial)) { edited = commit = true; }
             if (attr.audio_spatial)
             {

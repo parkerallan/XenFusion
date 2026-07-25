@@ -5,15 +5,84 @@
 #include <stdio.h> // pl_mpeg's declarations use FILE but only its implementation includes stdio
 #include "plmpeg/pl_mpeg.h" // public API only — the implementation lives in VideoPlayer.cpp
 
-// One worker thread services every stream under the player lock: the decode
-// itself is sub-millisecond per 26ms MP2 frame, so even the full stream cap
-// stays cheap. The only long operation — reading a clip's encoded bytes at
-// voice start — runs OUTSIDE the lock (the stream is flagged busy so the host
-// can't delete it mid-read). All other stream state is only ever touched with
-// the lock held, by either thread.
+// One worker thread services every stream. Reads, MP2 decode, PCM conversion,
+// and XAudio submission run outside the player lock; `busy` pins the stream so
+// the host can reconcile parameters without waiting for a decode burst and
+// cannot delete the stream while worker-owned state is in use.
 
 namespace aud
 {
+    struct StreamSource
+    {
+        ClipReader* reader;
+        std::string path;
+        unsigned int base;
+        unsigned int size;
+        unsigned int pos;
+        bool failed;
+        std::vector<unsigned char> chunk;
+
+        StreamSource()
+            : reader(NULL), base(0), size(0), pos(0), failed(false) {}
+    };
+
+    namespace
+    {
+        void StreamLoad(plm_buffer_t* buffer, void* user)
+        {
+            StreamSource* source = (StreamSource*)user;
+            if (!source || source->failed || source->pos >= source->size)
+            {
+                plm_buffer_signal_end(buffer);
+                return;
+            }
+
+            const unsigned int remaining = source->size - source->pos;
+            const unsigned int requested = remaining < AudioPlayer::kStreamChunkBytes
+                                               ? remaining : AudioPlayer::kStreamChunkBytes;
+            source->chunk.clear();
+            const bool ok = source->reader->Read(
+                source->path, source->base + source->pos, requested,
+                source->chunk);
+            if (!ok || source->chunk.size() != requested)
+            {
+                source->failed = true;
+                source->chunk.clear();
+                plm_buffer_signal_end(buffer);
+                return;
+            }
+
+            plm_buffer_write(buffer, &source->chunk[0], source->chunk.size());
+            source->pos += (unsigned int)source->chunk.size();
+            if (source->pos >= source->size)
+                plm_buffer_signal_end(buffer);
+        }
+
+        void StreamSeek(plm_buffer_t*, size_t offset, void* user)
+        {
+            StreamSource* source = (StreamSource*)user;
+            source->pos = offset < source->size ? (unsigned int)offset : source->size;
+            source->failed = false;
+        }
+
+        size_t StreamTell(plm_buffer_t*, void* user)
+        {
+            return (size_t)((StreamSource*)user)->pos;
+        }
+    }
+
+    struct EncodedClip
+    {
+        std::string path;
+        unsigned int offset;
+        unsigned int length;
+        unsigned int references;
+        unsigned int lastUse;
+        std::vector<unsigned char> bytes;
+
+        EncodedClip() : offset(0), length(0), references(0), lastUse(0) {}
+    };
+
     struct AudioStream
     {
         std::string  key;
@@ -23,6 +92,7 @@ namespace aud
         bool  loop;
         float volume;
         float pitch;
+        int   loadMode;
 
         // 3D emitter state (fixed spatial-ness at open; a flip recreates the
         // stream). Position/params refresh from the want each frame; velocity
@@ -60,20 +130,22 @@ namespace aud
         bool  failed;    // unreadable/undecodable — dormant record
         bool  ended;
         bool  finished;
-
-        std::vector<unsigned char> bytes; // encoded clip, read once at start
+        std::vector<unsigned char> bytes; // long/nonresident clip bytes
+        EncodedClip* cached;              // shared short-clip bytes
+        StreamSource* source;             // callback-backed long-track reader
         plm_audio_t* dec;
         int          sampleRate;
         vid::AudioOut voice;
 
         AudioStream()
-            : offset(0), length(0), loop(false), volume(1.0f), pitch(1.0f),
+                        : offset(0), length(0), loop(false), volume(1.0f), pitch(1.0f),
+                            loadMode(AudioLoadAuto),
               spatial(false), prevPosValid(false),
               ratioS(1.0f), smoothInit(false),
               opened(false), busy(false), remove(false),
               closing(false), closeGain(1.0f), failed(false),
               ended(false), finished(false),
-              dec(NULL), sampleRate(0)
+              cached(NULL), source(NULL), dec(NULL), sampleRate(0)
         {
             prevPos[0] = prevPos[1] = prevPos[2] = 0.0f;
             gainS[0] = gainS[1] = 1.0f;
@@ -81,40 +153,19 @@ namespace aud
             appliedVol = appliedRatio = -1.0f;
             appliedGain[0] = appliedGain[1] = -1.0f;
         }
+
+                ~AudioStream()
+                {
+                        if (cached && cached->references > 0)
+                                --cached->references;
+                    delete source;
+                }
     };
 
-    namespace
-    {
-        // Read a whole file or a byte window of a container into `out`.
-        bool ReadClipBytes(const std::string& path, unsigned int offset,
-                           unsigned int length, std::vector<unsigned char>& out)
-        {
-            HANDLE f = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                                   NULL, OPEN_EXISTING, 0, NULL);
-            if (f == INVALID_HANDLE_VALUE)
-                return false;
-            unsigned int size = length;
-            if (size == 0)
-            {
-                const DWORD fileSize = GetFileSize(f, NULL);
-                if (fileSize == INVALID_FILE_SIZE || fileSize == 0)
-                { CloseHandle(f); return false; }
-                size = fileSize;
-            }
-            LONG hi = 0;
-            SetFilePointer(f, (LONG)offset, &hi, FILE_BEGIN);
-            out.resize(size);
-            DWORD got = 0;
-            const BOOL ok = ReadFile(f, &out[0], size, &got, NULL);
-            CloseHandle(f);
-            if (!ok || got != size)
-            { out.clear(); return false; }
-            return true;
-        }
-    }
-
-    AudioPlayer::AudioPlayer()
-        : m_thread(NULL), m_wake(NULL), m_stop(0), m_listenerPrevValid(false)
+    AudioPlayer::AudioPlayer(ClipReader* reader)
+                : m_cacheBytes(0), m_cacheClock(0), m_thread(NULL), m_wake(NULL),
+                    m_stop(0),
+          m_reader(reader ? reader : &m_defaultReader), m_listenerPrevValid(false)
     {
         m_listenerPrev[0] = m_listenerPrev[1] = m_listenerPrev[2] = 0.0f;
         m_listenerVelS[0] = m_listenerVelS[1] = m_listenerVelS[2] = 0.0f;
@@ -143,6 +194,10 @@ namespace aud
             delete s;
         }
         m_streams.clear();
+        for (size_t i = 0; i < m_cache.size(); ++i)
+            delete m_cache[i];
+        m_cache.clear();
+        m_cacheBytes = 0;
     }
 
     void AudioPlayer::EnsureWorker()
@@ -195,6 +250,34 @@ namespace aud
             m_listenerVelS[0] = m_listenerVelS[1] = m_listenerVelS[2] = 0.0f;
         }
 
+        std::vector<VoiceCandidate> candidates;
+        candidates.resize(count > 0 ? (size_t)count : 0);
+        for (int index = 0; index < count; ++index)
+        {
+            VoiceCandidate& candidate = candidates[index];
+            candidate.key = wants[index].key;
+            candidate.audioClass = wants[index].audioClass;
+            candidate.priority = wants[index].priority;
+            candidate.spatial = wants[index].spatial;
+            candidate.loop = wants[index].loop;
+            candidate.maxDistance = wants[index].maxDist;
+            if (listener && wants[index].spatial)
+            {
+                const float dx = wants[index].pos[0] - listener->pos[0];
+                const float dy = wants[index].pos[1] - listener->pos[1];
+                const float dz = wants[index].pos[2] - listener->pos[2];
+                candidate.distance = sqrtf(dx * dx + dy * dy + dz * dz);
+            }
+        }
+        const VoiceSelection selection = SelectVoices(
+            candidates.empty() ? NULL : &candidates[0], count, kMaxStreams);
+        std::vector<Want> admitted;
+        admitted.reserve(selection.admitted.size());
+        for (size_t index = 0; index < selection.admitted.size(); ++index)
+            admitted.push_back(wants[selection.admitted[index]]);
+        const Want* activeWants = admitted.empty() ? NULL : &admitted[0];
+        const int activeCount = (int)admitted.size();
+
         EnterCriticalSection(&m_lock);
 
         // Close streams whose key vanished (a not-wanted stream IS a stop) or
@@ -204,14 +287,16 @@ namespace aud
         {
             AudioStream* s = m_streams[i];
             const Want* w = NULL;
-            for (int k = 0; k < count; ++k)
-                if (wants[k].key == s->key) { w = &wants[k]; break; }
+            for (int k = 0; k < activeCount; ++k)
+                if (activeWants[k].key == s->key) { w = &activeWants[k]; break; }
             if (s->closing)
             { ++i; continue; } // fading out on the worker; leave it alone
             if (!w || w->spatial != s->spatial)
             {
                 if (s->opened)
+                {
                     s->closing = true; // audible — fade, don't cut (declick)
+                }
                 else if (s->busy)
                     s->remove = true;  // worker is mid-read; it reaps afterwards
                 else
@@ -298,26 +383,32 @@ namespace aud
 
         // Open newly wanted streams (capped); the worker does the heavy open.
         bool added = false;
-        for (int k = 0; k < count; ++k)
+        int liveStreams = 0;
+        for (size_t index = 0; index < m_streams.size(); ++index)
+            if (!m_streams[index]->closing && !m_streams[index]->remove)
+                ++liveStreams;
+        for (int k = 0; k < activeCount; ++k)
         {
-            if (wants[k].path.empty() || Find(wants[k].key))
+            if (activeWants[k].path.empty() || Find(activeWants[k].key))
                 continue;
-            if ((int)m_streams.size() >= (int)kMaxStreams)
+            if (liveStreams >= (int)kMaxStreams)
                 break;
             AudioStream* s = new AudioStream();
-            s->key     = wants[k].key;
-            s->path    = wants[k].path;
-            s->offset  = wants[k].offset;
-            s->length  = wants[k].length;
-            s->loop    = wants[k].loop;
-            s->volume  = wants[k].volume;
-            s->pitch   = wants[k].pitch;
-            s->spatial = wants[k].spatial;
-            s->sp.minDist = wants[k].minDist;
-            s->sp.maxDist = wants[k].maxDist;
-            s->sp.doppler = wants[k].doppler;
-            for (int c = 0; c < 3; ++c) s->sp.pos[c] = wants[k].pos[c];
+            s->key     = activeWants[k].key;
+            s->path    = activeWants[k].path;
+            s->offset  = activeWants[k].offset;
+            s->length  = activeWants[k].length;
+            s->loop    = activeWants[k].loop;
+            s->volume  = activeWants[k].volume;
+            s->pitch   = activeWants[k].pitch;
+            s->loadMode = activeWants[k].loadMode;
+            s->spatial = activeWants[k].spatial;
+            s->sp.minDist = activeWants[k].minDist;
+            s->sp.maxDist = activeWants[k].maxDist;
+            s->sp.doppler = activeWants[k].doppler;
+            for (int c = 0; c < 3; ++c) s->sp.pos[c] = activeWants[k].pos[c];
             m_streams.push_back(s);
+            ++liveStreams;
             added = true;
         }
 
@@ -397,32 +488,131 @@ namespace aud
 
                 if (!s->opened)
                 {
-                    // Heavy: read the encoded clip OUTSIDE the lock. `busy`
-                    // keeps the host from deleting the stream meanwhile.
-                    s->busy = true;
-                    std::string  path   = s->path;
-                    unsigned int offset = s->offset;
-                    unsigned int length = s->length;
-                    LeaveCriticalSection(&m_lock);
-                    std::vector<unsigned char> bytes;
-                    const bool ok = ReadClipBytes(path, offset, length, bytes);
-                    EnterCriticalSection(&m_lock);
-                    s->busy = false;
-                    if (s->remove)
-                    { ++i; continue; } // reaped on the next pass
-                    if (!ok)
+                    if (s->loadMode == AudioLoadStream && !s->source)
                     {
-                        s->failed = true;
-                        OutputDebugStringA("audio: clip read failed\n");
-                        ++i;
-                        continue;
+                        unsigned int sourceSize = s->length;
+                        bool sizeOk = true;
+                        if (sourceSize == 0)
+                        {
+                            s->busy = true;
+                            const std::string path = s->path;
+                            LeaveCriticalSection(&m_lock);
+                            sizeOk = m_reader->Size(path, sourceSize);
+                            EnterCriticalSection(&m_lock);
+                            s->busy = false;
+                        }
+                        if (!sizeOk)
+                        {
+                            s->failed = true;
+                            ++i;
+                            continue;
+                        }
+                        s->source = new StreamSource();
+                        s->source->reader = m_reader;
+                        s->source->path = s->path;
+                        s->source->base = s->offset;
+                        s->source->size = sourceSize;
+                        plm_buffer_t* streamBuffer = plm_buffer_create_with_callbacks(
+                            StreamLoad, StreamSeek, StreamTell, sourceSize, s->source);
+                        s->dec = plm_audio_create_with_buffer(streamBuffer, TRUE);
                     }
-                    s->bytes.swap(bytes);
 
-                    plm_buffer_t* buf = plm_buffer_create_with_memory(
-                        &s->bytes[0], s->bytes.size(), FALSE);
-                    s->dec = plm_audio_create_with_buffer(buf, TRUE); // dec owns buf
-                    if (!s->dec || !plm_audio_has_header(s->dec))
+                    for (size_t cacheIndex = 0;
+                         !s->dec && s->loadMode != AudioLoadStream && cacheIndex < m_cache.size();
+                        ++cacheIndex)
+                    {
+                        EncodedClip* clip = m_cache[cacheIndex];
+                        if (clip->path == s->path && clip->offset == s->offset &&
+                            clip->length == s->length)
+                        {
+                            s->cached = clip;
+                            ++clip->references;
+                            clip->lastUse = ++m_cacheClock;
+                            break;
+                        }
+                    }
+
+                    if (!s->dec && !s->cached)
+                    {
+                        // Heavy: read the encoded clip OUTSIDE the lock. `busy`
+                        // keeps the host from deleting the stream meanwhile.
+                        s->busy = true;
+                        std::string  path   = s->path;
+                        unsigned int offset = s->offset;
+                        unsigned int length = s->length;
+                        LeaveCriticalSection(&m_lock);
+                        std::vector<unsigned char> bytes;
+                        const bool ok = m_reader->Read(path, offset, length, bytes);
+                        EnterCriticalSection(&m_lock);
+                        s->busy = false;
+                        if (s->remove)
+                        { ++i; continue; } // reaped on the next pass
+                        if (!ok)
+                        {
+                            s->failed = true;
+                            OutputDebugStringA("audio: clip read failed\n");
+                            ++i;
+                            continue;
+                        }
+                        const bool cacheable =
+                            s->loadMode == AudioLoadResident
+                                ? bytes.size() <= kEncodedCacheBudgetBytes
+                                : s->loadMode == AudioLoadAuto &&
+                                  bytes.size() <= kResidentThresholdBytes;
+                        if (cacheable)
+                        {
+                            while (m_cacheBytes + bytes.size() > kEncodedCacheBudgetBytes)
+                            {
+                                size_t oldest = m_cache.size();
+                                for (size_t cacheIndex = 0; cacheIndex < m_cache.size(); ++cacheIndex)
+                                    if (m_cache[cacheIndex]->references == 0 &&
+                                        (oldest == m_cache.size() ||
+                                         m_cache[cacheIndex]->lastUse < m_cache[oldest]->lastUse))
+                                        oldest = cacheIndex;
+                                if (oldest == m_cache.size())
+                                    break;
+                                m_cacheBytes -= (unsigned int)m_cache[oldest]->bytes.size();
+                                delete m_cache[oldest];
+                                m_cache.erase(m_cache.begin() + oldest);
+                            }
+                            if (m_cacheBytes + bytes.size() <= kEncodedCacheBudgetBytes)
+                            {
+                                EncodedClip* clip = new EncodedClip();
+                                clip->path = path;
+                                clip->offset = offset;
+                                clip->length = length;
+                                clip->references = 1;
+                                clip->lastUse = ++m_cacheClock;
+                                clip->bytes.swap(bytes);
+                                m_cacheBytes += (unsigned int)clip->bytes.size();
+                                m_cache.push_back(clip);
+                                s->cached = clip;
+                            }
+                        }
+                        if (!s->cached)
+                            s->bytes.swap(bytes);
+                    }
+
+                    if (!s->dec)
+                    {
+                        std::vector<unsigned char>& encoded =
+                            s->cached ? s->cached->bytes : s->bytes;
+                        plm_buffer_t* buf = plm_buffer_create_with_memory(
+                            &encoded[0], encoded.size(), FALSE);
+                        s->dec = plm_audio_create_with_buffer(buf, TRUE); // dec owns buf
+                    }
+                    bool hasHeader = false;
+                    if (s->dec && s->source)
+                    {
+                        s->busy = true;
+                        LeaveCriticalSection(&m_lock);
+                        hasHeader = plm_audio_has_header(s->dec) != 0;
+                        EnterCriticalSection(&m_lock);
+                        s->busy = false;
+                    }
+                    else if (s->dec)
+                        hasHeader = plm_audio_has_header(s->dec) != 0;
+                    if (!s->dec || !hasHeader)
                     {
                         if (s->dec) { plm_audio_destroy(s->dec); s->dec = NULL; }
                         s->failed = true;
@@ -437,8 +627,8 @@ namespace aud
                     {
                         s->failed = true; // no device — dormant
                         char msg[128];
-                        sprintf_s(msg, sizeof(msg), "audio: voice open failed (rate=%d bytes=%u)\n",
-                                  s->sampleRate, (unsigned int)s->bytes.size());
+                        sprintf_s(msg, sizeof(msg), "audio: voice open failed (rate=%d)\n",
+                                  s->sampleRate);
                         OutputDebugStringA(msg);
                         ++i;
                         continue;
@@ -447,57 +637,76 @@ namespace aud
                     s->voice.SetVolume(s->volume < 0.0f ? 0.0f : s->volume);
                     {
                         char msg[320];
-                        sprintf_s(msg, sizeof(msg), "audio: stream open %dHz %ub %s\n",
-                                  s->sampleRate, (unsigned int)s->bytes.size(), s->key.c_str());
+                        sprintf_s(msg, sizeof(msg), "audio: stream open %dHz %s %s\n",
+                                  s->sampleRate, s->source ? "streamed" : "resident",
+                                  s->key.c_str());
                         OutputDebugStringA(msg);
                     }
                 }
 
-                // Keep the queue ~150ms ahead (volume/pitch/matrix are applied
+                // Keep the output queue full (volume/pitch/matrix are applied
                 // by the host thread in Update).
-                while (!s->ended &&
-                       s->voice.QueuedBuffers() < vid::AudioOut::kMaxQueue)
+                while (!s->ended && s->voice.QueuedBuffers() < vid::AudioOut::kMaxQueue)
                 {
+                    const bool shouldLoop = s->loop;
+                    const bool spatial = s->spatial;
+                    s->busy = true;
+                    LeaveCriticalSection(&m_lock);
                     plm_samples_t* sm = plm_audio_decode(s->dec);
-                    if (!sm && s->loop)
+                    bool corruptLoop = false;
+                    if (!sm && shouldLoop)
                     {
                         plm_audio_rewind(s->dec);
                         sm = plm_audio_decode(s->dec);
                         if (!sm)
-                        { s->failed = true; break; } // corrupt loop — don't spin
+                            corruptLoop = true;
+                    }
+                    short pcm[vid::AudioOut::kMaxFrames * vid::AudioOut::kChannels];
+                    int n = 0;
+                    if (sm)
+                    {
+                        n = (int)sm->count;
+                        if (n > vid::AudioOut::kMaxFrames) n = vid::AudioOut::kMaxFrames;
+                    }
+                    if (sm && spatial)
+                    {
+                        for (int sample = 0; sample < n; ++sample)
+                        {
+                            float v = 0.5f * (sm->interleaved[sample * 2] +
+                                              sm->interleaved[sample * 2 + 1]);
+                            if (v >  1.0f) v =  1.0f;
+                            if (v < -1.0f) v = -1.0f;
+                            pcm[sample] = (short)(v * 32767.0f);
+                        }
+                    }
+                    else if (sm)
+                    {
+                        const int total = n * vid::AudioOut::kChannels;
+                        for (int sample = 0; sample < total; ++sample)
+                        {
+                            float v = sm->interleaved[sample];
+                            if (v >  1.0f) v =  1.0f;
+                            if (v < -1.0f) v = -1.0f;
+                            pcm[sample] = (short)(v * 32767.0f);
+                        }
+                    }
+                    if (sm)
+                        s->voice.Submit(pcm, n);
+                    const bool sourceFailed = s->source && s->source->failed;
+                    EnterCriticalSection(&m_lock);
+                    s->busy = false;
+                    if (sourceFailed || corruptLoop)
+                    {
+                        s->failed = true;
+                        break;
                     }
                     if (!sm)
                     {
                         s->ended = true;
                         break;
                     }
-                    short pcm[vid::AudioOut::kMaxFrames * vid::AudioOut::kChannels];
-                    int n = (int)sm->count;
-                    if (n > vid::AudioOut::kMaxFrames) n = vid::AudioOut::kMaxFrames;
-                    if (s->spatial)
-                    {
-                        // Mono downmix for the 3D emitter.
-                        for (int t = 0; t < n; ++t)
-                        {
-                            float v = 0.5f * (sm->interleaved[t * 2] +
-                                              sm->interleaved[t * 2 + 1]);
-                            if (v >  1.0f) v =  1.0f;
-                            if (v < -1.0f) v = -1.0f;
-                            pcm[t] = (short)(v * 32767.0f);
-                        }
-                    }
-                    else
-                    {
-                        const int total = n * vid::AudioOut::kChannels;
-                        for (int t = 0; t < total; ++t)
-                        {
-                            float v = sm->interleaved[t];
-                            if (v >  1.0f) v =  1.0f;
-                            if (v < -1.0f) v = -1.0f;
-                            pcm[t] = (short)(v * 32767.0f);
-                        }
-                    }
-                    s->voice.Submit(pcm, n);
+                    if (s->remove || s->closing)
+                        break;
                 }
                 if (s->ended && !s->finished && s->voice.QueuedBuffers() == 0)
                     s->finished = true; // one-shot fully drained

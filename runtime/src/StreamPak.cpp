@@ -86,6 +86,37 @@ bool StreamPak::ReadAt(unsigned int offset, void* dst, unsigned int bytes)
     return ok;
 }
 
+bool StreamPak::Size(const std::string&, unsigned int& bytes)
+{
+    if (m_file == INVALID_HANDLE_VALUE)
+        return false;
+    const DWORD size = GetFileSize(m_file, NULL);
+    if (size == INVALID_FILE_SIZE || size == 0)
+        return false;
+    bytes = size;
+    return true;
+}
+
+bool StreamPak::Read(const std::string&, unsigned int offset,
+                     unsigned int length, std::vector<unsigned char>& out)
+{
+    out.clear();
+    if (m_file == INVALID_HANDLE_VALUE)
+        return false;
+    if (length == 0)
+    {
+        unsigned int fileBytes = 0;
+        if (!Size(std::string(), fileBytes) || offset > fileBytes)
+            return false;
+        length = fileBytes - offset;
+    }
+    out.resize(length);
+    const bool ok = length == 0 || ReadAt(offset, &out[0], length);
+    if (!ok)
+        out.clear();
+    return ok;
+}
+
 bool StreamPak::Open(const char* path)
 {
     Close();

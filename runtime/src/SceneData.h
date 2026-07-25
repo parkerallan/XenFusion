@@ -92,6 +92,9 @@ struct RtAttribute
     float audio_volume;     // linear, 0..20
     float audio_pitch;      // 0.1..4
     bool  audio_loop;
+    int   audio_class;      // aud::AudioClass numeric value
+    int   audio_priority;
+    int   audio_load_mode;  // aud::AudioLoadMode numeric value
     bool  audio_spatial;    // 3D emitter (spatial phase)
     float audio_min_dist;
     float audio_max_dist;
@@ -147,6 +150,9 @@ struct RtAttribute
         audio_volume = 1.0f;
         audio_pitch = 1.0f;
         audio_loop = false;
+        audio_class = 0;
+        audio_priority = 0;
+        audio_load_mode = 0;
         audio_spatial = true;
         audio_min_dist = 1.0f;
         audio_max_dist = 50.0f;

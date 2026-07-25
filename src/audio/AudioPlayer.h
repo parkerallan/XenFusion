@@ -12,7 +12,8 @@
 // stream: it reads the clip's encoded bytes once at voice start (whole file
 // or a byte window of the pak — the Vulkan engine's exact strategy: encoded
 // bytes live in RAM, PCM decodes progressively, disk is touched only at
-// start), then keeps each voice's queue ~150ms ahead.
+// start). Short clips share a bounded encoded-byte cache across voices; each
+// voice retains its own decoder cursor and PCM queue.
 //
 // A non-looping stream that reaches its end reports IsPlaying() == false once
 // the voice drains (the host's one-shot lifecycle); restarting is the host's
@@ -31,7 +32,9 @@
 #include <string>
 #include <vector>
 
+#include "audio/AudioClipReader.h"
 #include "audio/Spatial3D.h"
+#include "audio/AudioVoicePolicy.h"
 
 namespace aud
 {
@@ -47,6 +50,9 @@ namespace aud
         bool  loop;
         float volume;        // linear, 0..20 (inspector clamp)
         float pitch;         // 0.1..4 -> SetFrequencyRatio
+        int   audioClass;     // AudioClass; policy protection group
+        int   priority;       // explicit authored rank
+        int   loadMode;       // AudioLoadMode; streaming phase consumes this
 
         // 3D emitter (X3DAudio). A spatial stream's voice is MONO (the worker
         // downmixes); flipping `spatial` recreates the stream. pos is the
@@ -57,16 +63,20 @@ namespace aud
         float pos[3];
 
         Want() : offset(0), length(0), loop(false), volume(1.0f), pitch(1.0f),
+                 audioClass(AudioEffect), priority(0), loadMode(AudioLoadAuto),
                  spatial(false), minDist(1.0f), maxDist(50.0f), doppler(1.0f)
         { pos[0] = pos[1] = pos[2] = 0.0f; }
     };
 
     struct AudioStream; // internal (AudioPlayer.cpp)
+    struct EncodedClip; // internal shared encoded-byte cache entry
 
     class AudioPlayer
     {
     public:
-        AudioPlayer();
+        // A supplied reader is not owned and must outlive the player. Passing
+        // NULL uses FileClipReader and preserves normal host behavior.
+        explicit AudioPlayer(ClipReader* reader = NULL);
         ~AudioPlayer();
 
         // Reconcile the wanted set: open new keys, close vanished ones, apply
@@ -84,7 +94,13 @@ namespace aud
 
         void Shutdown();
 
-        enum { kMaxStreams = 8 };
+        enum
+        {
+            kMaxStreams = 24,
+            kResidentThresholdBytes = 256 * 1024,
+            kEncodedCacheBudgetBytes = 16 * 1024 * 1024,
+            kStreamChunkBytes = 256 * 1024
+        };
 
     private:
         AudioStream* Find(const std::string& key) const; // caller holds m_lock
@@ -94,10 +110,15 @@ namespace aud
         void WorkerLoop();
 
         std::vector<AudioStream*> m_streams; // under m_lock
+        std::vector<EncodedClip*> m_cache;   // under m_lock
+        unsigned int m_cacheBytes;
+        unsigned int m_cacheClock;
         HANDLE m_thread;
         HANDLE m_wake;
         volatile LONG m_stop;
         mutable CRITICAL_SECTION m_lock;
+        FileClipReader m_defaultReader;
+        ClipReader* m_reader;
 
         // Listener velocity derivation (doppler): last frame's position plus
         // an exponentially smoothed velocity (raw deltas jitter audibly).

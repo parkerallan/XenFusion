@@ -3,6 +3,7 @@
 #include <xtl.h>
 #include <vector>
 #include "SpakFormat.h"
+#include "audio/AudioClipReader.h"
 
 // Phase 1 of the streaming subsystem (STREAMING.md): the console reader.
 //
@@ -39,7 +40,7 @@ struct StreamTexture
     void Release();
 };
 
-class StreamPak
+class StreamPak : public aud::ClipReader
 {
 public:
     StreamPak();
@@ -50,6 +51,12 @@ public:
     bool Open(const char* path);
     void Close();
     bool IsOpen() const { return m_file != INVALID_HANDLE_VALUE; }
+
+    // aud::ClipReader: absolute ranges share this pak's persistent, serialized
+    // file handle. Audio entries already carry diskOffset/compressedSize.
+    virtual bool Size(const std::string& path, unsigned int& bytes);
+    virtual bool Read(const std::string& path, unsigned int offset,
+                      unsigned int length, std::vector<unsigned char>& out);
 
     unsigned int     Count() const { return m_count; }
     const SpakEntry* At(unsigned int i) const;

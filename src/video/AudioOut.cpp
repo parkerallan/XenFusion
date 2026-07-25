@@ -176,4 +176,5 @@ namespace vid
         if (m_voice && gains)
             m_voice->SetOutputMatrix(NULL, (UINT32)srcChannels, kChannels, gains);
     }
+
 }

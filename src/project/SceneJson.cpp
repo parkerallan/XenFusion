@@ -106,6 +106,9 @@ namespace project
                     ja["volume"]    = a.audio_volume;
                     ja["pitch"]     = a.audio_pitch;
                     ja["loop"]      = a.audio_loop;
+                    ja["audioClass"] = a.audio_class;
+                    ja["priority"]   = a.audio_priority;
+                    ja["loadMode"]   = a.audio_load_mode;
                     ja["spatial"]   = a.audio_spatial;
                     ja["minDist"]   = a.audio_min_dist;
                     ja["maxDist"]   = a.audio_max_dist;
@@ -255,6 +258,9 @@ namespace project
                             a.audio_volume   = ja.value("volume", 1.0f);
                             a.audio_pitch    = ja.value("pitch", 1.0f);
                             a.audio_loop     = ja.value("loop", false);
+                            a.audio_class    = ja.value("audioClass", 0);
+                            a.audio_priority = ja.value("priority", 0);
+                            a.audio_load_mode= ja.value("loadMode", 0);
                             a.audio_spatial  = ja.value("spatial", true);
                             a.audio_min_dist = ja.value("minDist", 1.0f);
                             a.audio_max_dist = ja.value("maxDist", 50.0f);

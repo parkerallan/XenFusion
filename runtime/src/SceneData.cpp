@@ -378,6 +378,9 @@ namespace scenedata
                         const JValue* avo = ja.Find("volume");
                         const JValue* api = ja.Find("pitch");
                         const JValue* alo = ja.Find("loop");
+                        const JValue* acl = ja.Find("audioClass");
+                        const JValue* apr = ja.Find("priority");
+                        const JValue* alm = ja.Find("loadMode");
                         const JValue* asp = ja.Find("spatial");
                         const JValue* amn = ja.Find("minDist");
                         const JValue* amx = ja.Find("maxDist");
@@ -387,6 +390,9 @@ namespace scenedata
                         if (avo && avo->type == JValue::Number) at.audio_volume = (float)avo->num;
                         if (api && api->type == JValue::Number) at.audio_pitch = (float)api->num;
                         if (alo && alo->type == JValue::Bool)   at.audio_loop = alo->b;
+                        if (acl && acl->type == JValue::Number) at.audio_class = (int)acl->num;
+                        if (apr && apr->type == JValue::Number) at.audio_priority = (int)apr->num;
+                        if (alm && alm->type == JValue::Number) at.audio_load_mode = (int)alm->num;
                         if (asp && asp->type == JValue::Bool)   at.audio_spatial = asp->b;
                         if (amn && amn->type == JValue::Number) at.audio_min_dist = (float)amn->num;
                         if (amx && amx->type == JValue::Number) at.audio_max_dist = (float)amx->num;
