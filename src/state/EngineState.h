@@ -89,6 +89,7 @@ struct ObjectAttribute
     // Position/size are in a 1280x720 reference space; edit mode shows the
     // first frame, Play mode (and the console) plays.
     std::string video_path;                      // project-relative .mpg
+    int   video_import_profile = 0;              // 0=360p, 1=480p, 2=720p
     float video_x      = 320.0f;                 // top-left, reference px
     float video_y      = 180.0f;
     float video_w      = 640.0f;                 // size, reference px

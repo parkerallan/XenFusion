@@ -117,6 +117,7 @@ namespace project
                 else if (a.type == "Video")
                 {
                     ja["videoPath"]  = a.video_path;
+                    ja["importProfile"] = a.video_import_profile;
                     ja["x"]          = a.video_x;
                     ja["y"]          = a.video_y;
                     ja["w"]          = a.video_w;
@@ -269,6 +270,7 @@ namespace project
                         else if (a.type == "Video")
                         {
                             a.video_path        = ja.value("videoPath", std::string());
+                            a.video_import_profile = ja.value("importProfile", 0);
                             a.video_x           = ja.value("x", 320.0f);
                             a.video_y           = ja.value("y", 180.0f);
                             a.video_w           = ja.value("w", 640.0f);

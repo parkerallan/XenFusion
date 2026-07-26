@@ -22,8 +22,10 @@ namespace vid
 {
     struct VideoStream
     {
-        enum { kSlots = 4 };
+        enum { kSlots = 4, kReadBlockBytes = 256 * 1024 };
         enum SlotState { SlotFree = 0, SlotReady = 1, SlotShown = 2 };
+        enum WorkerState { WorkerOpening = 0, WorkerReady = 1, WorkerFailed = 2,
+                           WorkerStopping = 3, WorkerStopped = 4 };
 
         struct Slot
         {
@@ -44,10 +46,21 @@ namespace vid
         unsigned int rangeBase;
         unsigned int rangeSize;
         unsigned int rangePos;
+        unsigned int readNextPos;
+        std::vector<unsigned char> readBlocks[2];
+        int          readBlock;
+        unsigned int readBlockPos;
+        unsigned int readBlockSize;
+        OVERLAPPED   readOverlapped;
+        HANDLE       readEvent;
+        bool         readPending;
+        int          pendingBlock;
+        unsigned int pendingOffset;
         CRITICAL_SECTION lock;
         volatile LONG    mode;  // PlayMode, host writes / worker reads
         volatile LONG    stop;
         volatile LONG    ended; // PlayOnce ran out (worker parks until mode flips)
+        volatile LONG    workerState;
 
         Slot     slots[kSlots];
         int      yW, yH, cW, cH;   // padded plane sizes (worker writes under lock, once)
@@ -58,7 +71,6 @@ namespace vid
         double   frameRate;        // for the last frame's display duration
         bool     clockInit;        // first frame snaps the clock to its pts
         bool     finished;         // Play-Once fully shown — GetFrame hides it
-        bool     failed;           // open failed — stays dormant until the path changes
 
         // Audio (MP2 -> XAudio2). The worker owns the decode + voice creation;
         // the host reads the cursor once audioReady flips. audioBase (the first
@@ -83,21 +95,27 @@ namespace vid
         VideoStream()
             : plm(NULL), thread(NULL), wake(NULL),
               rangeFile(INVALID_HANDLE_VALUE), rangeBase(0), rangeSize(0), rangePos(0),
-              mode(PlayLoop), stop(0), ended(0),
+                            readNextPos(0), readBlock(-1), readBlockPos(0), readBlockSize(0),
+                            readEvent(NULL), readPending(false), pendingBlock(-1), pendingOffset(0),
+              mode(PlayLoop), stop(0), ended(0), workerState(WorkerOpening),
               yW(0), yH(0), cW(0), cH(0), width(0), height(0),
               display(-1), frameId(0), clock(0.0), frameRate(30.0),
-              clockInit(false), finished(false), failed(false),
+              clockInit(false), finished(false),
               audioReady(0), audible(true), hasAudio(false), audioFailed(false),
               sampleRate(0), audioBase(0.0), audioBaseSet(false),
               volume(1.0f), muted(false),
               loopBase(0.0), duration(0.0), lastTime(0.0)
         {
+            memset(&readOverlapped, 0, sizeof(readOverlapped));
             for (int i = 0; i < kSlots; ++i) { slots[i].state = SlotFree; slots[i].pts = 0.0; }
         }
     };
 
     namespace
     {
+        bool InitializeStream(VideoStream* s);
+        void CleanupStreamMedia(VideoStream* s);
+
         // Keep the voice fed: create it lazily on the worker (so a slow device
         // open never blocks the render thread), then decode MP2 frames until
         // the queue holds ~150ms. Runs even while the video side is parked at
@@ -145,6 +163,14 @@ namespace vid
         DWORD WINAPI WorkerProc(LPVOID param)
         {
             VideoStream* s = (VideoStream*)param;
+            if (!InitializeStream(s))
+            {
+                CleanupStreamMedia(s);
+                InterlockedExchange(&s->workerState, VideoStream::WorkerFailed);
+                return 0;
+            }
+            InterlockedExchange(&s->workerState, VideoStream::WorkerReady);
+
             for (;;)
             {
                 if (s->stop)
@@ -212,46 +238,214 @@ namespace vid
                 sl.state = VideoStream::SlotReady;
                 LeaveCriticalSection(&s->lock);
             }
+            CleanupStreamMedia(s);
+            InterlockedExchange(&s->workerState, VideoStream::WorkerStopped);
             return 0;
         }
 
-        // ---- container-range data source (the console's in-pak video) ----
-        // Mirrors pl_mpeg's own file callbacks (this TU holds the implementation,
-        // so the buffer internals are visible), but reads through a Win32 handle
-        // limited to the entry's byte window. plm sees a normal seekable "file"
-        // of rangeSize bytes, so rewind/loop work unchanged.
+        // ---- bounded file/range data source ----
+        // Two 256 KB blocks keep memory fixed while one overlapped sequential
+        // read runs ahead of decode. The same source backs plain editor files
+        // and byte ranges inside game.spak.
+        void CancelPendingRead(VideoStream* s)
+        {
+            if (!s->readPending)
+                return;
+            CancelIo(s->rangeFile); // issued by this worker, so CancelIo is sufficient
+            WaitForSingleObject(s->readEvent, INFINITE);
+            DWORD ignored = 0;
+            GetOverlappedResult(s->rangeFile, &s->readOverlapped, &ignored, FALSE);
+            s->readPending = false;
+        }
+
+        bool IssueRead(VideoStream* s, int block)
+        {
+            if (s->readPending || s->readNextPos >= s->rangeSize)
+                return false;
+
+            const unsigned int remain = s->rangeSize - s->readNextPos;
+            const DWORD bytes = (DWORD)((remain < VideoStream::kReadBlockBytes)
+                                      ? remain : VideoStream::kReadBlockBytes);
+            ResetEvent(s->readEvent);
+            memset(&s->readOverlapped, 0, sizeof(s->readOverlapped));
+            s->readOverlapped.hEvent = s->readEvent;
+            const unsigned __int64 absolute =
+                (unsigned __int64)s->rangeBase + s->readNextPos;
+            s->readOverlapped.Offset = (DWORD)absolute;
+            s->readOverlapped.OffsetHigh = (DWORD)(absolute >> 32);
+            s->pendingBlock = block;
+            s->pendingOffset = s->readNextPos;
+
+            DWORD immediate = 0;
+            const BOOL started = ReadFile(s->rangeFile, &s->readBlocks[block][0],
+                                          bytes, &immediate, &s->readOverlapped);
+            if (!started && GetLastError() != ERROR_IO_PENDING)
+                return false;
+            s->readPending = true;
+            return true;
+        }
+
+        bool CompleteRead(VideoStream* s, int& block, unsigned int& bytes)
+        {
+            if (!s->readPending)
+                return false;
+
+            HANDLE waits[2] = { s->readEvent, s->wake };
+            for (;;)
+            {
+                const DWORD wait = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                if (wait == WAIT_OBJECT_0)
+                    break;
+                if (wait == WAIT_OBJECT_0 + 1 && s->stop)
+                {
+                    CancelPendingRead(s);
+                    return false;
+                }
+            }
+
+            DWORD got = 0;
+            if (!GetOverlappedResult(s->rangeFile, &s->readOverlapped, &got, FALSE))
+            {
+                s->readPending = false;
+                return false;
+            }
+            block = s->pendingBlock;
+            bytes = (unsigned int)got;
+            s->readNextPos = s->pendingOffset + bytes;
+            s->readPending = false;
+            return bytes > 0;
+        }
+
+        size_t ReadBytes(VideoStream* s, unsigned char* destination, size_t requested)
+        {
+            size_t copied = 0;
+            while (copied < requested && !s->stop)
+            {
+                if (s->readBlock >= 0 && s->readBlockPos < s->readBlockSize)
+                {
+                    const size_t available = s->readBlockSize - s->readBlockPos;
+                    const size_t count = ((requested - copied) < available)
+                                       ? (requested - copied) : available;
+                    memcpy(destination + copied,
+                           &s->readBlocks[s->readBlock][s->readBlockPos], count);
+                    s->readBlockPos += (unsigned int)count;
+                    s->rangePos += (unsigned int)count;
+                    copied += count;
+                    continue;
+                }
+
+                if (!s->readPending && !IssueRead(s, s->readBlock == 0 ? 1 : 0))
+                    break;
+                int completedBlock = -1;
+                unsigned int completedBytes = 0;
+                if (!CompleteRead(s, completedBlock, completedBytes))
+                    break;
+                s->readBlock = completedBlock;
+                s->readBlockPos = 0;
+                s->readBlockSize = completedBytes;
+                IssueRead(s, completedBlock == 0 ? 1 : 0);
+            }
+            return copied;
+        }
+
         void RangeLoad(plm_buffer_t* self, void* user)
         {
             VideoStream* s = (VideoStream*)user;
             if (self->discard_read_bytes)
                 plm_buffer_discard_read_bytes(self);
             const size_t avail = self->capacity - self->length;
-            const unsigned int remain =
-                (s->rangePos < s->rangeSize) ? (s->rangeSize - s->rangePos) : 0;
-            const DWORD want = (DWORD)((avail < (size_t)remain) ? avail : (size_t)remain);
-            DWORD got = 0;
-            if (want > 0)
-            {
-                // lo is the unsigned low half when the high pointer is supplied,
-                // so base + pos may use the full u32 range (pak TOC is u32).
-                LONG hi = 0;
-                SetFilePointer(s->rangeFile, (LONG)(s->rangeBase + s->rangePos), &hi, FILE_BEGIN);
-                ReadFile(s->rangeFile, self->bytes + self->length, want, &got, NULL);
-                s->rangePos  += got;
-                self->length += got;
-            }
+            const size_t got = ReadBytes(s, self->bytes + self->length, avail);
+            self->length += got;
             if (got == 0)
                 self->has_ended = TRUE;
         }
         void RangeSeek(plm_buffer_t* self, size_t offset, void* user)
         {
             (void)self;
-            ((VideoStream*)user)->rangePos = (unsigned int)offset;
+            VideoStream* s = (VideoStream*)user;
+            CancelPendingRead(s);
+            s->rangePos = (unsigned int)offset;
+            s->readNextPos = (unsigned int)offset;
+            s->readBlock = -1;
+            s->readBlockPos = 0;
+            s->readBlockSize = 0;
         }
         size_t RangeTell(plm_buffer_t* self, void* user)
         {
             (void)self;
             return (size_t)((VideoStream*)user)->rangePos;
+        }
+
+        bool InitializeStream(VideoStream* s)
+        {
+            s->rangeFile = CreateFileA(s->path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                       NULL, OPEN_EXISTING,
+                                       FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OVERLAPPED, NULL);
+            if (s->rangeFile == INVALID_HANDLE_VALUE)
+                return false;
+
+            if (s->rangeSize == 0)
+            {
+                const DWORD size = GetFileSize(s->rangeFile, NULL);
+                if (size == INVALID_FILE_SIZE && GetLastError() != NO_ERROR)
+                    return false;
+                s->rangeSize = size;
+            }
+            s->readBlocks[0].resize(VideoStream::kReadBlockBytes);
+            s->readBlocks[1].resize(VideoStream::kReadBlockBytes);
+            s->readEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+            if (!s->readEvent)
+                return false;
+            plm_buffer_t* buf = plm_buffer_create_with_callbacks(
+                RangeLoad, RangeSeek, RangeTell, (size_t)s->rangeSize, s);
+            s->plm = plm_create_with_buffer(buf, TRUE);
+
+            if (!s->plm || !plm_probe(s->plm, 1024 * 1024))
+                return false;
+
+            s->hasAudio = s->audible && plm_get_num_audio_streams(s->plm) > 0;
+            plm_set_audio_enabled(s->plm, s->hasAudio ? TRUE : FALSE);
+            if (s->hasAudio)
+                s->sampleRate = plm_get_samplerate(s->plm);
+
+            EnterCriticalSection(&s->lock);
+            s->width     = plm_get_width(s->plm);
+            s->height    = plm_get_height(s->plm);
+            s->duration  = plm_get_duration(s->plm);
+            s->frameRate = plm_get_framerate(s->plm);
+            LeaveCriticalSection(&s->lock);
+            return true;
+        }
+
+        void CleanupStreamMedia(VideoStream* s)
+        {
+            CancelPendingRead(s);
+            if (s->audioReady)
+            {
+                float volume = s->muted ? 0.0f : s->volume;
+                for (int step = 0; step < 6; ++step)
+                {
+                    volume *= 0.5f;
+                    s->audio.SetVolume(volume);
+                    Sleep(6);
+                }
+            }
+            s->audio.Close();
+            if (s->plm)
+            {
+                plm_destroy(s->plm);
+                s->plm = NULL;
+            }
+            if (s->rangeFile != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(s->rangeFile);
+                s->rangeFile = INVALID_HANDLE_VALUE;
+            }
+            if (s->readEvent)
+            {
+                CloseHandle(s->readEvent);
+                s->readEvent = NULL;
+            }
         }
 
         VideoStream* OpenStream(const Want& w)
@@ -260,44 +454,17 @@ namespace vid
             s->key  = w.key;
             s->path = w.path;
             s->mode = w.playMode;
+            s->rangeBase = w.offset;
+            s->rangeSize = w.length;
+            s->audible = w.audible;
+            s->volume  = w.volume;
+            s->muted   = w.muted;
             InitializeCriticalSection(&s->lock);
             s->wake = CreateEvent(NULL, FALSE, FALSE, NULL); // auto-reset
 
-            if (w.length > 0)
-            {
-                s->rangeBase = w.offset;
-                s->rangeSize = w.length;
-                s->rangeFile = CreateFileA(w.path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                                           NULL, OPEN_EXISTING, 0, NULL);
-                if (s->rangeFile != INVALID_HANDLE_VALUE)
-                {
-                    plm_buffer_t* buf = plm_buffer_create_with_callbacks(
-                        RangeLoad, RangeSeek, RangeTell, (size_t)w.length, s);
-                    s->plm = plm_create_with_buffer(buf, TRUE); // plm owns + frees buf
-                }
-            }
-            else
-                s->plm = plm_create_with_filename(w.path.c_str());
-
-            if (!s->plm || !plm_probe(s->plm, 1024 * 1024))
-            {
-                if (s->plm) { plm_destroy(s->plm); s->plm = NULL; }
-                s->failed = true; // dormant record; retried only on a path change
-                return s;
-            }
-            s->audible  = w.audible;
-            s->volume   = w.volume;
-            s->muted    = w.muted;
-            s->hasAudio = w.audible && plm_get_num_audio_streams(s->plm) > 0;
-            plm_set_audio_enabled(s->plm, s->hasAudio ? TRUE : FALSE);
-            if (s->hasAudio)
-                s->sampleRate = plm_get_samplerate(s->plm);
-            s->width     = plm_get_width(s->plm);
-            s->height    = plm_get_height(s->plm);
-            s->duration  = plm_get_duration(s->plm);
-            s->frameRate = plm_get_framerate(s->plm);
-
             s->thread = CreateThread(NULL, 0, WorkerProc, s, 0, NULL);
+            if (!s->thread)
+                InterlockedExchange(&s->workerState, VideoStream::WorkerFailed);
 #ifdef _XBOX
             if (s->thread)
                 XSetThreadProcessor(s->thread, 2); // core 1: render owns 0, streaming owns 4
@@ -305,36 +472,28 @@ namespace vid
             return s;
         }
 
-        void CloseStream(VideoStream* s)
+        void RequestStop(VideoStream* s)
         {
-            // Declick: an audible stop must not cut the waveform mid-sample —
-            // XAudio2 doesn't ramp SetVolume, so step it down quickly before
-            // the voice dies. Video stops are rare (cutscene end/skip); the
-            // ~35ms stall is invisible there.
-            if (s->audioReady)
-            {
-                float v = s->muted ? 0.0f : s->volume;
-                for (int step = 0; step < 6; ++step)
-                {
-                    v *= 0.5f;
-                    s->audio.SetVolume(v);
-                    Sleep(6);
-                }
-                s->audio.SetVolume(0.0f);
-            }
+            InterlockedExchange(&s->workerState, VideoStream::WorkerStopping);
+            InterlockedExchange(&s->stop, 1);
+            SetEvent(s->wake);
+        }
+
+        bool WorkerFinished(VideoStream* s)
+        {
+            return !s->thread || WaitForSingleObject(s->thread, 0) == WAIT_OBJECT_0;
+        }
+
+        void DestroyStream(VideoStream* s, bool wait)
+        {
             if (s->thread)
             {
-                InterlockedExchange(&s->stop, 1);
-                SetEvent(s->wake);
-                WaitForSingleObject(s->thread, INFINITE);
+                if (wait)
+                    WaitForSingleObject(s->thread, INFINITE);
                 CloseHandle(s->thread);
             }
             if (s->wake)
                 CloseHandle(s->wake);
-            if (s->plm)
-                plm_destroy(s->plm); // worker joined — safe on this thread now
-            if (s->rangeFile != INVALID_HANDLE_VALUE)
-                CloseHandle(s->rangeFile); // after plm_destroy (buffer may not load again)
             DeleteCriticalSection(&s->lock);
             delete s;
         }
@@ -346,8 +505,15 @@ namespace vid
     void VideoPlayer::Shutdown()
     {
         for (size_t i = 0; i < m_streams.size(); ++i)
-            CloseStream(m_streams[i]);
+            RequestStop(m_streams[i]);
+        for (size_t i = 0; i < m_retired.size(); ++i)
+            RequestStop(m_retired[i]);
+        for (size_t i = 0; i < m_streams.size(); ++i)
+            DestroyStream(m_streams[i], true);
+        for (size_t i = 0; i < m_retired.size(); ++i)
+            DestroyStream(m_retired[i], true);
         m_streams.clear();
+        m_retired.clear();
     }
 
     VideoStream* VideoPlayer::Find(const std::string& key) const
@@ -363,6 +529,17 @@ namespace vid
         if (dt < 0.0f) dt = 0.0f;
         if (dt > 0.1f) dt = 0.1f; // hitch clamp (mirrors the Vulkan manager)
 
+        for (size_t i = 0; i < m_retired.size(); )
+        {
+            if (WorkerFinished(m_retired[i]))
+            {
+                DestroyStream(m_retired[i], false);
+                m_retired.erase(m_retired.begin() + i);
+            }
+            else
+                ++i;
+        }
+
         // Close streams whose key vanished, went Off, changed source, or
         // flipped audibility (Play/Stop restarts the video from the top —
         // the Vulkan editor's behavior, and it keeps the audio path simple).
@@ -375,7 +552,8 @@ namespace vid
             if (!w || w->playMode == PlayOff || w->path != s->path ||
                 w->audible != s->audible)
             {
-                CloseStream(s);
+                RequestStop(s);
+                m_retired.push_back(s);
                 m_streams.erase(m_streams.begin() + i);
                 continue;
             }
@@ -406,7 +584,7 @@ namespace vid
         for (size_t i = 0; i < m_streams.size(); ++i)
         {
             VideoStream* s = m_streams[i];
-            if (s->failed)
+            if (s->workerState != VideoStream::WorkerReady)
                 continue;
 
             EnterCriticalSection(&s->lock);
@@ -494,7 +672,8 @@ namespace vid
         // "Playing" tracks visibility: a Play-Once counts as playing until its
         // last frame has fully shown (finished), at which point it also hides.
         VideoStream* s = Find(key);
-        return s && !s->failed && !(s->mode == PlayOnce && s->finished);
+         return s && s->workerState == VideoStream::WorkerReady &&
+             !(s->mode == PlayOnce && s->finished);
     }
 
     bool VideoPlayer::HasStream(const std::string& key) const
@@ -505,7 +684,8 @@ namespace vid
     bool VideoPlayer::GetFrame(const std::string& key, Frame& out) const
     {
         VideoStream* s = Find(key);
-        if (!s || s->failed || s->display < 0 || s->finished)
+        if (!s || s->workerState != VideoStream::WorkerReady ||
+            s->display < 0 || s->finished)
             return false; // finished Play-Once: the overlay hides itself
         const VideoStream::Slot& sl = s->slots[s->display];
         out.y       = &sl.y[0];

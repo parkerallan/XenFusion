@@ -13,16 +13,25 @@ container (`.mpg`)**, decoded by the vendored single-header
 `third_party/plmpeg/pl_mpeg.h` (endian-clean integer decoder — byte-identical
 output on x64 and the big-endian Xenon, verified by CRC).
 
-Import in the editor: drag a video from the Assets panel onto a Video
-attribute. A `.mpg` binds directly; other containers transcode on drop via
-`ffmpeg` on PATH (blocking; the exact cook):
+Import in the editor: select the Video attribute's **360p / 480p / 720p**
+radio, then drag a video from the Assets panel onto it. A `.mpg` binds
+directly and is never resized; other containers transcode on drop via
+`ffmpeg` on PATH. The profiles fit within 640x360, 854x480, or 1280x720,
+preserve aspect ratio, force even dimensions/YUV420, and retain the existing
+MPEG-1 + MP2 program-stream contract:
 
-    ffmpeg -i <src> -f mpeg -c:v mpeg1video -q:v 6 -vf "scale=640:-2" -r 30
+Video conversion runs as one below-normal-priority background job. The editor
+remains interactive and applies the completed `.mpg` to the target attribute
+on the main thread; another video drop is disabled while that job is active.
+
+  ffmpeg -i <src> -f mpeg -c:v mpeg1video -q:v <profile quality>
+       -vf "scale=<w>:<h>:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p" -r 30
            -c:a mp2 -b:a 224k -ar 44100 -ac 2 <name>.mpg
 
-640x360 @ 30fps, ~q6 is the reference quality (a 2-minute clip lands around
-30 MB). Decode cost in Xenia is ~2 ms/frame video + 0.3 ms/frame audio on the
-dedicated worker.
+Quality scales with the profile: q4 for 360p, q3 for 480p, and q2 for 720p.
+360p remains the default for existing scenes. The selected import profile is
+editor metadata only; playback always uses the dimensions stored in the MPEG,
+so it does not restrict authored size, stretch, aspect, or play behavior.
 
 ## Shipping: raw VIDE entries, ranged reads
 
@@ -34,18 +43,22 @@ the startup scene next to the `model_path` meshes. Nothing ships loose.
 
 At runtime the shared `vid::VideoPlayer` (src/video/VideoPlayer.{h,cpp}) is
 handed the entry's byte window (`Want.offset/length`) and reads it through its
-**own** `CreateFileA` handle on game.spak — ~128 KB sequential reads via
-pl_mpeg buffer callbacks, never the whole clip in memory, and no contention
-with the streaming worker's handle. On PC (and as a dev fallback) `length = 0`
-plays a plain file path.
+**own** overlapped `CreateFileA` handle on game.spak. Plain editor files and
+SPAK ranges use the same bounded source: two 256 KB sequential blocks, with
+decode consuming one while the other reads ahead. Reads never cross the
+declared entry range and video duration never increases buffered memory.
 
 ## The player
 
 One decode worker thread per stream (Win32 threads on both targets; pinned to
 HW thread 2 on the console — render owns 0, the streaming worker owns 4).
-Frames stay **YCbCr**: a 4-slot ring of padded Y/Cb/Cr planes, picked by the
-host newest-due-first with late frames dropped. The `video.hlsl` builtin does
-limited-range BT.601 YUV->RGB on the GPU; the CPU never converts pixels.
+That worker now owns file open, MPEG probe, decode, audio setup, fade, and
+media cleanup. `VideoPlayer::Update` creates/signals lightweight stream state
+and retires stopped streams without waiting for I/O or joining a worker;
+`Shutdown` is the final blocking join. Frames stay **YCbCr**: a 4-slot ring of
+padded Y/Cb/Cr planes, picked by the host newest-due-first with late frames
+dropped. The `video.hlsl` builtin does limited-range BT.601 YUV->RGB on the
+GPU; the CPU never converts pixels.
 
 - Editor textures: three `D3DFMT_L8` MANAGED textures, LockRect per new frame.
 - 360 textures: `D3DFMT_LIN_L8` (linear — row memcpy, no tiling, no endian

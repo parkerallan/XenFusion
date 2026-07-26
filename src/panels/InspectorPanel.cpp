@@ -3,6 +3,7 @@
 #include "project/ProjectIO.h"
 #include "state/EngineState.h"
 #include "ui/Icons.h"
+#include "video/VideoImport.h"
 
 #include "imgui.h"
 
@@ -10,17 +11,20 @@
 #include <windows.h>
 
 #include <cctype>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
 {
-    // Run an ffmpeg command hidden, blocking until it exits. False if ffmpeg
-    // isn't on PATH or it fails.
-    bool RunFfmpeg(const std::string& cmd, EngineState& state)
+    // Run an ffmpeg command hidden and wait for its exit. Video imports call
+    // this from a background job; audio import still uses it synchronously.
+    bool RunFfmpeg(const std::string& cmd, bool& could_start)
     {
+        could_start = false;
         STARTUPINFOA si = {};
         si.cb = sizeof(si);
         si.dwFlags = STARTF_USESHOWWINDOW;
@@ -29,35 +33,16 @@ namespace
         std::vector<char> buf(cmd.begin(), cmd.end());
         buf.push_back('\0');
         if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
-                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-        {
-            state.AddLog("ffmpeg not found on PATH - cannot import", LogLevel::Error);
+                    CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
+                    nullptr, nullptr, &si, &pi))
             return false;
-        }
+        could_start = true;
         WaitForSingleObject(pi.hProcess, INFINITE);
         DWORD code = 1;
         GetExitCodeProcess(pi.hProcess, &code);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         return code == 0;
-    }
-
-    // Transcode any video ffmpeg can read into the .mpg (MPEG-1 + MP2) the
-    // engine plays, next to the source in assets/. Blocks until done (fine for
-    // clip-length sources). Mirrors the cook settings the console uses.
-    bool TranscodeToMpg(const std::filesystem::path& src,
-                        const std::filesystem::path& dst,
-                        EngineState& state)
-    {
-        const std::string cmd = "ffmpeg -y -i \"" + src.string() +
-            "\" -f mpeg -c:v mpeg1video -q:v 6 -vf \"scale=640:-2\" -r 30"
-            " -c:a mp2 -b:a 224k -ar 44100 -ac 2 \"" + dst.string() + "\"";
-        if (!RunFfmpeg(cmd, state) || !std::filesystem::exists(dst))
-        {
-            state.AddLog("ffmpeg failed transcoding " + src.filename().string(), LogLevel::Error);
-            return false;
-        }
-        return true;
     }
 
     // Transcode any audio ffmpeg can read into the raw MP2 elementary stream
@@ -71,17 +56,86 @@ namespace
         // that SRC audibly crackles on mono spatial voices).
         const std::string cmd = "ffmpeg -y -i \"" + src.string() +
             "\" -vn -f mp2 -c:a mp2 -b:a 192k -ar 48000 -ac 2 \"" + dst.string() + "\"";
-        if (!RunFfmpeg(cmd, state) || !std::filesystem::exists(dst))
+        bool could_start = false;
+        if (!RunFfmpeg(cmd, could_start) || !std::filesystem::exists(dst))
         {
-            state.AddLog("ffmpeg failed transcoding " + src.filename().string(), LogLevel::Error);
+            state.AddLog(could_start
+                ? "ffmpeg failed transcoding " + src.filename().string()
+                : "ffmpeg not found on PATH - cannot import", LogLevel::Error);
             return false;
         }
         return true;
     }
 }
 
+struct InspectorPanel::VideoImportJob
+{
+    std::thread worker;
+    std::atomic<bool> done = false;
+    bool success = false;
+    bool could_start = false;
+    int scene_index = -1;
+    int object_index = -1;
+    int attribute_index = -1;
+    std::string source_name;
+    std::string relative_output;
+};
+
+InspectorPanel::InspectorPanel() = default;
+
+InspectorPanel::~InspectorPanel()
+{
+    if (video_import_ && video_import_->worker.joinable())
+        video_import_->worker.join();
+}
+
+void InspectorPanel::PollVideoImport(EngineState& state)
+{
+    if (!video_import_ || !video_import_->done.load())
+        return;
+
+    if (video_import_->worker.joinable())
+        video_import_->worker.join();
+
+    VideoImportJob& job = *video_import_;
+    if (!job.success)
+    {
+        state.AddLog(job.could_start
+            ? "ffmpeg failed transcoding " + job.source_name
+            : "ffmpeg not found on PATH - cannot import", LogLevel::Error);
+        video_import_.reset();
+        return;
+    }
+
+    if (job.scene_index >= 0 && job.scene_index < (int)state.scenes.size())
+    {
+        SceneFile& scene = state.scenes[job.scene_index];
+        if (job.object_index >= 0 && job.object_index < (int)scene.objects.size())
+        {
+            SceneObject& object = scene.objects[job.object_index];
+            if (job.attribute_index >= 0 &&
+                job.attribute_index < (int)object.attributes.size() &&
+                object.attributes[job.attribute_index].type == "Video")
+            {
+                object.attributes[job.attribute_index].video_path = job.relative_output;
+                scene.dirty = true;
+                project::SaveScene(scene);
+                state.AddLog("Video imported: " + job.relative_output);
+                video_import_.reset();
+                return;
+            }
+        }
+    }
+
+    state.AddLog("Video transcoded but its target attribute no longer exists: " +
+                 job.relative_output, LogLevel::Warning);
+    video_import_.reset();
+}
+
 void InspectorPanel::Render(EngineState& state)
 {
+    PollVideoImport(state);
+
     if (!state.show_inspector_panel)
         return;
 
@@ -158,7 +212,10 @@ void InspectorPanel::Render(EngineState& state)
             ImGui::InputText("##model_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
             ImGui::PopStyleColor();
 
-            if (ImGui::BeginDragDropTarget())
+            if (video_import_)
+                ImGui::TextDisabled("Importing %s...", video_import_->source_name.c_str());
+
+            if (!video_import_ && ImGui::BeginDragDropTarget())
             {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
                 {
@@ -558,6 +615,18 @@ void InspectorPanel::Render(EngineState& state)
         {
             // Read-only path display; set by dragging a video from the Assets
             // panel. Non-.mpg sources are transcoded via ffmpeg on drop.
+            bool profile_changed = false;
+            profile_changed |= ImGui::RadioButton("360p", &attr.video_import_profile,
+                                                  video_import::Profile360p);
+            ImGui::SameLine();
+            profile_changed |= ImGui::RadioButton("480p", &attr.video_import_profile,
+                                                  video_import::Profile480p);
+            ImGui::SameLine();
+            profile_changed |= ImGui::RadioButton("720p", &attr.video_import_profile,
+                                                  video_import::Profile720p);
+            if (profile_changed)
+                save();
+
             char buf[260];
             const std::string shown = attr.video_path.empty() ? "(drag a video from Assets)" : attr.video_path;
             std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
@@ -595,13 +664,24 @@ void InspectorPanel::Render(EngineState& state)
                             std::filesystem::path rel(dropped);
                             rel.replace_extension(".mpg");
                             state.AddLog("Transcoding " + dropped + " -> " + rel.generic_string() + " ...");
-                            if (TranscodeToMpg(state.project_root / dropped,
-                                               state.project_root / rel, state))
+                            const std::filesystem::path source = state.project_root / dropped;
+                            const std::filesystem::path destination = state.project_root / rel;
+                            const std::string command = video_import::BuildFfmpegCommand(
+                                source.string(), destination.string(), attr.video_import_profile);
+
+                            video_import_.reset(new VideoImportJob());
+                            VideoImportJob* job = video_import_.get();
+                            job->scene_index = state.selected_scene;
+                            job->object_index = state.selected_object;
+                            job->attribute_index = a;
+                            job->source_name = source.filename().string();
+                            job->relative_output = rel.generic_string();
+                            job->worker = std::thread([job, command, destination]()
                             {
-                                attr.video_path = rel.generic_string();
-                                save();
-                                state.AddLog("Video imported: " + attr.video_path);
-                            }
+                                job->success = RunFfmpeg(command, job->could_start) &&
+                                               std::filesystem::exists(destination);
+                                job->done.store(true);
+                            });
                         }
                         else
                         {

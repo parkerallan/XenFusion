@@ -55,7 +55,7 @@ namespace vid
         bool  muted;
 
         Want() : playMode(PlayLoop), offset(0), length(0),
-                 audible(true), volume(1.0f), muted(false) {}
+             audible(true), volume(1.0f), muted(false) {}
     };
 
     // A decoded frame, valid until the next Update() call.
@@ -101,6 +101,7 @@ namespace vid
         VideoStream* Find(const std::string& key) const;
 
         std::vector<VideoStream*> m_streams;
+        std::vector<VideoStream*> m_retired;
 
         // Streams beyond this many wants are ignored (warned once by the host).
         enum { kMaxStreams = 4 };

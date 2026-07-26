@@ -138,6 +138,7 @@ add_executable(XenFusion
     src/render/Shader.cpp
     src/render/ShaderCache.cpp
     src/render/ShaderCompiler.cpp
+    src/video/VideoImport.cpp
     src/video/VideoPlayer.cpp
     src/video/AudioOut.cpp
     src/audio/AudioClipReader.cpp
