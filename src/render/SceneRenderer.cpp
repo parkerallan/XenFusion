@@ -434,8 +434,9 @@ void SceneRenderer::Initialize(IDirect3DDevice9* device)
     }
 }
 
-// Load the already-compiled standard shader from the project's shaders/ folder.
-// No compiling here — that only happens via CompileShaders (the button).
+// Load shaders from the project's shaders/ folder. Missing optional built-ins
+// fall back to the engine's shipped HLSL in memory so older projects gain new
+// renderer features without requiring an immediate manual shader rebuild.
 void SceneRenderer::LoadStandardShader()
 {
     if (m_project_root.empty())
@@ -473,6 +474,15 @@ void SceneRenderer::LoadStandardShader()
     {
         IDirect3DVertexShader9* nvs = shader::LoadVS(m_device, out / (std::string(stem) + "_vs.cso"));
         IDirect3DPixelShader9*  nps = shader::LoadPS(m_device, out / (std::string(stem) + "_ps.cso"));
+        if (!nvs || !nps)
+        {
+            if (nvs) { nvs->Release(); nvs = nullptr; }
+            if (nps) { nps->Release(); nps = nullptr; }
+            const std::filesystem::path source = m_standard_src.parent_path() /
+                (std::string(stem) + ".hlsl");
+            nvs = shader::CompileVSFile(m_device, source, "VSMain");
+            nps = shader::CompilePSFile(m_device, source, "PSMain");
+        }
         if (nvs && nps)
         {
             if (ovs) ovs->Release();
@@ -490,6 +500,7 @@ void SceneRenderer::LoadStandardShader()
     reload("bloom_blur",    m_bloom_blur_vs,    m_bloom_blur_ps);
     reload("bloom_combine", m_bloom_combine_vs, m_bloom_combine_ps);
     reload("beam", m_beam_vs, m_beam_ps); // spot volumetric shaft (optional)
+    reload("image", m_image_vs, m_image_ps); // Image attribute overlay (optional)
     reload("video", m_video_vs, m_video_ps); // Video attribute overlay (optional)
     if (m_vs && (!m_bloom_bright_ps || !m_bloom_blur_ps || !m_bloom_combine_ps))
         applog::Warn("Bloom shaders not compiled — emissive glow off until 'Compile shaders'");
@@ -520,6 +531,11 @@ void SceneRenderer::Shutdown()
         if (t.cr) t.cr->Release();
     }
     m_video_tex.clear();
+    for (auto& image : m_image_textures)
+        if (image.second) image.second->Release();
+    m_image_textures.clear();
+    if (m_image_ps)   { m_image_ps->Release();   m_image_ps = nullptr; }
+    if (m_image_vs)   { m_image_vs->Release();   m_image_vs = nullptr; }
     if (m_video_ps)   { m_video_ps->Release();   m_video_ps = nullptr; }
     if (m_video_vs)   { m_video_vs->Release();   m_video_vs = nullptr; }
     if (m_cube_ib)    { m_cube_ib->Release();    m_cube_ib = nullptr; }
@@ -840,9 +856,11 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_shader_items.clear();
     m_spot_gizmos.clear();
     m_spot_beams.clear();
+    m_image_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
     m_phys_debug.clear(); // rebuilt from the scene each frame (authoring wireframes)
+    int overlay_sequence = 0;
     if (SceneFile* scene = state.SelectedScene())
     {
         for (int i = 0; i < (int)scene->objects.size(); ++i)
@@ -957,6 +975,20 @@ void SceneRenderer::RenderUi(EngineState& state)
                     for (int k = 0; k < 3; ++k) m_ambient[k] += a.light_color[k] * a.light_intensity;
                     have_env = true;
                 }
+                else if (a.type == "Image" && !a.image_path.empty())
+                {
+                    ImageItem image;
+                    image.path_abs = (state.project_root / a.image_path).string();
+                    image.x = a.image_x; image.y = a.image_y;
+                    image.w = a.image_w; image.h = a.image_h;
+                    image.stretch = a.image_stretch;
+                    image.lock_aspect = a.image_lock_aspect;
+                    for (int k = 0; k < 3; ++k) image.tint[k] = a.image_tint[k];
+                    image.alpha = a.image_alpha;
+                    image.priority = a.image_priority;
+                    image.sequence = overlay_sequence++;
+                    m_image_items.push_back(image);
+                }
                 else if (a.type == "Video" && !a.video_path.empty())
                 {
                     VideoItem vi;
@@ -971,6 +1003,7 @@ void SceneRenderer::RenderUi(EngineState& state)
                     for (int k = 0; k < 3; ++k) vi.tint[k] = a.video_tint[k];
                     vi.alpha     = a.video_alpha;
                     vi.priority  = a.video_priority;
+                    vi.sequence  = overlay_sequence++;
                     vi.play_mode = a.video_play_mode;
                     vi.volume    = a.video_volume;
                     vi.muted     = a.video_muted;
@@ -1929,9 +1962,9 @@ void SceneRenderer::RenderGpu(float dt)
     // Emissive glow: blur the exported glow mask and lay it over the scene.
     RenderBloom();
 
-    // Video attribute overlays, composited on top of the finished frame. The
+    // Image/video overlays, composited on top of the finished frame. The video
     // clock only advances in the Play preview; edit mode holds the first frame.
-    RenderVideoOverlay(m_phys_on ? dt : 0.0f);
+    RenderOverlay(m_phys_on ? dt : 0.0f);
 
     // Audio attribute sources — audible only while the Play preview runs.
     UpdateAudio(dt);
@@ -2269,11 +2302,9 @@ int SceneRenderer::VideoModeFor(const VideoItem& item) const
     return ov != m_video_overrides.end() ? ov->second.mode : item.play_mode;
 }
 
-// The Video attribute overlays: reconcile the player's streams with this
-// frame's items, then draw each as a screen-space quad over the finished
-// scene (after bloom), higher priority first (= behind). Alpha writes are
-// masked so the viewport texture stays opaque for ImGui.
-void SceneRenderer::RenderVideoOverlay(float dt)
+// Reconcile video streams, then draw static images and video frames together
+// over the finished scene. One priority list preserves ordering across types.
+void SceneRenderer::RenderOverlay(float dt)
 {
     // Reconcile + advance the decoder even when nothing draws (teardown path).
     // Keys/modes go through the script override here — after this frame's
@@ -2316,16 +2347,21 @@ void SceneRenderer::RenderVideoOverlay(float dt)
             ++i;
     }
 
-    if (m_video_items.empty() || !m_video_vs || !m_video_ps || !m_rtSurface)
+    if ((m_image_items.empty() && m_video_items.empty()) || !m_rtSurface)
         return;
 
-    // Higher priority draws first, i.e. ends up behind (Vulkan semantics).
-    std::vector<int> order;
+    struct OverlayRef { bool image; int index; int priority; int sequence; };
+    std::vector<OverlayRef> order;
+    for (int i = 0; i < (int)m_image_items.size(); ++i)
+        order.push_back({true, i, m_image_items[i].priority, m_image_items[i].sequence});
     for (int i = 0; i < (int)m_video_items.size(); ++i)
-        order.push_back(i);
+        order.push_back({false, i, m_video_items[i].priority, m_video_items[i].sequence});
     std::stable_sort(order.begin(), order.end(),
-                     [this](int a, int b)
-                     { return m_video_items[a].priority > m_video_items[b].priority; });
+                     [](const OverlayRef& a, const OverlayRef& b)
+                     {
+                         return a.priority != b.priority
+                             ? a.priority > b.priority : a.sequence < b.sequence;
+                     });
 
     if (FAILED(m_device->BeginScene()))
         return;
@@ -2353,14 +2389,55 @@ void SceneRenderer::RenderVideoOverlay(float dt)
         m_device->SetSamplerState(st, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
         m_device->SetSamplerState(st, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
     }
-    m_device->SetVertexShader(m_video_vs);
-    m_device->SetPixelShader(m_video_ps);
     const float halfTexel[4] = { 1.0f / (float)m_width, 1.0f / (float)m_height, 0.0f, 0.0f };
-    m_device->SetVertexShaderConstantF(0, halfTexel, 1);
 
     struct QuadVtx { float x, y, z, u, v; };
-    for (int idx : order)
+    for (const OverlayRef& ref : order)
     {
+        if (ref.image)
+        {
+            if (!m_image_vs || !m_image_ps)
+                continue;
+            const ImageItem& item = m_image_items[ref.index];
+            auto found = m_image_textures.find(item.path_abs);
+            if (found == m_image_textures.end())
+                found = m_image_textures.emplace(item.path_abs,
+                    mesh::LoadTexture(m_device, item.path_abs, nullptr, nullptr)).first;
+            IDirect3DTexture9* texture = found->second;
+            if (!texture)
+                continue;
+            D3DSURFACE_DESC desc = {};
+            if (FAILED(texture->GetLevelDesc(0, &desc)))
+                continue;
+
+            float x0 = -1.0f, y0 = 1.0f, x1 = 1.0f, y1 = -1.0f;
+            if (!item.stretch)
+            {
+                const float width = item.w;
+                const float height = item.lock_aspect && desc.Width > 0
+                    ? width * (float)desc.Height / (float)desc.Width : item.h;
+                x0 = item.x / 1280.0f * 2.0f - 1.0f;
+                x1 = (item.x + width) / 1280.0f * 2.0f - 1.0f;
+                y0 = 1.0f - item.y / 720.0f * 2.0f;
+                y1 = 1.0f - (item.y + height) / 720.0f * 2.0f;
+            }
+            const QuadVtx quad[4] = {
+                { x0, y0, 0.0f, 0.0f, 0.0f }, { x1, y0, 0.0f, 1.0f, 0.0f },
+                { x0, y1, 0.0f, 0.0f, 1.0f }, { x1, y1, 0.0f, 1.0f, 1.0f },
+            };
+            const float tint[4] = { item.tint[0], item.tint[1], item.tint[2], item.alpha };
+            m_device->SetVertexShader(m_image_vs);
+            m_device->SetPixelShader(m_image_ps);
+            m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+            m_device->SetPixelShaderConstantF(0, tint, 1);
+            m_device->SetTexture(0, texture);
+            m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+            continue;
+        }
+
+        if (!m_video_vs || !m_video_ps)
+            continue;
+        const int idx = ref.index;
         const VideoItem* item = &m_video_items[idx];
         vid::Frame f;
         if (!m_video.GetFrame(keys[idx], f))
@@ -2393,6 +2470,9 @@ void SceneRenderer::RenderVideoOverlay(float dt)
         };
 
         const float tint[4] = { item->tint[0], item->tint[1], item->tint[2], item->alpha };
+        m_device->SetVertexShader(m_video_vs);
+        m_device->SetPixelShader(m_video_ps);
+        m_device->SetVertexShaderConstantF(0, halfTexel, 1);
         m_device->SetPixelShaderConstantF(0, tint, 1);
         m_device->SetTexture(0, t->y);
         m_device->SetTexture(1, t->cb);

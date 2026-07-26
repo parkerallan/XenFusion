@@ -198,7 +198,22 @@ private:
     std::vector<DrawItem>   m_draw_items;
     std::vector<ShaderItem> m_shader_items;
 
-    // --- Video overlay ("Video" attribute; mirrors the editor's path) ---
+    struct ImageItem
+    {
+        std::string path;
+        float x, y, w, h;
+        bool  stretch;
+        bool  lock_aspect;
+        float tint[3];
+        float alpha;
+        int   priority;
+        int   sequence;
+        ImageItem() : x(0), y(0), w(0), h(0), stretch(false), lock_aspect(false),
+                  alpha(1.0f), priority(1), sequence(0)
+        { tint[0] = tint[1] = tint[2] = 1.0f; }
+    };
+
+    // --- Image/video overlays ---
     // Screen-space quads over the finished 3D scene, drawn INSIDE the tiled
     // pass (they replay per band) through the video.hlsl builtin. The pak's
     // raw VIDE entry is range-streamed by the shared VideoPlayer; separate
@@ -215,11 +230,12 @@ private:
         float tint[3];
         float alpha;
         int   priority;        // higher = drawn behind
+        int   sequence;        // scene order for equal priorities
         int   play_mode;
         float volume;
         bool  muted;
         VideoItem() : x(0), y(0), w(0), h(0), stretch(false), lock_aspect(true),
-                      alpha(1.0f), priority(1), play_mode(2), volume(1.0f), muted(false)
+                      alpha(1.0f), priority(1), sequence(0), play_mode(2), volume(1.0f), muted(false)
         { tint[0] = tint[1] = tint[2] = 1.0f; }
     };
 
@@ -240,7 +256,7 @@ private:
         { y[0] = y[1] = cb[0] = cb[1] = cr[0] = cr[1] = NULL; }
     };
 
-    void        RenderVideoOverlay(float dt);
+    void        RenderOverlay(float dt);
     RtVideoTex* EnsureVideoTex(const std::string& key, const vid::Frame& frame);
     // The item's stream key / play mode with any script override applied
     // (evaluated at draw time, after this frame's scripts ran).
@@ -291,6 +307,7 @@ private:
     StreamPak              m_pak;
     aud::AudioPlayer       m_audio;
 
+    std::vector<ImageItem>  m_image_items;
     std::vector<VideoItem>  m_video_items;
     std::vector<RtVideoTex> m_video_tex;
     // Script play/stop overrides (object name -> mode + restart generation);
@@ -305,6 +322,7 @@ private:
     };
     std::map<std::string, VideoOverride> m_video_overrides;
     vid::VideoPlayer        m_video;
+    RtShader                m_image_shader;
     RtShader                m_video_shader;
 
     // Streaming: the pak is driven through the residency cache.

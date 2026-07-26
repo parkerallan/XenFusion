@@ -6,6 +6,7 @@
 #include "video/VideoImport.h"
 
 #include "imgui.h"
+#include "stb/stb_image.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -611,6 +612,89 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
+        else if (attr.type == "Image")
+        {
+            char buf[260];
+            const std::string shown = attr.image_path.empty() ? "(drag a PNG or JPG from Assets)" : attr.image_path;
+            std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##image_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+                    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
+                    {
+                        attr.image_path = dropped;
+                        int width = 0, height = 0, channels = 0;
+                        const std::filesystem::path source = state.project_root / dropped;
+                        if (stbi_info(source.string().c_str(), &width, &height, &channels) &&
+                            width > 0 && height > 0)
+                        {
+                            attr.image_w = (float)width;
+                            attr.image_h = (float)height;
+                        }
+                        save();
+                    }
+                    else
+                    {
+                        state.AddLog("Image attributes support PNG and JPG files", LogLevel::Error);
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            bool edited = false, commit = false;
+            if (ImGui::Checkbox("Stretch To Screen", &attr.image_stretch)) { edited = commit = true; }
+            ImGui::BeginDisabled(attr.image_stretch);
+            float pos[2] = { attr.image_x, attr.image_y };
+            if (ImGui::DragFloat2("Position", pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            {
+                attr.image_x = pos[0]; attr.image_y = pos[1];
+                edited = true;
+            }
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (attr.image_lock_aspect)
+            {
+                const float aspect = attr.image_h > 0.0f ? attr.image_w / attr.image_h : 1.0f;
+                if (ImGui::DragFloat("Width", &attr.image_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                {
+                    attr.image_h = attr.image_w / aspect;
+                    edited = true;
+                }
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else
+            {
+                float size[2] = { attr.image_w, attr.image_h };
+                if (ImGui::DragFloat2("Size", size, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                {
+                    attr.image_w = size[0]; attr.image_h = size[1];
+                    edited = true;
+                }
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.image_lock_aspect)) { edited = commit = true; }
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
+            edited |= ImGui::ColorEdit3("Tint", attr.image_tint);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Alpha", &attr.image_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragInt("Priority", &attr.image_priority, 0.1f, 0, 100);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TextDisabled("Higher priority draws behind lower.");
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
         else if (attr.type == "Video")
         {
             // Read-only path display; set by dragging a video from the Assets
@@ -929,6 +1013,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Trigger Volume";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Image"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Image";
             obj->attributes.push_back(attr);
             save();
         }

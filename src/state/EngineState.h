@@ -84,6 +84,19 @@ struct ObjectAttribute
     int   trig_shape       = 0;    // 0=Box, 1=Sphere
     float trig_size[3]     = {0.5f, 0.5f, 0.5f}; // Box half-extents / Sphere radius (x)
 
+    // For "Image" (static screen-space overlay). Source PNG/JPG files are
+    // cooked to native Xbox textures for the console runtime.
+    std::string image_path;
+    float image_x      = 0.0f;
+    float image_y      = 0.0f;
+    float image_w      = 256.0f;
+    float image_h      = 256.0f;
+    bool  image_stretch = false;
+    bool  image_lock_aspect = false;
+    float image_tint[3] = {1.0f, 1.0f, 1.0f};
+    float image_alpha   = 1.0f;
+    int   image_priority = 1;
+
     // For "Video" (screen-space overlay quad, mirrors the Vulkan engine's
     // Video2D): an .mpg (MPEG-1 + MP2) decoded by the shared VideoPlayer.
     // Position/size are in a 1280x720 reference space; edit mode shows the

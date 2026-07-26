@@ -123,6 +123,7 @@ if ($proj) { $s = (Get-Content $proj.FullName -Raw | ConvertFrom-Json).startupSc
 $sceneFile = Join-Path $Project $startup
 
 $meshes = @()
+$images = @()
 $videos = @()
 $audios = @()
 $animators = @()
@@ -131,6 +132,7 @@ if (Test-Path $sceneFile) {
     foreach ($o in $scene.objects) {
         foreach ($a in $o.attributes) {
             if ($a.model_path) { $meshes += $a.model_path }
+            if ($a.imagePath)  { $images += $a.imagePath }
             if ($a.videoPath)  { $videos += $a.videoPath }  # "Video" attribute -> raw VIDE entry
             if ($a.audioPath)  { $audios += $a.audioPath }  # "Audio" attribute -> raw AUDI entry
             if ($a.controllerPath) { $animators += $a.controllerPath }
@@ -138,6 +140,7 @@ if (Test-Path $sceneFile) {
     }
 }
 $meshes = @($meshes | Select-Object -Unique)
+$images = @($images | Select-Object -Unique)
 $videos = @($videos | Select-Object -Unique)
 $audios = @($audios | Select-Object -Unique)
 $animators = @($animators | Select-Object -Unique)
@@ -165,12 +168,14 @@ if ($animators.Count -gt 0) {
     }
 }
 
-$cookArgs = @($meshes) + @($videos) + @($audios) + @($animArgs)
+$imageArgs = @()
+foreach ($image in $images) { $imageArgs += @("--image", [string]$image) }
+$cookArgs = @($meshes) + @($imageArgs) + @($videos) + @($audios) + @($animArgs)
 if ($cookArgs.Count -gt 0) {
     & $spakcExe build (Join-Path $out "game.spak") $Project @cookArgs
     if ($LASTEXITCODE -ne 0) { throw "spakc cook failed" }
 } else {
-    Write-Output "Note: startup scene references no meshes/videos; no game.spak written (shader-only scene)"
+    Write-Output "Note: startup scene references no packaged assets; no game.spak written (shader-only scene)"
 }
 if (Test-Path $animCookDir) { Remove-Item -Recurse -Force $animCookDir }
 

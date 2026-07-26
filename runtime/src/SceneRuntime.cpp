@@ -260,7 +260,7 @@ void SceneRuntime::AudioSetLoop(int objectIndex, bool loop)
 }
 
 // Lua video.play/stop: an override on the object's Video attribute play mode,
-// consulted when RenderVideoOverlay builds the wanted set each frame. The
+// consulted when RenderOverlay builds the wanted set each frame. The
 // parsed scene keeps its authored value. play on a video that isn't currently
 // running bumps the restart generation (new stream key -> decode from the
 // top); play while running only updates the mode (Once <-> Loop, live).
@@ -497,6 +497,7 @@ void SceneRuntime::InitBloom(XboxRenderer& renderer)
     // Spot volumetric beam shader. Optional the same way: missing .cso just
     // means no light shafts (older deploys).
     m_content.LoadBuiltin("beam", m_beam);
+    m_content.LoadBuiltin("image", m_image_shader); // Image attribute overlay (optional)
     m_content.LoadBuiltin("video", m_video_shader); // Video attribute overlay (optional)
 }
 
@@ -634,6 +635,7 @@ void SceneRuntime::Shutdown()
             if (m_video_tex[i].cr[s]) m_video_tex[i].cr[s]->Release();
         }
     m_video_tex.clear();
+    m_image_shader.Release();
     m_video_shader.Release();
     m_bloom_combine.Release();
     m_bloom_blur.Release();
@@ -765,6 +767,7 @@ void SceneRuntime::BuildDrawLists()
 {
     m_draw_items.clear();
     m_shader_items.clear();
+    m_image_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
     m_has_cam = false;
@@ -786,6 +789,7 @@ void SceneRuntime::BuildDrawLists()
     m_spot_dir[0][3] = m_spot_dir[1][3] = 1.0f;
     m_ambient[0] = m_ambient[1] = m_ambient[2] = m_ambient[3] = 0.0f;
     m_spot_beam_count = 0;
+    int overlay_sequence = 0;
 
     for (size_t i = 0; i < m_scene.objects.size(); ++i)
     {
@@ -852,6 +856,20 @@ void SceneRuntime::BuildDrawLists()
                 ai.doppler  = at.audio_doppler;
                 m_audio_items.push_back(ai);
             }
+            else if (at.type == "Image" && !at.image_path.empty())
+            {
+                ImageItem image;
+                image.path = at.image_path;
+                image.x = at.image_x; image.y = at.image_y;
+                image.w = at.image_w; image.h = at.image_h;
+                image.stretch = at.image_stretch;
+                image.lock_aspect = at.image_lock_aspect;
+                for (int k = 0; k < 3; ++k) image.tint[k] = at.image_tint[k];
+                image.alpha = at.image_alpha;
+                image.priority = at.image_priority;
+                image.sequence = overlay_sequence++;
+                m_image_items.push_back(image);
+            }
             else if (at.type == "Video" && !at.video_path.empty())
             {
                 VideoItem vi;
@@ -867,6 +885,7 @@ void SceneRuntime::BuildDrawLists()
                 for (int k = 0; k < 3; ++k) vi.tint[k] = at.video_tint[k];
                 vi.alpha     = at.video_alpha;
                 vi.priority  = at.video_priority;
+                vi.sequence  = overlay_sequence++;
                 vi.play_mode = at.video_play_mode;
                 vi.volume    = at.video_volume;
                 vi.muted     = at.video_muted;
@@ -1261,9 +1280,9 @@ void SceneRuntime::Render(float dt)
         m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
     }
 
-    // --- Video attribute overlays (screen-space, on top of everything) ---
+    // --- Image/video overlays (screen-space, on top of everything) ---
     // Drawn inside the tiled pass — a clip-space quad replays fine per band.
-    RenderVideoOverlay(dt);
+    RenderOverlay(dt);
 
     // --- Audio attribute sources (the console always plays) ---
     UpdateAudio(dt, view);
@@ -1441,7 +1460,7 @@ int SceneRuntime::VideoModeFor(const VideoItem& item) const
     return ov != m_video_overrides.end() ? ov->second.mode : item.play_mode;
 }
 
-void SceneRuntime::RenderVideoOverlay(float dt)
+void SceneRuntime::RenderOverlay(float dt)
 {
     // Keys/modes go through the script override here — after this frame's
     // scripts ran — so a video.play/stop lands on the same frame's draw.
@@ -1493,30 +1512,118 @@ void SceneRuntime::RenderVideoOverlay(float dt)
             ++i;
     }
 
-    if (m_video_items.empty() || !m_video_shader.Valid())
+    if (m_image_items.empty() && m_video_items.empty())
         return;
 
-    // Order: higher priority first = ends up behind. Stable insertion sort —
-    // the stream cap keeps this list tiny.
-    std::vector<int> order;
-    for (int i = 0; i < (int)m_video_items.size(); ++i)
+    struct OverlayRef
     {
+        bool image;
+        int index;
+        int priority;
+        int sequence;
+        OverlayRef(bool isImage, int itemIndex, int itemPriority, int itemSequence)
+            : image(isImage), index(itemIndex), priority(itemPriority), sequence(itemSequence) {}
+    };
+    std::vector<OverlayRef> order;
+    for (int i = 0; i < (int)m_image_items.size(); ++i)
+    {
+        OverlayRef ref(true, i, m_image_items[i].priority, m_image_items[i].sequence);
         int j = 0;
         while (j < (int)order.size() &&
-               m_video_items[order[j]].priority >= m_video_items[i].priority)
-            ++j;
-        order.insert(order.begin() + j, i);
+               (order[j].priority > ref.priority ||
+            (order[j].priority == ref.priority && order[j].sequence <= ref.sequence))) ++j;
+        order.insert(order.begin() + j, ref);
+    }
+    for (int i = 0; i < (int)m_video_items.size(); ++i)
+    {
+        OverlayRef ref(false, i, m_video_items[i].priority, m_video_items[i].sequence);
+        int j = 0;
+        while (j < (int)order.size() &&
+               (order[j].priority > ref.priority ||
+            (order[j].priority == ref.priority && order[j].sequence <= ref.sequence))) ++j;
+        order.insert(order.begin() + j, ref);
     }
 
     struct QuadVtx { float x, y, z, u, v; };
     bool stateSet = false;
     for (size_t oi = 0; oi < order.size(); ++oi)
     {
-        const VideoItem& item = m_video_items[order[oi]];
-        vid::Frame f;
-        if (!m_video.GetFrame(keys[order[oi]], f))
+        const OverlayRef& ref = order[oi];
+        if (ref.image)
+        {
+            if (!m_image_shader.Valid())
+                continue;
+            const ImageItem& item = m_image_items[ref.index];
+            IDirect3DTexture9* texture = m_cache.GetTexture(item.path);
+            if (!texture)
+                continue;
+            D3DSURFACE_DESC desc;
+            if (FAILED(texture->GetLevelDesc(0, &desc)))
+                continue;
+
+            if (!stateSet)
+            {
+                m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+                m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+                m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+                    D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+                    D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+                m_device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ZERO);
+                m_device->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
+                m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+                m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+                m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+                for (DWORD st = 0; st < 3; ++st)
+                {
+                    m_device->SetSamplerState(st, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+                    m_device->SetSamplerState(st, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+                    m_device->SetSamplerState(st, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+                    m_device->SetSamplerState(st, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                }
+                stateSet = true;
+            }
+
+            float x0 = -1.0f, y0 = 1.0f, x1 = 1.0f, y1 = -1.0f;
+            if (!item.stretch)
+            {
+                const float width = item.w;
+                const float height = item.lock_aspect && desc.Width > 0
+                    ? width * (float)desc.Height / (float)desc.Width : item.h;
+                x0 = item.x / 1280.0f * 2.0f - 1.0f;
+                x1 = (item.x + width) / 1280.0f * 2.0f - 1.0f;
+                y0 = 1.0f - item.y / 720.0f * 2.0f;
+                y1 = 1.0f - (item.y + height) / 720.0f * 2.0f;
+            }
+            const QuadVtx quad[4] = {
+                { x0, y0, 0.0f, 0.0f, 0.0f },
+                { x1, y0, 0.0f, 1.0f, 0.0f },
+                { x0, y1, 0.0f, 0.0f, 1.0f },
+                { x1, y1, 0.0f, 1.0f, 1.0f },
+            };
+            const float halfTexel[4] = { 1.0f / 1280.0f, 1.0f / 720.0f, 0.0f, 0.0f };
+            const float tint[4] = { item.tint[0], item.tint[1], item.tint[2], item.alpha };
+            m_device->SetVertexShader(m_image_shader.vs);
+            m_device->SetPixelShader(m_image_shader.ps);
+            m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+            m_device->SetPixelShaderConstantF(0, tint, 1);
+            m_device->SetTexture(0, texture);
+            m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
             continue;
-        RtVideoTex* t = EnsureVideoTex(keys[order[oi]], f);
+        }
+
+        if (!m_video_shader.Valid())
+            continue;
+        const int videoIndex = ref.index;
+        const VideoItem& item = m_video_items[videoIndex];
+        vid::Frame f;
+        if (!m_video.GetFrame(keys[videoIndex], f))
+            continue;
+        RtVideoTex* t = EnsureVideoTex(keys[videoIndex], f);
         if (!t)
             continue;
 
@@ -1577,7 +1684,11 @@ void SceneRuntime::RenderVideoOverlay(float dt)
             { x1, y1, 0.0f, uMax, vMax },
         };
 
+        const float halfTexel[4] = { 1.0f / 1280.0f, 1.0f / 720.0f, 0.0f, 0.0f };
         const float tint[4] = { item.tint[0], item.tint[1], item.tint[2], item.alpha };
+        m_device->SetVertexShader(m_video_shader.vs);
+        m_device->SetPixelShader(m_video_shader.ps);
+        m_device->SetVertexShaderConstantF(0, halfTexel, 1);
         m_device->SetPixelShaderConstantF(0, tint, 1);
         m_device->SetTexture(0, t->y[t->cur]);
         m_device->SetTexture(1, t->cb[t->cur]);

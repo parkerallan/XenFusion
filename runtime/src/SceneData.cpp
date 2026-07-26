@@ -398,6 +398,31 @@ namespace scenedata
                         if (amx && amx->type == JValue::Number) at.audio_max_dist = (float)amx->num;
                         if (ado && ado->type == JValue::Number) at.audio_doppler = (float)ado->num;
                     }
+                    else if (at.type == "Image")
+                    {
+                        const JValue* ipp = ja.Find("imagePath");
+                        const JValue* ix  = ja.Find("x");
+                        const JValue* iy  = ja.Find("y");
+                        const JValue* iw  = ja.Find("w");
+                        const JValue* ih  = ja.Find("h");
+                        const JValue* ist = ja.Find("stretch");
+                        const JValue* ila = ja.Find("lockAspect");
+                        const JValue* iti = ja.Find("tint");
+                        const JValue* ial = ja.Find("alpha");
+                        const JValue* ipr = ja.Find("priority");
+                        if (ipp && ipp->type == JValue::Str)    at.image_path = ipp->str;
+                        if (ix  && ix->type  == JValue::Number) at.image_x = (float)ix->num;
+                        if (iy  && iy->type  == JValue::Number) at.image_y = (float)iy->num;
+                        if (iw  && iw->type  == JValue::Number) at.image_w = (float)iw->num;
+                        if (ih  && ih->type  == JValue::Number) at.image_h = (float)ih->num;
+                        if (ist && ist->type == JValue::Bool)   at.image_stretch = ist->b;
+                        if (ila && ila->type == JValue::Bool)   at.image_lock_aspect = ila->b;
+                        at.image_tint[0] = NumAt(iti, 0, 1.0f);
+                        at.image_tint[1] = NumAt(iti, 1, 1.0f);
+                        at.image_tint[2] = NumAt(iti, 2, 1.0f);
+                        if (ial && ial->type == JValue::Number) at.image_alpha = (float)ial->num;
+                        if (ipr && ipr->type == JValue::Number) at.image_priority = (int)ipr->num;
+                    }
                     else if (at.type == "Video")
                     {
                         const JValue* vpp = ja.Find("videoPath");

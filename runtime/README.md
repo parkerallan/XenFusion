@@ -70,10 +70,14 @@ game:\game.spak            (ALL meshes + textures, cooked + LZX-compressed - see
 game:\shaders\*.cso        (precompiled Xenos shaders) + *.dir (custom //@ state)
 ```
 
-Meshes and textures ship **only** inside `game.spak` (no raw `.mesh`/`.png` in the
-image); the runtime streams them from it. `deploy.ps1` cooks the pak automatically
-(building `tools\spakc` and enumerating the startup scene's meshes), so the deploy
-requires the XDK. See [STREAMING.md](STREAMING.md) for the streaming subsystem.
+Meshes and textures ship **only** inside `game.spak` (no raw `.mesh`/`.png`/`.jpg`
+in the image); the runtime streams them from it. Static `Image` attributes accept
+PNG/JPG authoring files. During deploy, opaque images become DXT1 XPR2 textures and
+images with alpha become DXT5 XPR2 textures. They load asynchronously as whole
+textures through the same LRU cache as material textures; the console never decodes
+PNG/JPG pixels. `deploy.ps1` cooks the pak automatically (building `tools\spakc` and
+enumerating the startup scene's meshes and images), so the deploy requires the XDK.
+See [STREAMING.md](STREAMING.md) for the streaming subsystem.
 
 Then launch it (Xenia mounts the folder holding the `.xex` as `game:\`):
 

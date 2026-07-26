@@ -41,6 +41,10 @@ public:
     // pak, so wait rather than fall back to a raw load).
     RtMesh* GetMesh(const std::string& relPath, bool* inPak);
 
+    // Resolve a standalone TX2D texture by scene-relative path. Returns the
+    // placeholder while its asynchronous load is pending, or NULL if absent.
+    IDirect3DTexture9* GetTexture(const std::string& relPath);
+
     // Request a raw byte range through the shared worker's fixed 16 KiB,
     // sector-aligned page cache. Returns true and copies the resident bytes when
     // ready; false means queued/loading/failed. NULL out is a prefetch request.

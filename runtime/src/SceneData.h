@@ -71,6 +71,15 @@ struct RtAttribute
     int   trig_shape;       // 0=Box, 1=Sphere
     float trig_size[3];
 
+    // For "Image" (static screen-space overlay; native TX2D texture in SPAK).
+    std::string image_path;
+    float image_x, image_y, image_w, image_h;
+    bool  image_stretch;
+    bool  image_lock_aspect;
+    float image_tint[3];
+    float image_alpha;
+    int   image_priority;
+
     // For "Video" (screen-space overlay quad; decoded by the shared
     // VideoPlayer from the pak's raw VIDE entry). Position/size in the
     // 1280x720 reference space; playMode 0=Off, 1=Play Once, 2=Loop.
@@ -136,6 +145,13 @@ struct RtAttribute
         phys_gravity_scale = 1.0f;
         trig_shape = 0;
         trig_size[0] = trig_size[1] = trig_size[2] = 0.5f;
+        image_x = 0.0f; image_y = 0.0f;
+        image_w = 256.0f; image_h = 256.0f;
+        image_stretch = false;
+        image_lock_aspect = false;
+        image_tint[0] = image_tint[1] = image_tint[2] = 1.0f;
+        image_alpha = 1.0f;
+        image_priority = 1;
         video_x = 320.0f; video_y = 180.0f;
         video_w = 640.0f; video_h = 360.0f;
         video_stretch = false;

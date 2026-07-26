@@ -2,7 +2,7 @@
 // spakc — Xbox 360 asset stream cooker.
 //
 // Modes:
-//   spakc build <out.spak> <contentRoot> <meshRel1> [meshRel2 ...] [--raw]
+//   spakc build <out.spak> <contentRoot> <assets...> [--image <imageRel>] [--raw]
 //       Cook a multi-entry game.spak from a set of meshes. Each mesh's M360 blob
 //       becomes a MESH entry (native big-endian VB/IB + baked alpha kind + the
 //       nameHashes of its 3 textures); each referenced texture is baked to an
@@ -447,6 +447,24 @@ bool AddVideo(std::vector<Entry>& entries, const std::string& rootAbs, const std
     return true;
 }
 
+// Cook a standalone Image attribute source into the same TX2D format used by
+// mesh materials. The scene-relative path is the runtime lookup key.
+bool AddImage(std::vector<Entry>& entries, std::set<unsigned int>& seen,
+              const std::string& rootAbs, const std::string& imageRel)
+{
+    const std::string imageAbs = AbsFrom(rootAbs, imageRel);
+    const unsigned int hash = spak::NameHash(imageRel.c_str());
+    const unsigned int alpha = ClassifyAlpha(imageAbs);
+    const char* format = alpha == spak::kAlphaOpaque ? "D3DFMT_DXT1" : "D3DFMT_DXT5";
+    if (AddTexture(entries, seen, imageAbs, imageRel, hash, false, format) == 0)
+    {
+        fprintf(stderr, "spakc: cannot cook image %s\n", imageAbs.c_str());
+        return false;
+    }
+    printf("spakc: image %s (%s)\n", imageRel.c_str(), format);
+    return true;
+}
+
 // Add an audio entry: the .mp2's bytes verbatim (already compressed; raw so
 // the AudioPlayer can read the entry's byte window straight out of the pak).
 bool AddAudio(std::vector<Entry>& entries, const std::string& rootAbs, const std::string& audioRel)
@@ -573,11 +591,12 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::string(argv[1]) == "build")
     {
         if (argc < 5)
-        { fprintf(stderr, "usage: spakc build <out.spak> <contentRoot> <meshRel...> [--raw]\n"); return 2; }
+        { fprintf(stderr, "usage: spakc build <out.spak> <contentRoot> <meshRel...> [--image <imageRel>] [--raw]\n"); return 2; }
         const std::string outSpak = argv[2];
         const std::string root    = argv[3];
         bool compress = true;
         std::vector<std::string> meshes;
+        std::vector<std::string> images;
         std::vector<std::string> videos; // .mpg args become raw VIDE entries
         std::vector<std::string> audios; // .mp2 args become raw AUDI entries
         struct AnimationArg { std::string source, logical; };
@@ -596,6 +615,13 @@ int main(int argc, char** argv)
                 animations.push_back(animation);
                 continue;
             }
+            if (arg == "--image")
+            {
+                if (i + 1 >= argc)
+                { fprintf(stderr, "spakc: --image requires <logical-path>\n"); return 2; }
+                images.push_back(argv[++i]);
+                continue;
+            }
             std::string ext = arg.size() >= 4 ? arg.substr(arg.size() - 4) : "";
             for (size_t c = 0; c < ext.size(); ++c)
                 if (ext[c] >= 'A' && ext[c] <= 'Z') ext[c] = (char)(ext[c] - 'A' + 'a');
@@ -603,7 +629,7 @@ int main(int argc, char** argv)
             else if (ext == ".mp2") audios.push_back(arg);
             else                    meshes.push_back(arg);
         }
-        if (meshes.empty() && videos.empty() && audios.empty() && animations.empty())
+        if (meshes.empty() && images.empty() && videos.empty() && audios.empty() && animations.empty())
         { fprintf(stderr, "spakc: no assets given\n"); return 2; }
         if (!ResolveBundler()) return 1;
         g_tmpBase = outSpak;
@@ -611,16 +637,18 @@ int main(int argc, char** argv)
         const std::string rootAbs = AbsPath(root);
         std::vector<Entry> entries;
         std::set<unsigned int> seenTex;
-        int okMeshes = 0, okVideos = 0, okAudios = 0, okAnimations = 0;
+        int okMeshes = 0, okImages = 0, okVideos = 0, okAudios = 0, okAnimations = 0;
         for (size_t i = 0; i < meshes.size(); ++i)
             if (AddMesh(entries, seenTex, rootAbs, meshes[i])) ++okMeshes;
+        for (size_t i = 0; i < images.size(); ++i)
+            if (AddImage(entries, seenTex, rootAbs, images[i])) ++okImages;
         for (size_t i = 0; i < videos.size(); ++i)
             if (AddVideo(entries, rootAbs, videos[i])) ++okVideos;
         for (size_t i = 0; i < audios.size(); ++i)
             if (AddAudio(entries, rootAbs, audios[i])) ++okAudios;
         for (size_t i = 0; i < animations.size(); ++i)
             if (AddAnimation(entries, animations[i].source, animations[i].logical)) ++okAnimations;
-        if (okMeshes == 0 && okVideos == 0 && okAudios == 0 && okAnimations == 0)
+        if (okMeshes == 0 && okImages == 0 && okVideos == 0 && okAudios == 0 && okAnimations == 0)
         { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;
     }

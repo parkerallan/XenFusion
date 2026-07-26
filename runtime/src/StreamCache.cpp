@@ -572,6 +572,11 @@ IDirect3DTexture9* StreamCache::GetTextureByHash(unsigned int hash)
     return m_placeholder;                            // loading -> magenta
 }
 
+IDirect3DTexture9* StreamCache::GetTexture(const std::string& relPath)
+{
+    return relPath.empty() ? NULL : GetTextureByHash(spak::NameHash(relPath.c_str()));
+}
+
 void StreamCache::RefreshMeshTextures(CacheMesh& cm)
 {
     for (size_t i = 0; i < cm.mesh.subsets.size() && i * 6 + 5 < cm.texHash.size(); ++i)

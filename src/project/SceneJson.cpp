@@ -99,6 +99,19 @@ namespace project
                     ja["shape"] = a.trig_shape;
                     ja["size"]  = {a.trig_size[0], a.trig_size[1], a.trig_size[2]};
                 }
+                else if (a.type == "Image")
+                {
+                    ja["imagePath"]  = a.image_path;
+                    ja["x"]          = a.image_x;
+                    ja["y"]          = a.image_y;
+                    ja["w"]          = a.image_w;
+                    ja["h"]          = a.image_h;
+                    ja["stretch"]    = a.image_stretch;
+                    ja["lockAspect"] = a.image_lock_aspect;
+                    ja["tint"]       = {a.image_tint[0], a.image_tint[1], a.image_tint[2]};
+                    ja["alpha"]      = a.image_alpha;
+                    ja["priority"]   = a.image_priority;
+                }
                 else if (a.type == "Audio")
                 {
                     ja["audioPath"] = a.audio_path;
@@ -251,6 +264,20 @@ namespace project
                             a.animator_initial_state   = ja.value("initialState", std::string());
                             a.animator_playback_speed = ja.value("playbackSpeed", 1.0f);
                             a.animator_auto_play       = ja.value("autoPlay", true);
+                        }
+                        else if (a.type == "Image")
+                        {
+                            a.image_path        = ja.value("imagePath", std::string());
+                            a.image_x           = ja.value("x", 0.0f);
+                            a.image_y           = ja.value("y", 0.0f);
+                            a.image_w           = ja.value("w", 256.0f);
+                            a.image_h           = ja.value("h", 256.0f);
+                            a.image_stretch     = ja.value("stretch", false);
+                            a.image_lock_aspect = ja.value("lockAspect", false);
+                            if (ja.contains("tint") && ja["tint"].is_array() && ja["tint"].size() == 3)
+                                for (int k = 0; k < 3; ++k) a.image_tint[k] = ja["tint"][k].get<float>();
+                            a.image_alpha       = ja.value("alpha", 1.0f);
+                            a.image_priority    = ja.value("priority", 1);
                         }
                         else if (a.type == "Audio")
                         {

@@ -234,6 +234,7 @@ add_custom_command(TARGET XenFusion POST_BUILD
         "${SHADER_SRC_DIR}/bloom_bright.hlsl"
         "${SHADER_SRC_DIR}/bloom_blur.hlsl"
         "${SHADER_SRC_DIR}/bloom_combine.hlsl"
+        "${SHADER_SRC_DIR}/image.hlsl"
         "${SHADER_SRC_DIR}/video.hlsl"
         "$<TARGET_FILE_DIR:XenFusion>/shaders"
     VERBATIM

@@ -340,8 +340,20 @@ private:
     IDirect3DVertexBuffer9* m_cube_vb = nullptr;
     IDirect3DIndexBuffer9*  m_cube_ib = nullptr;
 
-    // --- Video overlay ("Video" attribute; mirrors the Vulkan Video2D path) ---
-    // Captured in RenderUi, drawn by RenderVideoOverlay after the bloom combine:
+    struct ImageItem
+    {
+        std::string path_abs;
+        float x = 0, y = 0, w = 0, h = 0;
+        bool  stretch = false;
+        bool  lock_aspect = false;
+        float tint[3] = {1, 1, 1};
+        float alpha = 1.0f;
+        int   priority = 1;
+        int   sequence = 0;
+    };
+
+    // --- Image/video overlays ---
+    // Captured in RenderUi, drawn by RenderOverlay after the bloom combine:
     // screen-space quads sampling the shared VideoPlayer's YUV planes through
     // the video.hlsl builtin. Edit mode freezes on the first frame (dt = 0);
     // the Play preview advances the clock.
@@ -356,6 +368,7 @@ private:
         float tint[3] = {1, 1, 1};
         float alpha = 1.0f;
         int   priority = 1;    // higher = drawn behind
+        int   sequence = 0;    // scene order for equal priorities
         int   play_mode = 2;   // vid::PlayMode
         float volume = 1.0f;   // audio (Play mode only)
         bool  muted = false;
@@ -373,7 +386,7 @@ private:
         bool     used = false;  // reconcile mark
     };
 
-    void RenderVideoOverlay(float dt);
+    void RenderOverlay(float dt);
     VideoTex* EnsureVideoTex(const std::string& key, const vid::Frame& frame);
     // The item's stream key / play mode with any script override applied
     // (evaluated at draw time, after this frame's scripts ran).
@@ -433,7 +446,11 @@ private:
         unsigned gen  = 0;
     };
     std::map<std::string, VideoOverride> m_video_overrides;
+    std::vector<ImageItem> m_image_items;
+    std::map<std::string, IDirect3DTexture9*> m_image_textures;
     vid::VideoPlayer       m_video;
+    IDirect3DVertexShader9* m_image_vs = nullptr;
+    IDirect3DPixelShader9*  m_image_ps = nullptr;
     IDirect3DVertexShader9* m_video_vs = nullptr;
     IDirect3DPixelShader9*  m_video_ps = nullptr;
 };

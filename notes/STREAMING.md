@@ -112,12 +112,20 @@ no layer change ever falls mid-stream.
 
 **Phase 1 (built): Bundler-based textures.** `spakc` writes a one-line `.rdf` and
 runs the XDK's `Bundler.exe` (found via `XEDK`) to bake the source image into a
-console-native XPR2 (final tiled DXT5 layout + full mip chain + `D3DTexture`
+console-native XPR2 (final tiled DXT layout + full mip chain + `D3DTexture`
 header — Microsoft's own cooker, so the tiling is correct by construction). It
 then LZX-compresses the whole XPR2 (`XMemCompress`, win32 `xcompress.lib`) and
 writes the `.spak`. It **self-verifies** by decompressing its own payload and
 re-checking the XPR2 magic. Links only `xcompress.lib`; no tiling code of its own.
 `cook.ps1` builds it and cooks one texture into a deploy folder.
+
+Static `Image` overlay attributes use this same `TX2D` path. PNG/JPG are source
+formats only: `spakc --image` inspects alpha with stb_image, selects DXT1 for
+opaque sources or DXT5 when alpha is present, and hashes the scene-relative
+`imagePath` as the runtime key. `StreamCache` reads, registers, touches, and
+LRU-evicts the complete XPR2 texture asynchronously. This is whole-texture
+streaming, not progressive mip streaming; animated GIF/WebP decoding is outside
+the current console format.
 
 **Later: custom tiling (deferred swap behind the same format).** Replace the
 Bundler call with `d3dx9` + `xgraphics` directly, so there's no external tool and
