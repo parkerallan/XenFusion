@@ -49,11 +49,7 @@ void MapperPanel::Render(EngineState& state)
 
     ImGui::TextWrapped(
         "Bind PC keys/mouse to Xbox controls so you can drive scripts in the Play "
-        "preview without a gamepad (the console uses a real controller). The middle "
-        "column is the exact call the script uses. Nothing is bound until you set it: "
-        "click a binding, then press a key or mouse button (Esc clears). A stick axis "
-        "(e.g. LX) has a \"-\" and \"+\" row — bind one key to each side. "
-        "Right-click a binding for mouse-move options.");
+        "preview without a gamepad");
 
     if (ImGui::Button("Clear all")) { state.controller_mapping.Clear(); listening_ = -1; }
     ImGui::SameLine();

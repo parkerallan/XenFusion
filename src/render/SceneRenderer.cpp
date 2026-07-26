@@ -148,6 +148,60 @@ namespace
         return {v.x / len, v.y / len, v.z / len};
     }
 
+    bool IntersectBounds(const Vec3& origin, const Vec3& direction,
+                         const float* bounds_min, const float* bounds_max, float& distance)
+    {
+        float near_distance = 0.0f;
+        float far_distance = 1.0e30f;
+        const float ray_origin[3] = {origin.x, origin.y, origin.z};
+        const float ray_direction[3] = {direction.x, direction.y, direction.z};
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (std::abs(ray_direction[axis]) < 1.0e-7f)
+            {
+                if (ray_origin[axis] < bounds_min[axis] || ray_origin[axis] > bounds_max[axis])
+                    return false;
+                continue;
+            }
+            float first = (bounds_min[axis] - ray_origin[axis]) / ray_direction[axis];
+            float second = (bounds_max[axis] - ray_origin[axis]) / ray_direction[axis];
+            if (first > second)
+                std::swap(first, second);
+            near_distance = (std::max)(near_distance, first);
+            far_distance = (std::min)(far_distance, second);
+            if (near_distance > far_distance)
+                return false;
+        }
+        distance = near_distance;
+        return far_distance >= 0.0f;
+    }
+
+    bool InvertAffine(const D3DMATRIX& matrix, D3DMATRIX& inverse)
+    {
+        const float determinant =
+            matrix._11 * (matrix._22 * matrix._33 - matrix._23 * matrix._32) -
+            matrix._12 * (matrix._21 * matrix._33 - matrix._23 * matrix._31) +
+            matrix._13 * (matrix._21 * matrix._32 - matrix._22 * matrix._31);
+        if (std::abs(determinant) < 1.0e-8f)
+            return false;
+        const float inv_det = 1.0f / determinant;
+        inverse = {};
+        inverse._11 =  (matrix._22 * matrix._33 - matrix._23 * matrix._32) * inv_det;
+        inverse._12 = -(matrix._12 * matrix._33 - matrix._13 * matrix._32) * inv_det;
+        inverse._13 =  (matrix._12 * matrix._23 - matrix._13 * matrix._22) * inv_det;
+        inverse._21 = -(matrix._21 * matrix._33 - matrix._23 * matrix._31) * inv_det;
+        inverse._22 =  (matrix._11 * matrix._33 - matrix._13 * matrix._31) * inv_det;
+        inverse._23 = -(matrix._11 * matrix._23 - matrix._13 * matrix._21) * inv_det;
+        inverse._31 =  (matrix._21 * matrix._32 - matrix._22 * matrix._31) * inv_det;
+        inverse._32 = -(matrix._11 * matrix._32 - matrix._12 * matrix._31) * inv_det;
+        inverse._33 =  (matrix._11 * matrix._22 - matrix._12 * matrix._21) * inv_det;
+        inverse._41 = -(matrix._41 * inverse._11 + matrix._42 * inverse._21 + matrix._43 * inverse._31);
+        inverse._42 = -(matrix._41 * inverse._12 + matrix._42 * inverse._22 + matrix._43 * inverse._32);
+        inverse._43 = -(matrix._41 * inverse._13 + matrix._42 * inverse._23 + matrix._43 * inverse._33);
+        inverse._44 = 1.0f;
+        return true;
+    }
+
     D3DMATRIX LookAtLH(const Vec3& eye, const Vec3& at, const Vec3& up)
     {
         Vec3 z = Normalize(Sub(at, eye));
@@ -782,6 +836,7 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_spot_dir[0][3] = m_spot_dir[1][3] = 1.0f;
     m_ambient[0] = m_ambient[1] = m_ambient[2] = 0.0f;
     m_draw_items.clear();
+    m_pick_items.clear();
     m_shader_items.clear();
     m_spot_gizmos.clear();
     m_spot_beams.clear();
@@ -997,6 +1052,14 @@ void SceneRenderer::RenderUi(EngineState& state)
                 di.animator_auto_play = animator_auto_play;
                 m_draw_items.push_back(di);
             }
+            if (!model_path.empty())
+            {
+                PickItem pick;
+                pick.model_path = model_path;
+                pick.world = ComposeWorld(o);
+                pick.object_index = i;
+                m_pick_items.push_back(pick);
+            }
         }
     }
 
@@ -1073,6 +1136,9 @@ void SceneRenderer::RenderUi(EngineState& state)
     if (ready && m_rt)
     {
         ImGui::Image((ImTextureID)(intptr_t)m_rt, avail);
+        const bool viewport_clicked = ImGui::IsItemHovered() &&
+                                      ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        bool selection_click_consumed = false;
         m_renderRequested = true; // tell RenderGpu to fill it this frame
         HandleCameraInput();      // must follow the Image item (uses IsItemHovered)
 
@@ -1244,7 +1310,10 @@ void SceneRenderer::RenderUi(EngineState& state)
             }
             if (over_viewport && !gizmo_busy && hovered_point >= 0 &&
                 ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            {
                 state.selected_track_point_index = hovered_point;
+                selection_click_consumed = true;
+            }
             for (int p = 0; p < tp_count; ++p)
             {
                 if (!ok[p]) continue;
@@ -1319,6 +1388,49 @@ void SceneRenderer::RenderUi(EngineState& state)
                 if (SceneFile* s = state.SelectedScene()) project::SaveScene(*s);
                 m_gizmo_editing = false;
             }
+        }
+
+        if (viewport_clicked && !selection_click_consumed &&
+            !ImGuizmo::IsOver() && !ImGuizmo::IsUsing())
+        {
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const float ndc_x = ((mouse.x - p0.x) / avail.x) * 2.0f - 1.0f;
+            const float ndc_y = 1.0f - ((mouse.y - p0.y) / avail.y) * 2.0f;
+            const Vec3 view_direction = Normalize({ndc_x / m_proj._11, ndc_y / m_proj._22, 1.0f});
+            const Vec3 world_direction = Normalize({
+                view_direction.x * m_view._11 + view_direction.y * m_view._12 + view_direction.z * m_view._13,
+                view_direction.x * m_view._21 + view_direction.y * m_view._22 + view_direction.z * m_view._23,
+                view_direction.x * m_view._31 + view_direction.y * m_view._32 + view_direction.z * m_view._33});
+
+            int picked_object = -1;
+            float nearest_distance = 1.0e30f;
+            for (const PickItem& pick : m_pick_items)
+            {
+                GpuMesh* mesh = m_meshes.Get(pick.model_path);
+                D3DMATRIX inverse_world;
+                if (!mesh || !InvertAffine(pick.world, inverse_world))
+                    continue;
+                const Vec3 local_origin = TransformPoint({m_eye[0], m_eye[1], m_eye[2]}, inverse_world);
+                const Vec3 local_direction = {
+                    world_direction.x * inverse_world._11 + world_direction.y * inverse_world._21 + world_direction.z * inverse_world._31,
+                    world_direction.x * inverse_world._12 + world_direction.y * inverse_world._22 + world_direction.z * inverse_world._32,
+                    world_direction.x * inverse_world._13 + world_direction.y * inverse_world._23 + world_direction.z * inverse_world._33};
+                float local_distance = 0.0f;
+                if (!IntersectBounds(local_origin, local_direction, mesh->boundsMin, mesh->boundsMax, local_distance))
+                    continue;
+                const Vec3 local_hit = {local_origin.x + local_direction.x * local_distance,
+                                        local_origin.y + local_direction.y * local_distance,
+                                        local_origin.z + local_direction.z * local_distance};
+                const Vec3 world_hit = TransformPoint(local_hit, pick.world);
+                const float world_distance = Dot(Sub(world_hit, {m_eye[0], m_eye[1], m_eye[2]}), world_direction);
+                if (world_distance >= 0.0f && world_distance < nearest_distance)
+                {
+                    nearest_distance = world_distance;
+                    picked_object = pick.object_index;
+                }
+            }
+            state.selected_object = picked_object;
+            state.selected_track_point_index = -1;
         }
     }
     else

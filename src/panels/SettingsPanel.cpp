@@ -41,7 +41,7 @@ void SettingsPanel::Render(EngineState& state)
         ImGui::PopID();
     };
 
-    path_row("Xbox 360 SDK (XDK)", state.toolchain_xdk,      1);
+    path_row("Xbox 360 SDK (XDK) 2.0.21256.3", state.toolchain_xdk,      1);
     path_row("Xenia emulator",     state.toolchain_emulator, 2);
 
     ImGui::SeparatorText("Build Configuration");

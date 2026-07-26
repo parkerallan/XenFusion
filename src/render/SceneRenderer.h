@@ -93,6 +93,13 @@ private:
         std::vector<float> skin_palette;
     };
 
+    struct PickItem
+    {
+        std::string model_path;
+        D3DMATRIX   world;
+        int         object_index = -1;
+    };
+
     // A custom-shader object. Drawn on built-in geometry (quad/volume) at its
     // position, or on model_path's mesh when its geometry is "model".
     struct ShaderItem
@@ -299,6 +306,7 @@ private:
     // Models to draw this frame (captured in RenderUi) + the mesh cache that
     // bakes/loads them.
     std::vector<DrawItem>   m_draw_items;
+    std::vector<PickItem>   m_pick_items;
     std::vector<ShaderItem> m_shader_items;
     MeshCache               m_meshes;
     ShaderCache             m_shaders;

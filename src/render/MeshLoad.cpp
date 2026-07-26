@@ -1,5 +1,6 @@
 #include "render/Mesh.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -49,6 +50,19 @@ namespace mesh
         in.read(reinterpret_cast<char*>(indices.data()),  (std::streamsize)(indices.size() * sizeof(uint32_t)));
         if (!in)
             return false;
+
+        out.boundsMin[0] = out.boundsMax[0] = vertices[0].px;
+        out.boundsMin[1] = out.boundsMax[1] = vertices[0].py;
+        out.boundsMin[2] = out.boundsMax[2] = vertices[0].pz;
+        for (const MeshVertex& vertex : vertices)
+        {
+            const float position[3] = {vertex.px, vertex.py, vertex.pz};
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                out.boundsMin[axis] = (std::min)(out.boundsMin[axis], position[axis]);
+                out.boundsMax[axis] = (std::max)(out.boundsMax[axis], position[axis]);
+            }
+        }
 
         // Per-material subsets: index range + texture paths.
         uint32_t subset_count = 0;

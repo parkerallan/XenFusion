@@ -132,6 +132,8 @@ struct GpuMesh
     MeshSkeleton            skeleton;
     uint32_t vertexCount = 0;
     uint32_t indexCount  = 0;
+    float boundsMin[3] = {};
+    float boundsMax[3] = {};
 
     void Release()
     {
@@ -150,6 +152,8 @@ struct GpuMesh
         if (skinVb) { skinVb->Release(); skinVb = nullptr; }
         if (vb) { vb->Release(); vb = nullptr; }
         vertexCount = indexCount = 0;
+        for (int axis = 0; axis < 3; ++axis)
+            boundsMin[axis] = boundsMax[axis] = 0.0f;
     }
 };
 

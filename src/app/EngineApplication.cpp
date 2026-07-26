@@ -363,6 +363,13 @@ void EngineApplication::RenderUI()
     mapper_panel_.Render(state_);
     animator_panel_.Render(state_);
 
+    if (!startup_tabs_selected_)
+    {
+        ImGui::SetWindowFocus("Viewport");
+        ImGui::SetWindowFocus("Log");
+        startup_tabs_selected_ = true;
+    }
+
     RenderImportModal();
     RenderRecentModal();
 
@@ -532,9 +539,13 @@ void EngineApplication::RenderImportModal()
     if (state_.show_import_modal && !ImGui::IsPopupOpen("Import Assets"))
         ImGui::OpenPopup("Import Assets");
 
-    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 center = viewport->GetCenter();
+    const ImVec2 modal_size(
+        (std::min)(640.0f, viewport->WorkSize.x - 32.0f),
+        (std::min)(520.0f, viewport->WorkSize.y - 32.0f));
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(modal_size, ImGuiCond_Appearing);
 
     if (!ImGui::BeginPopupModal("Import Assets", &state_.show_import_modal))
         return;
@@ -542,18 +553,49 @@ void EngineApplication::RenderImportModal()
     ImGui::TextWrapped("Drag files from Windows Explorer onto this window to stage them.");
     ImGui::Spacing();
 
-    static const char* kDests[] = { "assets", "assets/models", "assets/textures", "assets/audio" };
+    std::vector<std::string> destinations = { "assets" };
+    if (state_.HasProject())
+    {
+        std::error_code ec;
+        const fs::path assets_root = state_.project_root / "assets";
+        fs::recursive_directory_iterator it(
+            assets_root, fs::directory_options::skip_permission_denied, ec);
+        const fs::recursive_directory_iterator end;
+        while (it != end)
+        {
+            if (it->is_directory(ec))
+            {
+                const fs::path relative = fs::relative(it->path(), state_.project_root, ec);
+                if (!ec)
+                    destinations.push_back(relative.generic_string());
+            }
+            ec.clear();
+            it.increment(ec);
+            ec.clear();
+        }
+    }
+    std::sort(destinations.begin(), destinations.end());
+    destinations.erase(std::unique(destinations.begin(), destinations.end()), destinations.end());
+
+    std::vector<const char*> destination_labels;
+    destination_labels.reserve(destinations.size());
+    for (const std::string& destination : destinations)
+        destination_labels.push_back(destination.c_str());
+    state_.import_dest = (std::min)(state_.import_dest, (int)destinations.size() - 1);
+
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::Combo("Destination", &state_.import_dest, kDests, IM_ARRAYSIZE(kDests));
+    ImGui::Combo("Destination", &state_.import_dest,
+                 destination_labels.data(), (int)destination_labels.size());
 
     ImGui::SeparatorText("Staged files");
+    const float footer_height = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+    ImGui::BeginChild("##staged", ImVec2(0.0f, -footer_height), ImGuiChildFlags_Borders);
     if (state_.import_files.empty())
     {
         ImGui::TextDisabled("(drag files here - none staged yet)");
     }
     else
     {
-        ImGui::BeginChild("##staged", ImVec2(0.0f, 160.0f), ImGuiChildFlags_Borders);
         for (int i = 0; i < (int)state_.import_files.size(); ++i)
         {
             ImGui::PushID(i);
@@ -568,8 +610,8 @@ void EngineApplication::RenderImportModal()
             ImGui::TextUnformatted(state_.import_files[i].filename().string().c_str());
             ImGui::PopID();
         }
-        ImGui::EndChild();
     }
+    ImGui::EndChild();
 
     ImGui::Separator();
 
@@ -577,7 +619,7 @@ void EngineApplication::RenderImportModal()
     ImGui::BeginDisabled(!has_files);
     if (ImGui::Button("Import", ImVec2(120.0f, 0.0f)))
     {
-        ImportStagedFiles(kDests[state_.import_dest]);
+        ImportStagedFiles(destinations[state_.import_dest].c_str());
         state_.import_files.clear();
         state_.show_import_modal = false;
         ImGui::CloseCurrentPopup();
@@ -827,6 +869,7 @@ void EngineApplication::BuildDefaultDockLayout(ImGuiID dockspace_id)
     ImGui::DockBuilderDockWindow("Editor",      center_id);
     ImGui::DockBuilderDockWindow("Settings",    center_id);
     ImGui::DockBuilderDockWindow("Animator",    center_id);
+    ImGui::DockBuilderDockWindow("Mapping",     center_id);
     ImGui::DockBuilderDockWindow("Inspector",   right_id);
     ImGui::DockBuilderDockWindow("Log",         bottom_id);
     ImGui::DockBuilderDockWindow("Assets",      bottom_id);

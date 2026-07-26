@@ -49,6 +49,7 @@ private:
     HWND     window_  = nullptr;
     Renderer renderer_;
     bool     running_ = false;
+    bool     startup_tabs_selected_ = false;
 
     // High-resolution frame timer (used to drive the scene camera before the
     // ImGui frame — where io.DeltaTime isn't available yet).

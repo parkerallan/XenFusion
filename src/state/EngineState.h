@@ -168,7 +168,7 @@ struct EngineState
     bool show_log_panel       = true;
     bool show_performance_panel = true;
     bool show_editor_panel    = true;
-    bool show_mapper_panel    = false;
+    bool show_mapper_panel    = true;
     bool show_animator_panel  = true;
     bool show_style_editor    = false;
     bool compile_shaders_requested = false; // compile all project shaders next frame
