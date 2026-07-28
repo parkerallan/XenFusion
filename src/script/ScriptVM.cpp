@@ -152,6 +152,14 @@ namespace
         return 1;
     }
 
+    int l_text_set(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->TextSetValue(h->FindObject(luaL_checkstring(L, 1)),
+                               luaL_checkstring(L, 2));
+        return 0;
+    }
+
     // --- video table: control an object's Video attribute by object name ---
     int l_video_play(lua_State* L) // play(name [, loop]) — once unless loop is true
     {
@@ -301,6 +309,10 @@ namespace script
         lua_setglobal(L, "input");
         lua_pushcfunction(L, l_log);  lua_setglobal(L, "log");
         lua_pushcfunction(L, l_find); lua_setglobal(L, "find");
+
+        lua_newtable(L);
+        lua_pushcfunction(L, l_text_set); lua_setfield(L, -2, "set");
+        lua_setglobal(L, "text");
 
         // Global video table (Video attribute play control by object name).
         lua_newtable(L);

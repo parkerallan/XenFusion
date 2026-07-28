@@ -97,6 +97,21 @@ struct ObjectAttribute
     float image_alpha   = 1.0f;
     int   image_priority = 1;
 
+    // For "Text" (screen-space glyph overlay). Fonts are previewed from the
+    // source TTF/OTF in the editor and cooked to an Xbox-native atlas at build.
+    // Position/size use the same 1280x720 reference space as Image and Video.
+    std::string text_font_path;
+    std::string text_value;
+    float text_x         = 64.0f;
+    float text_y         = 36.0f;
+    float text_w         = 400.0f;
+    float text_h         = 80.0f;
+    float text_font_size = 32.0f;
+    float text_color[3]  = {1.0f, 1.0f, 1.0f};
+    float text_alpha     = 1.0f;
+    bool  text_lock_aspect = false;
+    int   text_priority  = 1;
+
     // For "Video" (screen-space overlay quad, mirrors the Vulkan engine's
     // Video2D): an .mpg (MPEG-1 + MP2) decoded by the shared VideoPlayer.
     // Position/size are in a 1280x720 reference space; edit mode shows the

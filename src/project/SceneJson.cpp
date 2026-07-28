@@ -112,6 +112,20 @@ namespace project
                     ja["alpha"]      = a.image_alpha;
                     ja["priority"]   = a.image_priority;
                 }
+                else if (a.type == "Text")
+                {
+                    ja["fontPath"]   = a.text_font_path;
+                    ja["text"]       = a.text_value;
+                    ja["x"]          = a.text_x;
+                    ja["y"]          = a.text_y;
+                    ja["w"]          = a.text_w;
+                    ja["h"]          = a.text_h;
+                    ja["fontSize"]   = a.text_font_size;
+                    ja["color"]      = {a.text_color[0], a.text_color[1], a.text_color[2]};
+                    ja["alpha"]      = a.text_alpha;
+                    ja["lockAspect"] = a.text_lock_aspect;
+                    ja["priority"]   = a.text_priority;
+                }
                 else if (a.type == "Audio")
                 {
                     ja["audioPath"] = a.audio_path;
@@ -278,6 +292,21 @@ namespace project
                                 for (int k = 0; k < 3; ++k) a.image_tint[k] = ja["tint"][k].get<float>();
                             a.image_alpha       = ja.value("alpha", 1.0f);
                             a.image_priority    = ja.value("priority", 1);
+                        }
+                        else if (a.type == "Text")
+                        {
+                            a.text_font_path   = ja.value("fontPath", std::string());
+                            a.text_value       = ja.value("text", std::string());
+                            a.text_x           = ja.value("x", 64.0f);
+                            a.text_y           = ja.value("y", 36.0f);
+                            a.text_w           = ja.value("w", 400.0f);
+                            a.text_h           = ja.value("h", 80.0f);
+                            a.text_font_size   = ja.value("fontSize", 32.0f);
+                            if (ja.contains("color") && ja["color"].is_array() && ja["color"].size() == 3)
+                                for (int k = 0; k < 3; ++k) a.text_color[k] = ja["color"][k].get<float>();
+                            a.text_alpha       = ja.value("alpha", 1.0f);
+                            a.text_lock_aspect = ja.value("lockAspect", false);
+                            a.text_priority    = ja.value("priority", 1);
                         }
                         else if (a.type == "Audio")
                         {

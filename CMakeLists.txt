@@ -138,6 +138,8 @@ add_executable(XenFusion
     src/render/Shader.cpp
     src/render/ShaderCache.cpp
     src/render/ShaderCompiler.cpp
+    src/text/TextLayout.cpp
+    src/text/CookedFont.cpp
     src/video/VideoImport.cpp
     src/video/VideoPlayer.cpp
     src/video/AudioOut.cpp
@@ -166,7 +168,7 @@ add_executable(XenFusion
     src/panels/PerformancePanel.cpp
     src/panels/EditorPanel.cpp
 )
-target_include_directories(XenFusion PRIVATE src third_party)
+target_include_directories(XenFusion PRIVATE src third_party runtime/src)
 # Lets the editor's "Build and Run XEX" locate the console runtime project +
 # build_run.ps1 during development (the runtime is a sibling of the editor source).
 target_compile_definitions(XenFusion PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
@@ -235,6 +237,7 @@ add_custom_command(TARGET XenFusion POST_BUILD
         "${SHADER_SRC_DIR}/bloom_blur.hlsl"
         "${SHADER_SRC_DIR}/bloom_combine.hlsl"
         "${SHADER_SRC_DIR}/image.hlsl"
+        "${SHADER_SRC_DIR}/text.hlsl"
         "${SHADER_SRC_DIR}/video.hlsl"
         "$<TARGET_FILE_DIR:XenFusion>/shaders"
     VERBATIM

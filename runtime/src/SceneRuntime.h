@@ -34,6 +34,7 @@ public:
     void  Log(const char* msg);
     int   FindObject(const char* name);
     const char* ObjectName(int index);
+    void  TextSetValue(int objectIndex, const char* value);
     void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
     bool  VideoIsPlaying(int objectIndex);
     void  AudioSetPlaying(int objectIndex, bool play); // Lua audio.*
@@ -213,6 +214,23 @@ private:
         { tint[0] = tint[1] = tint[2] = 1.0f; }
     };
 
+    struct TextItem
+    {
+        std::string object;
+        std::string fontPath;
+        std::string value;
+        float x, y, w, h;
+        float fontSize;
+        float color[3];
+        float alpha;
+        bool  lockAspect;
+        int   priority;
+        int   sequence;
+        TextItem() : x(0), y(0), w(0), h(0), fontSize(32.0f), alpha(1.0f),
+                     lockAspect(false), priority(1), sequence(0)
+        { color[0] = color[1] = color[2] = 1.0f; }
+    };
+
     // --- Image/video overlays ---
     // Screen-space quads over the finished 3D scene, drawn INSIDE the tiled
     // pass (they replay per band) through the video.hlsl builtin. The pak's
@@ -308,6 +326,8 @@ private:
     aud::AudioPlayer       m_audio;
 
     std::vector<ImageItem>  m_image_items;
+    std::vector<TextItem>   m_text_items;
+    std::map<std::string, std::string> m_text_overrides;
     std::vector<VideoItem>  m_video_items;
     std::vector<RtVideoTex> m_video_tex;
     // Script play/stop overrides (object name -> mode + restart generation);
@@ -323,6 +343,7 @@ private:
     std::map<std::string, VideoOverride> m_video_overrides;
     vid::VideoPlayer        m_video;
     RtShader                m_image_shader;
+    RtShader                m_text_shader;
     RtShader                m_video_shader;
 
     // Streaming: the pak is driven through the residency cache.

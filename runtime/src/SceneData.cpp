@@ -423,6 +423,33 @@ namespace scenedata
                         if (ial && ial->type == JValue::Number) at.image_alpha = (float)ial->num;
                         if (ipr && ipr->type == JValue::Number) at.image_priority = (int)ipr->num;
                     }
+                    else if (at.type == "Text")
+                    {
+                        const JValue* tfp = ja.Find("fontPath");
+                        const JValue* txt = ja.Find("text");
+                        const JValue* tx  = ja.Find("x");
+                        const JValue* ty  = ja.Find("y");
+                        const JValue* tw  = ja.Find("w");
+                        const JValue* th  = ja.Find("h");
+                        const JValue* tfs = ja.Find("fontSize");
+                        const JValue* tco = ja.Find("color");
+                        const JValue* tal = ja.Find("alpha");
+                        const JValue* tla = ja.Find("lockAspect");
+                        const JValue* tpr = ja.Find("priority");
+                        if (tfp && tfp->type == JValue::Str)    at.text_font_path = tfp->str;
+                        if (txt && txt->type == JValue::Str)    at.text_value = txt->str;
+                        if (tx  && tx->type  == JValue::Number) at.text_x = (float)tx->num;
+                        if (ty  && ty->type  == JValue::Number) at.text_y = (float)ty->num;
+                        if (tw  && tw->type  == JValue::Number) at.text_w = (float)tw->num;
+                        if (th  && th->type  == JValue::Number) at.text_h = (float)th->num;
+                        if (tfs && tfs->type == JValue::Number) at.text_font_size = (float)tfs->num;
+                        at.text_color[0] = NumAt(tco, 0, 1.0f);
+                        at.text_color[1] = NumAt(tco, 1, 1.0f);
+                        at.text_color[2] = NumAt(tco, 2, 1.0f);
+                        if (tal && tal->type == JValue::Number) at.text_alpha = (float)tal->num;
+                        if (tla && tla->type == JValue::Bool)   at.text_lock_aspect = tla->b;
+                        if (tpr && tpr->type == JValue::Number) at.text_priority = (int)tpr->num;
+                    }
                     else if (at.type == "Video")
                     {
                         const JValue* vpp = ja.Find("videoPath");

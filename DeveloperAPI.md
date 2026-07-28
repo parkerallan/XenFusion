@@ -15,6 +15,7 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 7. [Audio](#7-audio) — `audio.play`, `audio.stop`, `audio.is_playing`, `audio.set_volume`, `audio.set_pitch`, `audio.set_loop`
 8. [Animator](#8-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`
 9. [Utility](#9-utility) — `log`
+10. [Text](#10-text) — `text.set`
 
 ---
 
@@ -518,5 +519,26 @@ output). Any value is coerced to a string; build messages with `..`. Script
 ```lua
 log("health = " .. 100)
 ```
+
+---
+
+## 10. Text
+
+### `text.set(name, value)`
+
+Replaces the displayed value of the named object's first **Text** attribute.
+The change is visible in the same frame and remains active for the current Play
+session. It does not modify the saved scene; stopping editor Play restores the
+authored value.
+
+```lua
+function on_update(dt)
+    text.set("ScoreLabel", "Score: " .. 1250)
+end
+```
+
+Text is UTF-8 input with Basic Latin and Latin-1 Supplement glyph support.
+Unsupported or malformed characters render as `?`. Values are bounded to 4,096
+UTF-8 bytes and 2,048 rendered glyphs.
 
 ---

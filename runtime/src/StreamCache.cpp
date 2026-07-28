@@ -173,6 +173,7 @@ void StreamCache::Shutdown()
     for (std::map<unsigned int, CacheTex>::iterator it = m_textures.begin(); it != m_textures.end(); ++it)
         it->second.tex.Release();
     m_textures.clear();
+    m_fonts.clear();
     m_ranges.clear();
 
     if (m_placeholder) { m_placeholder->Release(); m_placeholder = NULL; }
@@ -344,6 +345,21 @@ void StreamCache::Update(unsigned int budget)
                 m_residentBytes    += tit->second.bytes;
             }
             else tit->second.state = StMissing;
+            continue;
+        }
+        std::map<unsigned int, CacheFont>::iterator fit = m_fonts.find(c.hash);
+        if (fit != m_fonts.end())
+        {
+            if (c.ok && !c.payload.empty())
+                c.ok = text::ParseCookedFont(&c.payload[0], (unsigned int)c.payload.size(), fit->second.font);
+            if (c.ok)
+            {
+                fit->second.state   = StResident;
+                fit->second.bytes   = (unsigned int)c.payload.size();
+                fit->second.lastUse = m_frame;
+                m_residentBytes    += fit->second.bytes;
+            }
+            else fit->second.state = StMissing;
         }
     }
 
@@ -383,8 +399,8 @@ void StreamCache::EvictIfOverBudget()
 
     while (m_residentBytes > m_budgetBytes)
     {
-        // Find the coldest evictable resident asset across both maps.
-        int   kind = -1;            // 0 = mesh, 1 = texture
+        // Find the coldest evictable resident asset across all maps.
+        int   kind = -1;            // 0 = mesh, 1 = texture, 2 = font metadata
         unsigned int bestHash = 0;
         unsigned int bestLast = 0xFFFFFFFFu;
 
@@ -397,6 +413,11 @@ void StreamCache::EvictIfOverBudget()
             if (it->second.state == StResident && it->second.lastUse + kEvictGraceFrames <= m_frame &&
                 it->second.lastUse < bestLast)
             { bestLast = it->second.lastUse; bestHash = it->first; kind = 1; }
+
+        for (std::map<unsigned int, CacheFont>::iterator it = m_fonts.begin(); it != m_fonts.end(); ++it)
+            if (it->second.state == StResident && it->second.lastUse + kEvictGraceFrames <= m_frame &&
+                it->second.lastUse < bestLast)
+            { bestLast = it->second.lastUse; bestHash = it->first; kind = 2; }
 
         if (kind < 0)
             break; // everything resident is in active use — exceed budget gracefully
@@ -411,18 +432,24 @@ void StreamCache::EvictIfOverBudget()
             freed = it->second.bytes;
             m_meshes.erase(it); // next request re-enqueues it
         }
-        else
+        else if (kind == 1)
         {
             std::map<unsigned int, CacheTex>::iterator it = m_textures.find(bestHash);
             it->second.tex.Release();
             freed = it->second.bytes;
             m_textures.erase(it);
         }
+        else
+        {
+            std::map<unsigned int, CacheFont>::iterator it = m_fonts.find(bestHash);
+            freed = it->second.bytes;
+            m_fonts.erase(it);
+        }
         m_residentBytes -= freed;
 
         char msg[128];
         sprintf_s(msg, sizeof(msg), "cache: evicted 0x%08x (%s), freed %u KB, resident %u MB / %u MB\n",
-                  bestHash, kind == 0 ? "mesh" : "tex", freed / 1024,
+                  bestHash, kind == 0 ? "mesh" : kind == 1 ? "tex" : "font", freed / 1024,
                   (unsigned int)(m_residentBytes / (1024 * 1024)), (unsigned int)(m_budgetBytes / (1024 * 1024)));
         OutputDebugStringA(msg);
     }
@@ -575,6 +602,38 @@ IDirect3DTexture9* StreamCache::GetTextureByHash(unsigned int hash)
 IDirect3DTexture9* StreamCache::GetTexture(const std::string& relPath)
 {
     return relPath.empty() ? NULL : GetTextureByHash(spak::NameHash(relPath.c_str()));
+}
+
+const text::CookedFont* StreamCache::GetFont(const std::string& relPath,
+                                             IDirect3DTexture9** outAtlas)
+{
+    if (outAtlas) *outAtlas = NULL;
+    if (relPath.empty() || !m_pak)
+        return NULL;
+
+    const unsigned int hash = spak::NameHash(relPath.c_str());
+    std::map<unsigned int, CacheFont>::iterator it = m_fonts.find(hash);
+    if (it == m_fonts.end())
+    {
+        CacheFont cached;
+        const SpakEntry* entry = m_pak->Find(hash);
+        cached.entry = entry;
+        if (entry && entry->type == spak::kTypeFont)
+        { cached.state = StLoading; m_fonts[hash] = cached; Enqueue(hash, entry); }
+        else
+        { cached.state = StMissing; m_fonts[hash] = cached; }
+        it = m_fonts.find(hash);
+    }
+
+    CacheFont& cached = it->second;
+    if (cached.state != StResident)
+        return NULL;
+    cached.lastUse = m_frame;
+    IDirect3DTexture9* atlas = GetTextureByHash(cached.font.atlasHash);
+    if (!atlas || atlas == m_placeholder)
+        return NULL;
+    if (outAtlas) *outAtlas = atlas;
+    return &cached.font;
 }
 
 void StreamCache::RefreshMeshTextures(CacheMesh& cm)

@@ -75,3 +75,11 @@ add_test(NAME animator_cooker_fox
     COMMAND animator_cooker_test
         "${CMAKE_SOURCE_DIR}/../360proj"
         "${CMAKE_SOURCE_DIR}/../360proj/assets/animators/NewAnimator.anim")
+
+add_executable(text_layout_test
+    tests/TextLayoutTest.cpp
+    src/text/TextLayout.cpp
+    src/text/CookedFont.cpp
+)
+target_include_directories(text_layout_test PRIVATE src runtime/src)
+add_test(NAME text_layout COMMAND text_layout_test)

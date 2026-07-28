@@ -259,6 +259,13 @@ void SceneRuntime::AudioSetLoop(int objectIndex, bool loop)
         m_audio_overrides[name].loop = loop ? 1 : 0;
 }
 
+    void SceneRuntime::TextSetValue(int objectIndex, const char* value)
+    {
+        const char* name = ObjectName(objectIndex);
+        if (name && *name)
+        m_text_overrides[name] = value ? value : "";
+    }
+
 // Lua video.play/stop: an override on the object's Video attribute play mode,
 // consulted when RenderOverlay builds the wanted set each frame. The
 // parsed scene keeps its authored value. play on a video that isn't currently
@@ -498,6 +505,7 @@ void SceneRuntime::InitBloom(XboxRenderer& renderer)
     // means no light shafts (older deploys).
     m_content.LoadBuiltin("beam", m_beam);
     m_content.LoadBuiltin("image", m_image_shader); // Image attribute overlay (optional)
+    m_content.LoadBuiltin("text", m_text_shader);   // Text attribute overlay (optional)
     m_content.LoadBuiltin("video", m_video_shader); // Video attribute overlay (optional)
 }
 
@@ -636,6 +644,7 @@ void SceneRuntime::Shutdown()
         }
     m_video_tex.clear();
     m_image_shader.Release();
+    m_text_shader.Release();
     m_video_shader.Release();
     m_bloom_combine.Release();
     m_bloom_blur.Release();
@@ -768,6 +777,7 @@ void SceneRuntime::BuildDrawLists()
     m_draw_items.clear();
     m_shader_items.clear();
     m_image_items.clear();
+    m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
     m_has_cam = false;
@@ -869,6 +879,22 @@ void SceneRuntime::BuildDrawLists()
                 image.priority = at.image_priority;
                 image.sequence = overlay_sequence++;
                 m_image_items.push_back(image);
+            }
+            else if (at.type == "Text" && !at.text_font_path.empty() && !at.text_value.empty())
+            {
+                TextItem textItem;
+                textItem.object = o.name;
+                textItem.fontPath = at.text_font_path;
+                textItem.value = at.text_value;
+                textItem.x = at.text_x; textItem.y = at.text_y;
+                textItem.w = at.text_w; textItem.h = at.text_h;
+                textItem.fontSize = at.text_font_size;
+                for (int k = 0; k < 3; ++k) textItem.color[k] = at.text_color[k];
+                textItem.alpha = at.text_alpha;
+                textItem.lockAspect = at.text_lock_aspect;
+                textItem.priority = at.text_priority;
+                textItem.sequence = overlay_sequence++;
+                m_text_items.push_back(textItem);
             }
             else if (at.type == "Video" && !at.video_path.empty())
             {
@@ -1512,22 +1538,31 @@ void SceneRuntime::RenderOverlay(float dt)
             ++i;
     }
 
-    if (m_image_items.empty() && m_video_items.empty())
+    if (m_image_items.empty() && m_text_items.empty() && m_video_items.empty())
         return;
 
     struct OverlayRef
     {
-        bool image;
+        int kind; // 0=image, 1=text, 2=video
         int index;
         int priority;
         int sequence;
-        OverlayRef(bool isImage, int itemIndex, int itemPriority, int itemSequence)
-            : image(isImage), index(itemIndex), priority(itemPriority), sequence(itemSequence) {}
+        OverlayRef(int itemKind, int itemIndex, int itemPriority, int itemSequence)
+            : kind(itemKind), index(itemIndex), priority(itemPriority), sequence(itemSequence) {}
     };
     std::vector<OverlayRef> order;
     for (int i = 0; i < (int)m_image_items.size(); ++i)
     {
-        OverlayRef ref(true, i, m_image_items[i].priority, m_image_items[i].sequence);
+        OverlayRef ref(0, i, m_image_items[i].priority, m_image_items[i].sequence);
+        int j = 0;
+        while (j < (int)order.size() &&
+               (order[j].priority > ref.priority ||
+            (order[j].priority == ref.priority && order[j].sequence <= ref.sequence))) ++j;
+        order.insert(order.begin() + j, ref);
+    }
+    for (int i = 0; i < (int)m_text_items.size(); ++i)
+    {
+        OverlayRef ref(1, i, m_text_items[i].priority, m_text_items[i].sequence);
         int j = 0;
         while (j < (int)order.size() &&
                (order[j].priority > ref.priority ||
@@ -1536,7 +1571,7 @@ void SceneRuntime::RenderOverlay(float dt)
     }
     for (int i = 0; i < (int)m_video_items.size(); ++i)
     {
-        OverlayRef ref(false, i, m_video_items[i].priority, m_video_items[i].sequence);
+        OverlayRef ref(2, i, m_video_items[i].priority, m_video_items[i].sequence);
         int j = 0;
         while (j < (int)order.size() &&
                (order[j].priority > ref.priority ||
@@ -1549,7 +1584,7 @@ void SceneRuntime::RenderOverlay(float dt)
     for (size_t oi = 0; oi < order.size(); ++oi)
     {
         const OverlayRef& ref = order[oi];
-        if (ref.image)
+        if (ref.kind == 0)
         {
             if (!m_image_shader.Valid())
                 continue;
@@ -1613,6 +1648,89 @@ void SceneRuntime::RenderOverlay(float dt)
             m_device->SetPixelShaderConstantF(0, tint, 1);
             m_device->SetTexture(0, texture);
             m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+            continue;
+        }
+
+        if (ref.kind == 1)
+        {
+            if (!m_text_shader.Valid())
+                continue;
+            const TextItem& item = m_text_items[ref.index];
+            IDirect3DTexture9* atlas = NULL;
+            const text::CookedFont* font = m_cache.GetFont(item.fontPath, &atlas);
+            if (!font || !atlas)
+                continue;
+            text::Layout layout;
+            const float wrapWidth = item.lockAspect ? 0.0f : item.w;
+            std::map<std::string, std::string>::const_iterator overrideValue =
+                m_text_overrides.find(item.object);
+            const std::string& value = overrideValue != m_text_overrides.end()
+                ? overrideValue->second : item.value;
+            if (!text::BuildLayout(font->metrics, value, item.fontSize, wrapWidth, layout) ||
+                layout.glyphs.empty())
+                continue;
+
+            if (!stateSet)
+            {
+                m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+                m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+                m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+                    D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+                    D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+                m_device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ZERO);
+                m_device->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
+                m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+                m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+                m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+                m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+                m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                stateSet = true;
+            }
+
+            float fitScale = 1.0f;
+            if (item.lockAspect && layout.width > 0.0f && layout.height > 0.0f)
+            {
+                const float sx = item.w / layout.width;
+                const float sy = item.h / layout.height;
+                fitScale = sx < sy ? sx : sy;
+            }
+            const float glyphScale = item.fontSize / font->metrics.sourcePixelSize * fitScale;
+            std::vector<QuadVtx> vertices;
+            vertices.reserve(layout.glyphs.size() * 6);
+            for (size_t glyphIndex = 0; glyphIndex < layout.glyphs.size(); ++glyphIndex)
+            {
+                const text::PositionedGlyph& positioned = layout.glyphs[glyphIndex];
+                const text::Glyph& glyph = font->metrics.glyphs[positioned.glyphIndex];
+                const float px0 = item.x + positioned.x * fitScale;
+                const float py0 = item.y + positioned.y * fitScale;
+                const float px1 = px0 + glyph.width * glyphScale;
+                const float py1 = py0 + glyph.height * glyphScale;
+                const float x0 = px0 / 1280.0f * 2.0f - 1.0f;
+                const float x1 = px1 / 1280.0f * 2.0f - 1.0f;
+                const float y0 = 1.0f - py0 / 720.0f * 2.0f;
+                const float y1 = 1.0f - py1 / 720.0f * 2.0f;
+                const QuadVtx quad[6] = {
+                    {x0,y0,0,glyph.u0,glyph.v0}, {x1,y0,0,glyph.u1,glyph.v0}, {x0,y1,0,glyph.u0,glyph.v1},
+                    {x0,y1,0,glyph.u0,glyph.v1}, {x1,y0,0,glyph.u1,glyph.v0}, {x1,y1,0,glyph.u1,glyph.v1}
+                };
+                vertices.insert(vertices.end(), quad, quad + 6);
+            }
+            const float halfTexel[4] = { 1.0f / 1280.0f, 1.0f / 720.0f, 0.0f, 0.0f };
+            const float tint[4] = { item.color[0], item.color[1], item.color[2], item.alpha };
+            m_device->SetVertexShader(m_text_shader.vs);
+            m_device->SetPixelShader(m_text_shader.ps);
+            m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+            m_device->SetPixelShaderConstantF(0, tint, 1);
+            m_device->SetTexture(0, atlas);
+            m_device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)layout.glyphs.size() * 2,
+                                      &vertices[0], sizeof(QuadVtx));
             continue;
         }
 

@@ -44,6 +44,23 @@ namespace spak
                                                 // reads the entry's byte window directly
     const unsigned int kTypeAnim  = 0x414E494D; // 'ANIM' — raw cooked controller +
                                                 // independently addressable clip blocks
+    const unsigned int kTypeFont  = 0x464F4E54; // 'FONT' — cooked glyph metrics +
+                                                // reference to a TX2D SDF atlas
+
+    // Cooked font payload (all fields big-endian):
+    //   header: magic, version, atlasHash, atlasWidth, atlasHeight,
+    //           sourcePixelSize, ascent, descent, lineHeight, sdfSpread,
+    //           glyphCount, kerningCount
+    //   glyph:  codepoint, advance, bearingX, bearingY, width, height, u0,v0,u1,v1
+    //   kern:   leftCodepoint, rightCodepoint, advance
+    // Scalar metrics and UVs are IEEE-754 f32 written as explicit BE words.
+    const unsigned int kFontMagic       = 0x464E5431; // 'FNT1'
+    const unsigned int kFontVersion     = 1;
+    const unsigned int kFontHeaderBytes = 48;
+    const unsigned int kFontGlyphBytes  = 40;
+    const unsigned int kFontKernBytes   = 12;
+    const unsigned int kMaxFontGlyphs   = 256;
+    const unsigned int kMaxFontKerning  = 65536;
 
     // Static mesh payload (big-endian): a fixed 16-byte header, then one 36-byte record
     // per material subset, then vertexCount*44 bytes of native-endian vertices,

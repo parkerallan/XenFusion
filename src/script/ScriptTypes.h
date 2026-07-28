@@ -31,6 +31,11 @@ namespace script
         // pointer must stay valid for the duration of the call.
         virtual const char* ObjectName(int objectIndex) = 0;
 
+        // Text attribute content control (the "text" Lua table). The override
+        // is transient and does not modify the authored scene value.
+        virtual void TextSetValue(int objectIndex, const char* value)
+        { (void)objectIndex; (void)value; }
+
         // Video attribute control (the "video" Lua table). play() starts the
         // object's video from the top — once by default, looping when loop is
         // true; on a video that is already playing it only updates the mode.

@@ -695,6 +695,87 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
+        else if (attr.type == "Text")
+        {
+            char path_buf[260];
+            const std::string shown = attr.text_font_path.empty()
+                ? "(drag a TTF or OTF font from Assets)" : attr.text_font_path;
+            std::strncpy(path_buf, shown.c_str(), sizeof(path_buf) - 1);
+            path_buf[sizeof(path_buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##text_font_path", path_buf, sizeof(path_buf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+                    if (ext == ".ttf" || ext == ".otf")
+                    {
+                        attr.text_font_path = dropped;
+                        save();
+                    }
+                    else
+                    {
+                        state.AddLog("Text attributes support TTF and OTF fonts", LogLevel::Error);
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            char text_buf[4096];
+            std::strncpy(text_buf, attr.text_value.c_str(), sizeof(text_buf) - 1);
+            text_buf[sizeof(text_buf) - 1] = '\0';
+            if (ImGui::InputTextMultiline("Text", text_buf, sizeof(text_buf), ImVec2(-1.0f, 100.0f)))
+            {
+                attr.text_value = text_buf;
+                if (scene) scene->dirty = true;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) save();
+
+            bool edited = false, commit = false;
+            float position[2] = { attr.text_x, attr.text_y };
+            if (ImGui::DragFloat2("Position", position, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            {
+                attr.text_x = position[0]; attr.text_y = position[1]; edited = true;
+            }
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (attr.text_lock_aspect)
+            {
+                const float aspect = attr.text_h > 0.0f ? attr.text_w / attr.text_h : 1.0f;
+                if (ImGui::DragFloat("Width", &attr.text_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                {
+                    attr.text_h = attr.text_w / aspect; edited = true;
+                }
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else
+            {
+                float size[2] = { attr.text_w, attr.text_h };
+                if (ImGui::DragFloat2("Size", size, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                {
+                    attr.text_w = size[0]; attr.text_h = size[1]; edited = true;
+                }
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.text_lock_aspect)) { edited = commit = true; }
+            edited |= ImGui::DragFloat("Font Size", &attr.text_font_size, 0.5f, 1.0f, 512.0f, "%.1f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::ColorEdit3("Color", attr.text_color);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Alpha", &attr.text_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragInt("Priority", &attr.text_priority, 0.1f, 0, 100);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
+            ImGui::TextDisabled("Higher priority draws behind lower.");
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
         else if (attr.type == "Video")
         {
             // Read-only path display; set by dragging a video from the Assets
@@ -1020,6 +1101,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Image";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Text"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Text";
             obj->attributes.push_back(attr);
             save();
         }

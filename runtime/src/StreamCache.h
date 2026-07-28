@@ -7,6 +7,7 @@
 
 #include "Content.h"    // RtMesh (shared render unit)
 #include "StreamPak.h"
+#include "text/CookedFont.h"
 
 // Phase 3 of the streaming subsystem (STREAMING.md): asynchronous residency.
 //
@@ -45,6 +46,12 @@ public:
     // placeholder while its asynchronous load is pending, or NULL if absent.
     IDirect3DTexture9* GetTexture(const std::string& relPath);
 
+    // Resolve cooked font metadata and its referenced atlas. Returns NULL until
+    // both asynchronous FONT and TX2D loads are resident. The returned objects
+    // are borrowed and remain valid until cache eviction/shutdown.
+    const text::CookedFont* GetFont(const std::string& relPath,
+                                    IDirect3DTexture9** outAtlas);
+
     // Request a raw byte range through the shared worker's fixed 16 KiB,
     // sector-aligned page cache. Returns true and copies the resident bytes when
     // ready; false means queued/loading/failed. NULL out is a prefetch request.
@@ -72,6 +79,15 @@ private:
         unsigned int     bytes;
         unsigned int     lastUse;
         CacheTex() : state(StLoading), entry(NULL), bytes(0), lastUse(0) {}
+    };
+    struct CacheFont
+    {
+        text::CookedFont font;
+        int              state;
+        const SpakEntry* entry;
+        unsigned int     bytes;
+        unsigned int     lastUse;
+        CacheFont() : state(StLoading), entry(NULL), bytes(0), lastUse(0) {}
     };
     struct RangeKey
     {
@@ -116,6 +132,7 @@ private:
     StreamPak*                        m_pak;
     std::map<unsigned int, CacheMesh> m_meshes;    // key = nameHash(relPath)
     std::map<unsigned int, CacheTex>  m_textures;  // key = texture nameHash
+    std::map<unsigned int, CacheFont> m_fonts;     // key = font path hash
     std::map<RangeKey, RangePage>     m_ranges;
     IDirect3DTexture9*                m_placeholder; // 2x2 magenta
 

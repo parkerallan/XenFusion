@@ -12,6 +12,7 @@
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
 #include "input/InputState.h"
+#include "text/TextLayout.h"
 
 #include <d3d9.h>
 
@@ -46,6 +47,7 @@ public:
     void  LogError(const char* msg);
     int   FindObject(const char* name);
     const char* ObjectName(int index);
+    void  TextSetValue(int objectIndex, const char* value);
     void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
     bool  VideoIsPlaying(int objectIndex);
     void  AudioSetPlaying(int objectIndex, bool play); // Lua audio.*
@@ -352,6 +354,28 @@ private:
         int   sequence = 0;
     };
 
+    struct TextItem
+    {
+        std::string object;
+        std::string font_path_abs;
+        std::string value;
+        float x = 0, y = 0, w = 0, h = 0;
+        float font_size = 32.0f;
+        float color[3] = {1, 1, 1};
+        float alpha = 1.0f;
+        bool  lock_aspect = false;
+        int   priority = 1;
+        int   sequence = 0;
+    };
+
+    struct PreviewFont
+    {
+        text::FontMetrics metrics;
+        IDirect3DTexture9* atlas = nullptr;
+        bool attempted = false;
+    };
+    PreviewFont* EnsurePreviewFont(const std::string& path);
+
     // --- Image/video overlays ---
     // Captured in RenderUi, drawn by RenderOverlay after the bloom combine:
     // screen-space quads sampling the shared VideoPlayer's YUV planes through
@@ -447,10 +471,15 @@ private:
     };
     std::map<std::string, VideoOverride> m_video_overrides;
     std::vector<ImageItem> m_image_items;
+    std::vector<TextItem> m_text_items;
+    std::map<std::string, std::string> m_text_overrides;
     std::map<std::string, IDirect3DTexture9*> m_image_textures;
+    std::map<std::string, PreviewFont> m_text_fonts;
     vid::VideoPlayer       m_video;
     IDirect3DVertexShader9* m_image_vs = nullptr;
     IDirect3DPixelShader9*  m_image_ps = nullptr;
+    IDirect3DVertexShader9* m_text_vs = nullptr;
+    IDirect3DPixelShader9*  m_text_ps = nullptr;
     IDirect3DVertexShader9* m_video_vs = nullptr;
     IDirect3DPixelShader9*  m_video_ps = nullptr;
 };

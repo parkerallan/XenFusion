@@ -80,6 +80,16 @@ struct RtAttribute
     float image_alpha;
     int   image_priority;
 
+    // For "Text" (screen-space glyph overlay backed by a cooked font atlas).
+    std::string text_font_path;
+    std::string text_value;
+    float text_x, text_y, text_w, text_h;
+    float text_font_size;
+    float text_color[3];
+    float text_alpha;
+    bool  text_lock_aspect;
+    int   text_priority;
+
     // For "Video" (screen-space overlay quad; decoded by the shared
     // VideoPlayer from the pak's raw VIDE entry). Position/size in the
     // 1280x720 reference space; playMode 0=Off, 1=Play Once, 2=Loop.
@@ -152,6 +162,13 @@ struct RtAttribute
         image_tint[0] = image_tint[1] = image_tint[2] = 1.0f;
         image_alpha = 1.0f;
         image_priority = 1;
+        text_x = 64.0f; text_y = 36.0f;
+        text_w = 400.0f; text_h = 80.0f;
+        text_font_size = 32.0f;
+        text_color[0] = text_color[1] = text_color[2] = 1.0f;
+        text_alpha = 1.0f;
+        text_lock_aspect = false;
+        text_priority = 1;
         video_x = 320.0f; video_y = 180.0f;
         video_w = 640.0f; video_h = 360.0f;
         video_stretch = false;

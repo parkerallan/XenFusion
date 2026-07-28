@@ -126,6 +126,7 @@ $meshes = @()
 $images = @()
 $videos = @()
 $audios = @()
+$fonts = @()
 $animators = @()
 if (Test-Path $sceneFile) {
     $scene = Get-Content $sceneFile -Raw | ConvertFrom-Json
@@ -135,6 +136,7 @@ if (Test-Path $sceneFile) {
             if ($a.imagePath)  { $images += $a.imagePath }
             if ($a.videoPath)  { $videos += $a.videoPath }  # "Video" attribute -> raw VIDE entry
             if ($a.audioPath)  { $audios += $a.audioPath }  # "Audio" attribute -> raw AUDI entry
+            if ($a.fontPath)   { $fonts += $a.fontPath }   # "Text" attribute -> FONT + TX2D atlas
             if ($a.controllerPath) { $animators += $a.controllerPath }
         }
     }
@@ -143,6 +145,7 @@ $meshes = @($meshes | Select-Object -Unique)
 $images = @($images | Select-Object -Unique)
 $videos = @($videos | Select-Object -Unique)
 $audios = @($audios | Select-Object -Unique)
+$fonts = @($fonts | Select-Object -Unique)
 $animators = @($animators | Select-Object -Unique)
 
 # Animator controllers are PC-cooked from JSON + Assimp source clips into one
@@ -170,7 +173,9 @@ if ($animators.Count -gt 0) {
 
 $imageArgs = @()
 foreach ($image in $images) { $imageArgs += @("--image", [string]$image) }
-$cookArgs = @($meshes) + @($imageArgs) + @($videos) + @($audios) + @($animArgs)
+$fontArgs = @()
+foreach ($font in $fonts) { $fontArgs += @("--font", [string]$font) }
+$cookArgs = @($meshes) + @($imageArgs) + @($fontArgs) + @($videos) + @($audios) + @($animArgs)
 if ($cookArgs.Count -gt 0) {
     & $spakcExe build (Join-Path $out "game.spak") $Project @cookArgs
     if ($LASTEXITCODE -ne 0) { throw "spakc cook failed" }

@@ -72,6 +72,8 @@
     <ClCompile Include="src\StreamPak.cpp" />
     <ClCompile Include="src\StreamCache.cpp" />
     <ClCompile Include="src\stb_impl.cpp" />
+    <ClCompile Include="..\src\text\TextLayout.cpp" />
+    <ClCompile Include="..\src\text\CookedFont.cpp" />
     <ClCompile Include="..\src\physics\PhysicsWorld.cpp" />
     <ClCompile Include="..\src\script\ScriptVM.cpp" />
     <ClCompile Include="..\src\video\VideoPlayer.cpp" />
@@ -94,6 +96,8 @@
     <ClInclude Include="src\SpakFormat.h" />
     <ClInclude Include="src\StreamPak.h" />
     <ClInclude Include="src\StreamCache.h" />
+    <ClInclude Include="..\src\text\TextLayout.h" />
+    <ClInclude Include="..\src\text\CookedFont.h" />
   </ItemGroup>
   <ItemGroup>
     <!-- Vendored Bullet 2.82 (LinearMath/BulletCollision/BulletDynamics). SIMD chosen by _XBOX in btScalar.h. -->

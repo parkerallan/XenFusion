@@ -25,11 +25,15 @@
 #include <vector>
 #include <set>
 #include <algorithm>
+#include <math.h>
 
 #include "SpakFormat.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
 
 namespace
 {
@@ -50,6 +54,12 @@ void PushU32BE(std::vector<unsigned char>& v, unsigned int u)
     v.push_back((unsigned char)((u >> 16) & 0xFF));
     v.push_back((unsigned char)((u >> 8)  & 0xFF));
     v.push_back((unsigned char)( u        & 0xFF));
+}
+void PushF32BE(std::vector<unsigned char>& v, float value)
+{
+    unsigned int bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    PushU32BE(v, bits);
 }
 // Append `src` (little-endian 32-bit words) byte-reversed, i.e. as big-endian —
 // the console reads VB/IB natively (big-endian), so buffers are baked that way.
@@ -84,6 +94,29 @@ bool WriteFileBytes(const std::string& path, const unsigned char* data, size_t b
     size_t put = fwrite(data, 1, bytes, f);
     fclose(f);
     return put == bytes;
+}
+
+bool WriteAtlasTga(const std::string& path, const std::vector<unsigned char>& alpha,
+                   int width, int height)
+{
+    if (width <= 0 || height <= 0 || alpha.size() != (size_t)width * height)
+        return false;
+    std::vector<unsigned char> tga(18 + (size_t)width * height * 4, 0);
+    tga[2] = 2; // uncompressed true-color
+    tga[12] = (unsigned char)(width & 0xFF);
+    tga[13] = (unsigned char)((width >> 8) & 0xFF);
+    tga[14] = (unsigned char)(height & 0xFF);
+    tga[15] = (unsigned char)((height >> 8) & 0xFF);
+    tga[16] = 32;
+    tga[17] = 0x28; // 8 alpha bits, top-left origin
+    for (int i = 0; i < width * height; ++i)
+    {
+        tga[18 + i * 4 + 0] = 255;
+        tga[18 + i * 4 + 1] = 255;
+        tga[18 + i * 4 + 2] = 255;
+        tga[18 + i * 4 + 3] = alpha[i];
+    }
+    return WriteFileBytes(path, &tga[0], tga.size());
 }
 
 // Normalise a path (absolute or relative-to-CWD) to a full path.
@@ -481,6 +514,166 @@ bool AddAudio(std::vector<Entry>& entries, const std::string& rootAbs, const std
     return true;
 }
 
+struct CookedGlyph
+{
+    unsigned int codepoint;
+    float advance, bearingX, bearingY, width, height;
+    float u0, v0, u1, v1;
+};
+
+struct CookedKerning
+{
+    unsigned int left, right;
+    float advance;
+};
+
+bool AddFont(std::vector<Entry>& entries, std::set<unsigned int>& seen,
+             const std::string& rootAbs, const std::string& fontRel)
+{
+    const int atlasWidth = 1024;
+    const int atlasHeight = 1024;
+    const float sourcePixelSize = 48.0f;
+    const int sdfPadding = 5;
+    const unsigned char sdfOnEdge = 128;
+    const float sdfPixelDistScale = 128.0f / (float)sdfPadding;
+    const std::string fontAbs = AbsFrom(rootAbs, fontRel);
+    std::vector<unsigned char> fontBytes;
+    if (!ReadFileBytes(fontAbs, fontBytes) || fontBytes.empty())
+    { fprintf(stderr, "spakc: cannot read font %s\n", fontAbs.c_str()); return false; }
+
+    const int fontOffset = stbtt_GetFontOffsetForIndex(&fontBytes[0], 0);
+    stbtt_fontinfo fontInfo;
+    if (fontOffset < 0 || !stbtt_InitFont(&fontInfo, &fontBytes[0], fontOffset))
+    { fprintf(stderr, "spakc: invalid TTF/OTF font %s\n", fontAbs.c_str()); return false; }
+    if (stbtt_FindGlyphIndex(&fontInfo, '?') == 0)
+    { fprintf(stderr, "spakc: font has no '?' fallback glyph %s\n", fontAbs.c_str()); return false; }
+
+    const float scale = stbtt_ScaleForPixelHeight(&fontInfo, sourcePixelSize);
+    std::vector<unsigned char> atlas((size_t)atlasWidth * atlasHeight, 0);
+    std::vector<CookedGlyph> glyphs;
+    int nextX = 1, nextY = 1, rowHeight = 0;
+    for (unsigned int codepoint = 0x20; codepoint <= 0xFF; ++codepoint)
+    {
+        if (codepoint > 0x7E && codepoint < 0xA0)
+            continue;
+        if (stbtt_FindGlyphIndex(&fontInfo, (int)codepoint) == 0)
+            continue;
+
+        int advance = 0, leftBearing = 0;
+        stbtt_GetCodepointHMetrics(&fontInfo, (int)codepoint, &advance, &leftBearing);
+        CookedGlyph glyph;
+        glyph.codepoint = codepoint;
+        glyph.advance = advance * scale;
+        glyph.bearingX = 0.0f;
+        glyph.bearingY = 0.0f;
+        glyph.width = glyph.height = 0.0f;
+        glyph.u0 = glyph.v0 = glyph.u1 = glyph.v1 = 0.0f;
+
+        int bitmapWidth = 0, bitmapHeight = 0, xOffset = 0, yOffset = 0;
+        unsigned char* bitmap = stbtt_GetCodepointSDF(
+            &fontInfo, scale, (int)codepoint, sdfPadding, sdfOnEdge,
+            sdfPixelDistScale, &bitmapWidth, &bitmapHeight, &xOffset, &yOffset);
+        if (bitmap && bitmapWidth > 0 && bitmapHeight > 0)
+        {
+            if (nextX + bitmapWidth + 1 > atlasWidth)
+            { nextX = 1; nextY += rowHeight + 1; rowHeight = 0; }
+            if (nextY + bitmapHeight + 1 > atlasHeight)
+            {
+                stbtt_FreeSDF(bitmap, fontInfo.userdata);
+                fprintf(stderr, "spakc: font atlas overflow %s\n", fontAbs.c_str());
+                return false;
+            }
+            for (int row = 0; row < bitmapHeight; ++row)
+                memcpy(&atlas[(size_t)(nextY + row) * atlasWidth + nextX],
+                       bitmap + (size_t)row * bitmapWidth, bitmapWidth);
+            glyph.bearingX = (float)xOffset;
+            glyph.bearingY = (float)-yOffset;
+            glyph.width = (float)bitmapWidth;
+            glyph.height = (float)bitmapHeight;
+            glyph.u0 = (float)nextX / atlasWidth;
+            glyph.v0 = (float)nextY / atlasHeight;
+            glyph.u1 = (float)(nextX + bitmapWidth) / atlasWidth;
+            glyph.v1 = (float)(nextY + bitmapHeight) / atlasHeight;
+            nextX += bitmapWidth + 1;
+            if (bitmapHeight > rowHeight) rowHeight = bitmapHeight;
+        }
+        if (bitmap) stbtt_FreeSDF(bitmap, fontInfo.userdata);
+        glyphs.push_back(glyph);
+    }
+    if (glyphs.empty() || glyphs.size() > spak::kMaxFontGlyphs)
+    { fprintf(stderr, "spakc: invalid cooked glyph count %s\n", fontAbs.c_str()); return false; }
+
+    std::vector<CookedKerning> kerning;
+    for (size_t left = 0; left < glyphs.size(); ++left)
+        for (size_t right = 0; right < glyphs.size(); ++right)
+        {
+            const int amount = stbtt_GetCodepointKernAdvance(
+                &fontInfo, (int)glyphs[left].codepoint, (int)glyphs[right].codepoint);
+            if (amount != 0)
+            {
+                CookedKerning pair;
+                pair.left = glyphs[left].codepoint;
+                pair.right = glyphs[right].codepoint;
+                pair.advance = amount * scale;
+                kerning.push_back(pair);
+            }
+        }
+    if (kerning.size() > spak::kMaxFontKerning)
+    { fprintf(stderr, "spakc: excessive kerning pairs %s\n", fontAbs.c_str()); return false; }
+
+    const std::string atlasLogical = fontRel + "#atlas";
+    const unsigned int atlasHash = spak::NameHash(atlasLogical.c_str());
+    const std::string atlasTga = g_tmpBase + ".font.tmp.tga";
+    if (!WriteAtlasTga(atlasTga, atlas, atlasWidth, atlasHeight) ||
+        AddTexture(entries, seen, atlasTga, atlasLogical, atlasHash, false, "D3DFMT_A8") == 0)
+    {
+        DeleteFileA(atlasTga.c_str());
+        fprintf(stderr, "spakc: cannot cook font atlas %s\n", fontAbs.c_str());
+        return false;
+    }
+    DeleteFileA(atlasTga.c_str());
+
+    int ascent = 0, descent = 0, lineGap = 0;
+    stbtt_GetFontVMetrics(&fontInfo, &ascent, &descent, &lineGap);
+    Entry entry;
+    entry.hash = spak::NameHash(fontRel.c_str());
+    entry.type = spak::kTypeFont;
+    PushU32BE(entry.payload, spak::kFontMagic);
+    PushU32BE(entry.payload, spak::kFontVersion);
+    PushU32BE(entry.payload, atlasHash);
+    PushU32BE(entry.payload, atlasWidth);
+    PushU32BE(entry.payload, atlasHeight);
+    PushF32BE(entry.payload, sourcePixelSize);
+    PushF32BE(entry.payload, ascent * scale);
+    PushF32BE(entry.payload, descent * scale);
+    PushF32BE(entry.payload, (ascent - descent + lineGap) * scale);
+    PushF32BE(entry.payload, (float)sdfPadding);
+    PushU32BE(entry.payload, (unsigned int)glyphs.size());
+    PushU32BE(entry.payload, (unsigned int)kerning.size());
+    for (size_t i = 0; i < glyphs.size(); ++i)
+    {
+        PushU32BE(entry.payload, glyphs[i].codepoint);
+        PushF32BE(entry.payload, glyphs[i].advance);
+        PushF32BE(entry.payload, glyphs[i].bearingX);
+        PushF32BE(entry.payload, glyphs[i].bearingY);
+        PushF32BE(entry.payload, glyphs[i].width);
+        PushF32BE(entry.payload, glyphs[i].height);
+        PushF32BE(entry.payload, glyphs[i].u0); PushF32BE(entry.payload, glyphs[i].v0);
+        PushF32BE(entry.payload, glyphs[i].u1); PushF32BE(entry.payload, glyphs[i].v1);
+    }
+    for (size_t i = 0; i < kerning.size(); ++i)
+    {
+        PushU32BE(entry.payload, kerning[i].left);
+        PushU32BE(entry.payload, kerning[i].right);
+        PushF32BE(entry.payload, kerning[i].advance);
+    }
+    entry.sysMemSize = (unsigned int)entry.payload.size();
+    entries.push_back(entry);
+    printf("spakc: font %s — glyphs=%u kern=%u atlas=%dx%d\n", fontRel.c_str(),
+           (unsigned int)glyphs.size(), (unsigned int)kerning.size(), atlasWidth, atlasHeight);
+    return true;
+}
+
 bool AddAnimation(std::vector<Entry>& entries, const std::string& source,
                   const std::string& logicalName)
 {
@@ -591,7 +784,7 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::string(argv[1]) == "build")
     {
         if (argc < 5)
-        { fprintf(stderr, "usage: spakc build <out.spak> <contentRoot> <meshRel...> [--image <imageRel>] [--raw]\n"); return 2; }
+        { fprintf(stderr, "usage: spakc build <out.spak> <contentRoot> <meshRel...> [--image <imageRel>] [--font <fontRel>] [--raw]\n"); return 2; }
         const std::string outSpak = argv[2];
         const std::string root    = argv[3];
         bool compress = true;
@@ -599,6 +792,7 @@ int main(int argc, char** argv)
         std::vector<std::string> images;
         std::vector<std::string> videos; // .mpg args become raw VIDE entries
         std::vector<std::string> audios; // .mp2 args become raw AUDI entries
+        std::vector<std::string> fonts;
         struct AnimationArg { std::string source, logical; };
         std::vector<AnimationArg> animations;
         for (int i = 4; i < argc; ++i)
@@ -622,6 +816,13 @@ int main(int argc, char** argv)
                 images.push_back(argv[++i]);
                 continue;
             }
+            if (arg == "--font")
+            {
+                if (i + 1 >= argc)
+                { fprintf(stderr, "spakc: --font requires <logical-path>\n"); return 2; }
+                fonts.push_back(argv[++i]);
+                continue;
+            }
             std::string ext = arg.size() >= 4 ? arg.substr(arg.size() - 4) : "";
             for (size_t c = 0; c < ext.size(); ++c)
                 if (ext[c] >= 'A' && ext[c] <= 'Z') ext[c] = (char)(ext[c] - 'A' + 'a');
@@ -629,7 +830,7 @@ int main(int argc, char** argv)
             else if (ext == ".mp2") audios.push_back(arg);
             else                    meshes.push_back(arg);
         }
-        if (meshes.empty() && images.empty() && videos.empty() && audios.empty() && animations.empty())
+        if (meshes.empty() && images.empty() && videos.empty() && audios.empty() && fonts.empty() && animations.empty())
         { fprintf(stderr, "spakc: no assets given\n"); return 2; }
         if (!ResolveBundler()) return 1;
         g_tmpBase = outSpak;
@@ -637,7 +838,7 @@ int main(int argc, char** argv)
         const std::string rootAbs = AbsPath(root);
         std::vector<Entry> entries;
         std::set<unsigned int> seenTex;
-        int okMeshes = 0, okImages = 0, okVideos = 0, okAudios = 0, okAnimations = 0;
+        int okMeshes = 0, okImages = 0, okVideos = 0, okAudios = 0, okFonts = 0, okAnimations = 0;
         for (size_t i = 0; i < meshes.size(); ++i)
             if (AddMesh(entries, seenTex, rootAbs, meshes[i])) ++okMeshes;
         for (size_t i = 0; i < images.size(); ++i)
@@ -646,9 +847,11 @@ int main(int argc, char** argv)
             if (AddVideo(entries, rootAbs, videos[i])) ++okVideos;
         for (size_t i = 0; i < audios.size(); ++i)
             if (AddAudio(entries, rootAbs, audios[i])) ++okAudios;
+        for (size_t i = 0; i < fonts.size(); ++i)
+            if (AddFont(entries, seenTex, rootAbs, fonts[i])) ++okFonts;
         for (size_t i = 0; i < animations.size(); ++i)
             if (AddAnimation(entries, animations[i].source, animations[i].logical)) ++okAnimations;
-        if (okMeshes == 0 && okImages == 0 && okVideos == 0 && okAudios == 0 && okAnimations == 0)
+        if (okMeshes == 0 && okImages == 0 && okVideos == 0 && okAudios == 0 && okFonts == 0 && okAnimations == 0)
         { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;
     }

@@ -11,6 +11,9 @@
 #include "render/ShaderCompiler.h"
 #include "state/EngineState.h"
 
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb/stb_truetype.h"
+
 #include "imgui.h"
 #include "ImGuizmo.h"
 
@@ -501,6 +504,7 @@ void SceneRenderer::LoadStandardShader()
     reload("bloom_combine", m_bloom_combine_vs, m_bloom_combine_ps);
     reload("beam", m_beam_vs, m_beam_ps); // spot volumetric shaft (optional)
     reload("image", m_image_vs, m_image_ps); // Image attribute overlay (optional)
+    reload("text", m_text_vs, m_text_ps); // Text attribute overlay (optional)
     reload("video", m_video_vs, m_video_ps); // Video attribute overlay (optional)
     if (m_vs && (!m_bloom_bright_ps || !m_bloom_blur_ps || !m_bloom_combine_ps))
         applog::Warn("Bloom shaders not compiled — emissive glow off until 'Compile shaders'");
@@ -534,8 +538,13 @@ void SceneRenderer::Shutdown()
     for (auto& image : m_image_textures)
         if (image.second) image.second->Release();
     m_image_textures.clear();
+    for (auto& font : m_text_fonts)
+        if (font.second.atlas) font.second.atlas->Release();
+    m_text_fonts.clear();
     if (m_image_ps)   { m_image_ps->Release();   m_image_ps = nullptr; }
     if (m_image_vs)   { m_image_vs->Release();   m_image_vs = nullptr; }
+    if (m_text_ps)    { m_text_ps->Release();    m_text_ps = nullptr; }
+    if (m_text_vs)    { m_text_vs->Release();    m_text_vs = nullptr; }
     if (m_video_ps)   { m_video_ps->Release();   m_video_ps = nullptr; }
     if (m_video_vs)   { m_video_vs->Release();   m_video_vs = nullptr; }
     if (m_cube_ib)    { m_cube_ib->Release();    m_cube_ib = nullptr; }
@@ -857,6 +866,7 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_spot_gizmos.clear();
     m_spot_beams.clear();
     m_image_items.clear();
+    m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
     m_phys_debug.clear(); // rebuilt from the scene each frame (authoring wireframes)
@@ -988,6 +998,22 @@ void SceneRenderer::RenderUi(EngineState& state)
                     image.priority = a.image_priority;
                     image.sequence = overlay_sequence++;
                     m_image_items.push_back(image);
+                }
+                else if (a.type == "Text" && !a.text_font_path.empty() && !a.text_value.empty())
+                {
+                    TextItem text_item;
+                    text_item.object = o.name;
+                    text_item.font_path_abs = (state.project_root / a.text_font_path).string();
+                    text_item.value = a.text_value;
+                    text_item.x = a.text_x; text_item.y = a.text_y;
+                    text_item.w = a.text_w; text_item.h = a.text_h;
+                    text_item.font_size = a.text_font_size;
+                    for (int k = 0; k < 3; ++k) text_item.color[k] = a.text_color[k];
+                    text_item.alpha = a.text_alpha;
+                    text_item.lock_aspect = a.text_lock_aspect;
+                    text_item.priority = a.text_priority;
+                    text_item.sequence = overlay_sequence++;
+                    m_text_items.push_back(text_item);
                 }
                 else if (a.type == "Video" && !a.video_path.empty())
                 {
@@ -2215,6 +2241,96 @@ SceneRenderer::VideoTex* SceneRenderer::EnsureVideoTex(const std::string& key, c
     return t;
 }
 
+SceneRenderer::PreviewFont* SceneRenderer::EnsurePreviewFont(const std::string& path)
+{
+    PreviewFont& output = m_text_fonts[path];
+    if (output.attempted)
+        return output.atlas ? &output : nullptr;
+    output.attempted = true;
+
+    std::ifstream file(path, std::ios::binary);
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
+                                     std::istreambuf_iterator<char>());
+    if (bytes.empty())
+        return nullptr;
+    stbtt_fontinfo info;
+    const int offset = stbtt_GetFontOffsetForIndex(&bytes[0], 0);
+    if (offset < 0 || !stbtt_InitFont(&info, &bytes[0], offset) ||
+        stbtt_FindGlyphIndex(&info, '?') == 0)
+        return nullptr;
+
+    const int atlas_width = 1024, atlas_height = 1024, padding = 5;
+    const float source_size = 48.0f;
+    const float scale = stbtt_ScaleForPixelHeight(&info, source_size);
+    std::vector<unsigned char> pixels((size_t)atlas_width * atlas_height, 0);
+    int next_x = 1, next_y = 1, row_height = 0;
+    for (unsigned int codepoint = 0x20; codepoint <= 0xFF; ++codepoint)
+    {
+        if ((codepoint > 0x7E && codepoint < 0xA0) ||
+            stbtt_FindGlyphIndex(&info, (int)codepoint) == 0)
+            continue;
+        int advance = 0, left_bearing = 0;
+        stbtt_GetCodepointHMetrics(&info, (int)codepoint, &advance, &left_bearing);
+        text::Glyph glyph;
+        glyph.codepoint = codepoint;
+        glyph.advance = advance * scale;
+        int width = 0, height = 0, x_offset = 0, y_offset = 0;
+        unsigned char* bitmap = stbtt_GetCodepointSDF(
+            &info, scale, (int)codepoint, padding, 128, 128.0f / padding,
+            &width, &height, &x_offset, &y_offset);
+        if (bitmap && width > 0 && height > 0)
+        {
+            if (next_x + width + 1 > atlas_width)
+            { next_x = 1; next_y += row_height + 1; row_height = 0; }
+            if (next_y + height + 1 > atlas_height)
+            { stbtt_FreeSDF(bitmap, info.userdata); return nullptr; }
+            for (int row = 0; row < height; ++row)
+                std::memcpy(&pixels[(size_t)(next_y + row) * atlas_width + next_x],
+                            bitmap + (size_t)row * width, width);
+            glyph.bearingX = (float)x_offset;
+            glyph.bearingY = (float)-y_offset;
+            glyph.width = (float)width; glyph.height = (float)height;
+            glyph.u0 = (float)next_x / atlas_width; glyph.v0 = (float)next_y / atlas_height;
+            glyph.u1 = (float)(next_x + width) / atlas_width;
+            glyph.v1 = (float)(next_y + height) / atlas_height;
+            next_x += width + 1;
+            row_height = (std::max)(row_height, height);
+        }
+        if (bitmap) stbtt_FreeSDF(bitmap, info.userdata);
+        output.metrics.glyphs.push_back(glyph);
+    }
+    for (const text::Glyph& left : output.metrics.glyphs)
+        for (const text::Glyph& right : output.metrics.glyphs)
+        {
+            const int amount = stbtt_GetCodepointKernAdvance(
+                &info, (int)left.codepoint, (int)right.codepoint);
+            if (amount != 0)
+            {
+                text::KerningPair pair;
+                pair.left = left.codepoint; pair.right = right.codepoint;
+                pair.advance = amount * scale;
+                output.metrics.kerning.push_back(pair);
+            }
+        }
+    int ascent = 0, descent = 0, line_gap = 0;
+    stbtt_GetFontVMetrics(&info, &ascent, &descent, &line_gap);
+    output.metrics.sourcePixelSize = source_size;
+    output.metrics.ascent = ascent * scale;
+    output.metrics.descent = descent * scale;
+    output.metrics.lineHeight = (ascent - descent + line_gap) * scale;
+    if (FAILED(m_device->CreateTexture(atlas_width, atlas_height, 1, 0, D3DFMT_A8,
+                                       D3DPOOL_MANAGED, &output.atlas, nullptr)))
+        return nullptr;
+    D3DLOCKED_RECT locked = {};
+    if (FAILED(output.atlas->LockRect(0, &locked, nullptr, 0)))
+    { output.atlas->Release(); output.atlas = nullptr; return nullptr; }
+    for (int row = 0; row < atlas_height; ++row)
+        std::memcpy((unsigned char*)locked.pBits + row * locked.Pitch,
+                    &pixels[(size_t)row * atlas_width], atlas_width);
+    output.atlas->UnlockRect(0);
+    return &output;
+}
+
 // The Audio attribute reconciler (the Vulkan engine's shape): every playing
 // attribute becomes a wanted stream; edit mode passes nothing, which tears
 // every voice down — audio exists only inside the Play preview. The listener
@@ -2347,15 +2463,17 @@ void SceneRenderer::RenderOverlay(float dt)
             ++i;
     }
 
-    if ((m_image_items.empty() && m_video_items.empty()) || !m_rtSurface)
+    if ((m_image_items.empty() && m_text_items.empty() && m_video_items.empty()) || !m_rtSurface)
         return;
 
-    struct OverlayRef { bool image; int index; int priority; int sequence; };
+    struct OverlayRef { int kind; int index; int priority; int sequence; };
     std::vector<OverlayRef> order;
     for (int i = 0; i < (int)m_image_items.size(); ++i)
-        order.push_back({true, i, m_image_items[i].priority, m_image_items[i].sequence});
+        order.push_back({0, i, m_image_items[i].priority, m_image_items[i].sequence});
+    for (int i = 0; i < (int)m_text_items.size(); ++i)
+        order.push_back({1, i, m_text_items[i].priority, m_text_items[i].sequence});
     for (int i = 0; i < (int)m_video_items.size(); ++i)
-        order.push_back({false, i, m_video_items[i].priority, m_video_items[i].sequence});
+        order.push_back({2, i, m_video_items[i].priority, m_video_items[i].sequence});
     std::stable_sort(order.begin(), order.end(),
                      [](const OverlayRef& a, const OverlayRef& b)
                      {
@@ -2394,7 +2512,7 @@ void SceneRenderer::RenderOverlay(float dt)
     struct QuadVtx { float x, y, z, u, v; };
     for (const OverlayRef& ref : order)
     {
-        if (ref.image)
+        if (ref.kind == 0)
         {
             if (!m_image_vs || !m_image_ps)
                 continue;
@@ -2432,6 +2550,55 @@ void SceneRenderer::RenderOverlay(float dt)
             m_device->SetPixelShaderConstantF(0, tint, 1);
             m_device->SetTexture(0, texture);
             m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+            continue;
+        }
+
+        if (ref.kind == 1)
+        {
+            if (!m_text_vs || !m_text_ps)
+                continue;
+            const TextItem& item = m_text_items[ref.index];
+            PreviewFont* font = EnsurePreviewFont(item.font_path_abs);
+            if (!font)
+                continue;
+            text::Layout layout;
+            const auto override_value = m_text_overrides.find(item.object);
+            const std::string& value = override_value != m_text_overrides.end()
+                ? override_value->second : item.value;
+            if (!text::BuildLayout(font->metrics, value, item.font_size,
+                                   item.lock_aspect ? 0.0f : item.w, layout) || layout.glyphs.empty())
+                continue;
+            float fit_scale = 1.0f;
+            if (item.lock_aspect && layout.width > 0.0f && layout.height > 0.0f)
+                fit_scale = (std::min)(item.w / layout.width, item.h / layout.height);
+            const float glyph_scale = item.font_size / font->metrics.sourcePixelSize * fit_scale;
+            std::vector<QuadVtx> vertices;
+            vertices.reserve(layout.glyphs.size() * 6);
+            for (const text::PositionedGlyph& positioned : layout.glyphs)
+            {
+                const text::Glyph& glyph = font->metrics.glyphs[positioned.glyphIndex];
+                const float px0 = item.x + positioned.x * fit_scale;
+                const float py0 = item.y + positioned.y * fit_scale;
+                const float px1 = px0 + glyph.width * glyph_scale;
+                const float py1 = py0 + glyph.height * glyph_scale;
+                const float x0 = px0 / 1280.0f * 2.0f - 1.0f;
+                const float x1 = px1 / 1280.0f * 2.0f - 1.0f;
+                const float y0 = 1.0f - py0 / 720.0f * 2.0f;
+                const float y1 = 1.0f - py1 / 720.0f * 2.0f;
+                const QuadVtx quad[6] = {
+                    {x0,y0,0,glyph.u0,glyph.v0}, {x1,y0,0,glyph.u1,glyph.v0}, {x0,y1,0,glyph.u0,glyph.v1},
+                    {x0,y1,0,glyph.u0,glyph.v1}, {x1,y0,0,glyph.u1,glyph.v0}, {x1,y1,0,glyph.u1,glyph.v1}
+                };
+                vertices.insert(vertices.end(), quad, quad + 6);
+            }
+            const float tint[4] = { item.color[0], item.color[1], item.color[2], item.alpha };
+            m_device->SetVertexShader(m_text_vs);
+            m_device->SetPixelShader(m_text_ps);
+            m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+            m_device->SetPixelShaderConstantF(0, tint, 1);
+            m_device->SetTexture(0, font->atlas);
+            m_device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)layout.glyphs.size() * 2,
+                                      &vertices[0], sizeof(QuadVtx));
             continue;
         }
 
@@ -2608,6 +2775,7 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
 {
     m_video_overrides.clear(); // each Play session starts from the authored play modes
     m_audio_overrides.clear();
+    m_text_overrides.clear();
     std::vector<phys::BodyDesc> descs;
     m_phys_names.assign(scene.objects.size(), std::string());
 
@@ -2732,6 +2900,7 @@ void SceneRenderer::StopPhysics()
 {
     m_video_overrides.clear(); // edit mode shows the authored state again
     m_audio_overrides.clear();
+    m_text_overrides.clear();
     m_script.Clear();
     m_phys.Clear();
     m_phys_poses.clear();
@@ -2745,6 +2914,12 @@ bool  SceneRenderer::InputButton(const char* name) { return m_input.Button(name)
 float SceneRenderer::InputAxis(const char* name)   { return m_input.Axis(name); }
 void  SceneRenderer::Log(const char* msg)          { applog::Script(msg); }        // [LOG]
 void  SceneRenderer::LogError(const char* msg)     { applog::Error(msg); }          // [ERROR]
+void SceneRenderer::TextSetValue(int objectIndex, const char* value)
+{
+    const char* name = ObjectName(objectIndex);
+    if (name && *name)
+        m_text_overrides[name] = value ? value : "";
+}
 // Lua video.play/stop: an override on the object's Video attribute play mode,
 // applied at capture time and dropped when the Play session ends — the
 // authored scene value is never touched (same contract as physics poses).
