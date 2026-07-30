@@ -155,6 +155,7 @@ add_executable(XenFusion
     src/input/ControllerMapping.cpp
     src/panels/MapperPanel.cpp
     src/panels/AnimatorPanel.cpp
+    src/render/AnimatorPreviewRenderer.cpp
     src/platform/Dialogs.cpp
     src/project/ProjectIO.cpp
     src/project/SceneJson.cpp

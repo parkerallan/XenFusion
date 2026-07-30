@@ -433,12 +433,24 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
     const ImVec2 canvas_max(viewport_max.x,
         (std::max)(viewport_min.y + 1.0f, viewport_max.y - toolbar_height));
 
-    ImGui::SetCursorScreenPos(viewport_min);
-    ImGui::InvisibleButton("##AnimatorPreviewCanvas",
-        ImVec2((std::max)(1.0f, canvas_max.x - viewport_min.x),
-               (std::max)(1.0f, canvas_max.y - viewport_min.y)));
-    ImGui::GetWindowDrawList()->AddRectFilled(viewport_min, canvas_max,
-                                               IM_COL32(30, 30, 33, 255));
+    // Resolve the active clip (source model + name) from the toolbar selection.
+    if (preview_clip_index_ >= (int)controller_.clips.size())
+        preview_clip_index_ = 0;
+    std::string clip_source, clip_name;
+    if (preview_clip_index_ >= 0 && preview_clip_index_ < (int)controller_.clips.size())
+    {
+        clip_source = controller_.clips[preview_clip_index_].source_model_path;
+        clip_name   = controller_.clips[preview_clip_index_].clip_name;
+    }
+
+    // Push display/playback state, then render the offscreen image + rig overlay.
+    preview_.SetShowSkeleton(preview_skeleton_);
+    preview_.SetShowMesh(preview_mesh_);
+    preview_.SetShowTexture(preview_texture_);
+    preview_.SetPlaying(preview_playing_);
+    preview_.RenderUi(state, controller_.preview_model_path, clip_source, clip_name,
+                      viewport_min, canvas_max);
+
     if (ImGui::BeginDragDropTarget())
     {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
@@ -460,7 +472,7 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
     if (ImGui::Button(preview_playing_ ? ICON_FA_PAUSE : ICON_FA_PLAY))
         preview_playing_ = !preview_playing_;
     ImGui::SameLine();
-    if (ImGui::Button(ICON_FA_ROTATE)) preview_time_ = 0.0f;
+    if (ImGui::Button(ICON_FA_ROTATE)) { preview_time_ = 0.0f; preview_.SetTimeNormalized(0.0f); }
     ImGui::SameLine();
 
     std::vector<const char*> clip_names;
@@ -479,8 +491,15 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
     ImGui::Checkbox("Mesh", &preview_mesh_);
     ImGui::SameLine();
     ImGui::Checkbox("Texture", &preview_texture_);
+    if (!preview_.SelectedBoneName().empty())
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Bone: %s", preview_.SelectedBoneName().c_str());
+    }
+    preview_time_ = preview_.TimeNormalized();
     ImGui::SetNextItemWidth((std::max)(80.0f, ImGui::GetContentRegionAvail().x - 8.0f));
-    ImGui::SliderFloat("##AnimatorPreviewTime", &preview_time_, 0.0f, 1.0f, "%.2fs");
+    if (ImGui::SliderFloat("##AnimatorPreviewTime", &preview_time_, 0.0f, 1.0f, "%.2f"))
+        preview_.SetTimeNormalized(preview_time_);
     if (controller_.preview_model_path.empty()) ImGui::EndDisabled();
 }
 

@@ -1,6 +1,9 @@
 #pragma once
 
 #include "anim/AnimatorController.h"
+#include "render/AnimatorPreviewRenderer.h"
+
+#include <d3d9.h>
 
 #include <filesystem>
 #include <string>
@@ -12,6 +15,14 @@ class AnimatorPanel
 {
 public:
     void Render(EngineState& state);
+
+    // Preview-renderer lifecycle hooks, forwarded by the application loop next
+    // to the ViewportPanel's (mirrors that panel's ownership of SceneRenderer).
+    void InitPreview(IDirect3DDevice9* device) { preview_.Initialize(device); }
+    void OnPreviewDeviceLost()                 { preview_.OnDeviceLost(); }
+    void BeginPreviewFrame()                   { preview_.BeginFrame(); }
+    void RenderPreviewGpuPass(float dt)        { preview_.RenderGpu(dt); }
+    void ShutdownPreview()                     { preview_.Shutdown(); }
 
 private:
     void RefreshControllers(const EngineState& state);
@@ -39,4 +50,5 @@ private:
     bool preview_texture_ = true;
     int preview_clip_index_ = 0;
     float preview_time_ = 0.0f;
+    AnimatorPreviewRenderer preview_;
 };

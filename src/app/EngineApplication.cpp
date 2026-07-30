@@ -210,6 +210,7 @@ bool EngineApplication::Init()
     ImGui_ImplDX9_Init(renderer_.Device());
 
     viewport_panel_.Init(renderer_.Device());
+    animator_panel_.InitPreview(renderer_.Device());
 
     // Both ImGui's font atlas and the scene's render target are D3DPOOL_DEFAULT
     // resources; they must be released before a device Reset and rebuilt after.
@@ -217,7 +218,7 @@ bool EngineApplication::Init()
         [] { ImGui_ImplDX9_InvalidateDeviceObjects(); },
         [] { ImGui_ImplDX9_CreateDeviceObjects(); });
     renderer_.AddResetHandler(
-        [this] { viewport_panel_.OnDeviceLost(); }, // recreation is lazy
+        [this] { viewport_panel_.OnDeviceLost(); animator_panel_.OnPreviewDeviceLost(); }, // recreation is lazy
         nullptr);
 
     QueryPerformanceFrequency(&qpc_freq_);
@@ -268,6 +269,7 @@ void EngineApplication::RunLoop()
 
         // Per-frame reset of panel/renderer state, before the ImGui frame.
         viewport_panel_.BeginFrame();
+        animator_panel_.BeginPreviewFrame();
 
         // Device management (recover lost device / apply resize).
         if (!renderer_.BeginFrame())
@@ -290,6 +292,7 @@ void EngineApplication::RunLoop()
         // scene. Its own BeginScene/EndScene, done before the back-buffer scene
         // is opened (D3D9 scenes must not nest) so the UI can sample it.
         viewport_panel_.RenderSceneGpuPass(dt);
+        animator_panel_.RenderPreviewGpuPass(dt);
 
         // Back-buffer pass: draw the UI (which samples the scene texture).
         if (renderer_.BeginBackbuffer())
@@ -885,6 +888,7 @@ void EngineApplication::Shutdown()
     settings::Save(state_); // persist settings on exit
 
     viewport_panel_.Shutdown();
+    animator_panel_.ShutdownPreview();
 
     if (ImGui::GetCurrentContext())
     {
