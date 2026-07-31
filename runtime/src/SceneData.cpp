@@ -187,6 +187,14 @@ namespace
             return (float)arr->arr[i].num;
         return dflt;
     }
+
+    bool BoolAt(const JValue* arr, size_t i, bool dflt)
+    {
+        if (arr && arr->type == JValue::Array && i < arr->arr.size() &&
+            arr->arr[i].type == JValue::Bool)
+            return arr->arr[i].b;
+        return dflt;
+    }
 }
 
 namespace scenedata
@@ -338,6 +346,7 @@ namespace scenedata
                     const JValue* pfr = ja.Find("friction");
                     const JValue* pg  = ja.Find("gravity");
                     const JValue* pgs = ja.Find("gravityScale");
+                    const JValue* plr = ja.Find("lockRotation");
                     if (at.type == "Rigid Body")
                     {
                         if (pk  && pk->type  == JValue::Number) at.phys_kind  = (int)pk->num;
@@ -352,6 +361,8 @@ namespace scenedata
                         if (pfr && pfr->type == JValue::Number) at.phys_friction    = (float)pfr->num;
                         if (pg  && pg->type  == JValue::Bool)   at.phys_gravity     = pg->b;
                         if (pgs && pgs->type == JValue::Number) at.phys_gravity_scale = (float)pgs->num;
+                        for (int axis = 0; axis < 3; ++axis)
+                            at.phys_lock_rotation[axis] = BoolAt(plr, axis, false);
                     }
                     else if (at.type == "Trigger Volume")
                     {

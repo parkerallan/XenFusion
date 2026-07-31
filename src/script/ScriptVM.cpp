@@ -432,13 +432,15 @@ namespace script
         }
     }
 
-    void ScriptVM::FireTrigger(int objectIndex, int otherObjectIndex)
+    void ScriptVM::FireTrigger(int objectIndex, int otherObjectIndex, const char* boneName)
     {
         lua_State* L = m_impl->L;
         if (!L) return;
         if (!beginCall(L, objectIndex, "on_trigger")) return;
         pushObject(L, otherObjectIndex);
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK)
+        if (boneName && boneName[0]) lua_pushstring(L, boneName);
+        else lua_pushnil(L);
+        if (lua_pcall(L, 2, 0, 0) != LUA_OK)
         {
             if (m_impl->host) m_impl->host->LogError((std::string("on_trigger: ") + lua_tostring(L, -1)).c_str());
             lua_pop(L, 1);

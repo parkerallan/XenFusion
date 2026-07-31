@@ -147,6 +147,7 @@ add_executable(XenFusion
     src/audio/AudioVoicePolicy.cpp
     src/audio/AudioPlayer.cpp
     src/audio/Spatial3D.cpp
+    src/anim/BoneModifiers.cpp
     src/anim/AnimatorController.cpp
     src/anim/AnimationClip.cpp
     src/anim/AnimatorRuntime.cpp
@@ -156,6 +157,7 @@ add_executable(XenFusion
     src/panels/MapperPanel.cpp
     src/panels/AnimatorPanel.cpp
     src/render/AnimatorPreviewRenderer.cpp
+    src/render/BoneModifiers.cpp
     src/platform/Dialogs.cpp
     src/project/ProjectIO.cpp
     src/project/SceneJson.cpp

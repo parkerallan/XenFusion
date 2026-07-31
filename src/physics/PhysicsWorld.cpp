@@ -62,6 +62,14 @@ namespace phys
             return MakeTransformPR(d.pos, d.rotEulerDeg);
         }
 
+        btTransform MatrixToTransform(const float matrix[16])
+        {
+            btMatrix3x3 basis(matrix[0], matrix[4], matrix[8],
+                              matrix[1], matrix[5], matrix[9],
+                              matrix[2], matrix[6], matrix[10]);
+            return btTransform(basis, btVector3(matrix[12], matrix[13], matrix[14]));
+        }
+
         // Override Bullet's default material combine (which MULTIPLIES the two
         // bodies' restitution/friction, so both must be non-zero) with MAX — the
         // higher value wins, so setting bounce/friction on just the object that
@@ -110,8 +118,11 @@ namespace phys
         struct ReadRec { btRigidBody* body; int objectIndex; };
         std::vector<ReadRec> readback;
 
-        struct TriggerRec { btGhostObject* ghost; int objectIndex; };
+        struct TriggerRec { btGhostObject* ghost; int objectIndex; unsigned int boneHash; };
         std::vector<TriggerRec> triggers;
+
+        struct BoneRec { btGhostObject* object; };
+        std::vector<BoneRec> boneColliders;
 
         // Stable storage for MeshExact colliders: btBvhTriangleMeshShape references
         // the interface, which references these vertex/index buffers — all must
@@ -129,9 +140,8 @@ namespace phys
 
         // objectIndex -> rigid body (for scripting verbs to find a body by index).
         std::map<int, btRigidBody*> bodyByIndex;
-
         Impl()
-            : config(0), dispatcher(0), broadphase(0), solver(0), world(0), ghostCb(0) {}
+                        : config(0), dispatcher(0), broadphase(0), solver(0), world(0), ghostCb(0) {}
     };
 
     PhysicsWorld::PhysicsWorld() : m_impl(new Impl()) {}
@@ -172,6 +182,7 @@ namespace phys
         s.lastOverlap.clear();
         s.objIndexOf.clear();
         s.bodyByIndex.clear();
+        s.boneColliders.clear();
 
         delete s.world;      s.world = 0;
         delete s.solver;     s.solver = 0;
@@ -259,7 +270,7 @@ namespace phys
                                          btCollisionObject::CF_NO_CONTACT_RESPONSE);
                 s.world->addCollisionObject(ghost);
 
-                Impl::TriggerRec tr; tr.ghost = ghost; tr.objectIndex = d.objectIndex;
+                Impl::TriggerRec tr; tr.ghost = ghost; tr.objectIndex = d.objectIndex; tr.boneHash = 0;
                 s.triggers.push_back(tr);
                 s.objIndexOf[ghost] = d.objectIndex;
                 continue;
@@ -280,6 +291,10 @@ namespace phys
             ci.m_restitution    = d.restitution;
             ci.m_friction       = d.friction;
             btRigidBody* body = new btRigidBody(ci);
+            if (isDynamic)
+                body->setAngularFactor(btVector3(d.lockRotation[0] ? 0.0f : 1.0f,
+                                                 d.lockRotation[1] ? 0.0f : 1.0f,
+                                                 d.lockRotation[2] ? 0.0f : 1.0f));
 
             // Opt into the max-combine material callback for this body's contacts.
             body->setCollisionFlags(body->getCollisionFlags() |
@@ -313,6 +328,47 @@ namespace phys
         }
 
         s.lastOverlap.resize(s.triggers.size());
+    }
+
+    int PhysicsWorld::AddBoneCollider(int ownerObjectIndex, unsigned int boneHash,
+                                      const float halfExtents[3])
+    {
+        Impl& s = *m_impl;
+        if (!s.world) return -1;
+        btBoxShape* shape = new btBoxShape(btVector3(
+            halfExtents[0], halfExtents[1], halfExtents[2]));
+        s.shapes.push_back(shape);
+        btTransform transform;
+        transform.setIdentity();
+        Impl::BoneRec record;
+        btGhostObject* ghost = new btGhostObject();
+        ghost->setCollisionShape(shape);
+        ghost->setWorldTransform(transform);
+        ghost->setCollisionFlags(ghost->getCollisionFlags() |
+                                 btCollisionObject::CF_NO_CONTACT_RESPONSE);
+        s.world->addCollisionObject(ghost);
+        Impl::TriggerRec triggerRecord;
+        triggerRecord.ghost = ghost;
+        triggerRecord.objectIndex = ownerObjectIndex;
+        triggerRecord.boneHash = boneHash;
+        s.triggers.push_back(triggerRecord);
+        s.lastOverlap.push_back(std::map<int, char>());
+        s.objIndexOf[ghost] = ownerObjectIndex;
+        record.object = ghost;
+        s.boneColliders.push_back(record);
+        return (int)s.boneColliders.size() - 1;
+    }
+
+    void PhysicsWorld::UpdateBoneCollider(int handle, const float worldMatrix[16])
+    {
+        Impl& s = *m_impl;
+        if (handle < 0 || (size_t)handle >= s.boneColliders.size() ||
+            !s.boneColliders[(size_t)handle].object) return;
+        const btTransform transform = MatrixToTransform(worldMatrix);
+        Impl::BoneRec& record = s.boneColliders[(size_t)handle];
+        record.object->setWorldTransform(transform);
+        record.object->activate(true);
+        if (s.world) s.world->updateSingleAabb(record.object);
     }
 
     void PhysicsWorld::Step(float dt)
@@ -353,6 +409,7 @@ namespace phys
                 std::map<const btCollisionObject*, int>::const_iterator it =
                     s.objIndexOf.find(other);
                 const int otherIndex = (it != s.objIndexOf.end()) ? it->second : -1;
+                if (otherIndex == s.triggers[t].objectIndex) continue;
                 current[otherIndex] = 1;
             }
 
@@ -365,6 +422,7 @@ namespace phys
                     TriggerEvent e;
                     e.triggerObjectIndex = s.triggers[t].objectIndex;
                     e.otherObjectIndex   = it->first;
+                    e.boneHash           = s.triggers[t].boneHash;
                     e.entered            = true;
                     out.push_back(e);
                 }
@@ -377,6 +435,7 @@ namespace phys
                     TriggerEvent e;
                     e.triggerObjectIndex = s.triggers[t].objectIndex;
                     e.otherObjectIndex   = it->first;
+                    e.boneHash           = s.triggers[t].boneHash;
                     e.entered            = false;
                     out.push_back(e);
                 }

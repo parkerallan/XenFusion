@@ -69,6 +69,7 @@
     <ClCompile Include="src\Content.cpp" />
     <ClCompile Include="src\SceneRuntime.cpp" />
     <ClCompile Include="src\RuntimeAnimator.cpp" />
+    <ClCompile Include="src\RuntimeBoneModifiers.cpp" />
     <ClCompile Include="src\StreamPak.cpp" />
     <ClCompile Include="src\StreamCache.cpp" />
     <ClCompile Include="src\stb_impl.cpp" />
@@ -89,6 +90,7 @@
     <ClInclude Include="src\Content.h" />
     <ClInclude Include="src\SceneRuntime.h" />
     <ClInclude Include="src\RuntimeAnimator.h" />
+    <ClInclude Include="src\RuntimeBoneModifiers.h" />
     <ClInclude Include="src\AnimationFormat.h" />
     <ClInclude Include="src\AnimatorCookFormat.h" />
     <ClInclude Include="src\RtMath.h" />

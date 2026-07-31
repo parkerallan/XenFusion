@@ -108,8 +108,14 @@ namespace animator
             (unsigned int)controller.states.size() * animcook::kStateBytes;
         const unsigned int clip_offset = transition_offset +
             (unsigned int)controller.transitions.size() * animcook::kTransitionBytes;
-        const unsigned int data_offset = clip_offset +
+        const unsigned int modifier_offset = clip_offset +
             (unsigned int)clips.size() * animcook::kClipBytes;
+        const unsigned int string_offset = modifier_offset +
+            (unsigned int)controller.bone_modifiers.size() * animcook::kModifierBytes;
+        unsigned int string_bytes = 0;
+        for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
+            string_bytes += (unsigned int)modifier.bone_name.size();
+        const unsigned int data_offset = string_offset + string_bytes;
 
         output.clear();
         PushU32(output, animcook::kMagic);
@@ -122,6 +128,10 @@ namespace animator
         PushU32(output, transition_offset);
         PushU32(output, clip_offset);
         PushU32(output, data_offset);
+        PushU32(output, (unsigned int)controller.bone_modifiers.size());
+        PushU32(output, modifier_offset);
+        PushU32(output, string_offset);
+        PushU32(output, string_bytes);
 
         for (const AnimatorStateDefinition& state : controller.states)
         {
@@ -161,6 +171,31 @@ namespace animator
             PushU32(output, (unsigned int)clip.payload.size());
             payload_offset += (unsigned int)clip.payload.size();
         }
+        unsigned int bone_name_offset = 0;
+        for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
+        {
+            PushU32(output, animation::NameHash(modifier.bone_name.c_str()));
+            PushU32(output, modifier.type == AnimatorBoneModifierType::Collision
+                ? animcook::ModifierCollision : animcook::ModifierPhysics);
+            PushU32(output, modifier.affects_children ? animcook::kModifierAffectsChildren : 0);
+            PushU32(output, 0u);
+            PushFloat(output, modifier.strength);
+            PushFloat(output, modifier.damping);
+            PushFloat(output, modifier.stiffness);
+            PushFloat(output, modifier.mass);
+            PushFloat(output, modifier.drag);
+            PushFloat(output, modifier.gravity_scale);
+            for (int axis = 0; axis < 3; ++axis) PushFloat(output, modifier.gravity_dir[axis]);
+            PushFloat(output, modifier.angle_limit_deg);
+            PushFloat(output, modifier.radius);
+            for (int axis = 0; axis < 3; ++axis) PushFloat(output, modifier.box_half_extents[axis]);
+            for (int axis = 0; axis < 3; ++axis) PushFloat(output, modifier.box_center[axis]);
+            PushU32(output, bone_name_offset);
+            PushU32(output, (unsigned int)modifier.bone_name.size());
+            bone_name_offset += (unsigned int)modifier.bone_name.size();
+        }
+        for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
+            output.insert(output.end(), modifier.bone_name.begin(), modifier.bone_name.end());
         for (const CookedClip& clip : clips)
             output.insert(output.end(), clip.payload.begin(), clip.payload.end());
         return true;

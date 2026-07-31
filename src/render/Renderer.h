@@ -37,6 +37,7 @@ public:
     void SetClearColor(float r, float g, float b, float a = 1.0f);
 
     IDirect3DDevice9* Device() const { return m_device; }
+    HRESULT LastDeviceError() const { return m_lastDeviceError; }
 
     // Register callbacks invoked around every device Reset (resize / lost).
     // on_lost must release all D3DPOOL_DEFAULT resources; on_reset recreates
@@ -63,4 +64,5 @@ private:
     D3DCOLOR              m_clear      = D3DCOLOR_ARGB(255, 24, 24, 32);
     UINT                  m_resizeW    = 0;
     UINT                  m_resizeH    = 0;
+    HRESULT               m_lastDeviceError = S_OK;
 };

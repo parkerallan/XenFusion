@@ -596,6 +596,13 @@ void InspectorPanel::Render(EngineState& state)
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
                 edited |= ImGui::DragFloat("Angular damping", &attr.phys_ang_damping, 0.005f, 0.0f, 1.0f, "%.3f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
+                ImGui::TextUnformatted("Lock rotation");
+                ImGui::SameLine();
+                if (ImGui::Checkbox("X##LockRotation", &attr.phys_lock_rotation[0])) { edited = commit = true; }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Y##LockRotation", &attr.phys_lock_rotation[1])) { edited = commit = true; }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Z##LockRotation", &attr.phys_lock_rotation[2])) { edited = commit = true; }
                 if (ImGui::Checkbox("Gravity", &attr.phys_gravity)) { edited = commit = true; }
                 if (attr.phys_gravity)
                 {

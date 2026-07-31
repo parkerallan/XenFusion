@@ -5,6 +5,7 @@
 #include "anim/AnimationClip.h"
 #include "anim/AnimatorController.h"
 #include "anim/AnimatorRuntime.h"
+#include "render/BoneModifiers.h"
 #include "video/VideoPlayer.h"
 #include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
@@ -23,6 +24,13 @@
 
 struct EngineState;
 struct SceneFile;
+
+struct SceneBoneColliderPose
+{
+    std::string bone_name;
+    float half_extents[3] = {};
+    float model_matrix[16] = {};
+};
 
 // Standalone scene renderer, owned and driven by the editor's Viewport panel
 // (mirrors the Vulkan engine's SceneViewportRenderer owned by WorkspacePanel).
@@ -68,6 +76,7 @@ public:
     void BeginFrame();
     void RenderUi(EngineState& state);
     void RenderGpu(float dt);
+    void InvalidateAnimator(const std::string& controller_path);
 
 private:
     bool EnsureTarget(int width, int height);
@@ -330,6 +339,9 @@ private:
     {
         std::string controller_path;
         AnimatorRuntimeState runtime;
+        std::map<std::string, BoneModifierPhysicsState> physics_states;
+        std::vector<int> bone_collider_handles;
+        std::vector<SceneBoneColliderPose> bone_collider_poses;
     };
     std::map<std::string, ControllerCacheEntry> m_animator_controllers;
     std::map<std::string, ClipCacheEntry>       m_animation_clips;

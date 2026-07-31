@@ -3,11 +3,22 @@
 namespace animcook
 {
     const unsigned int kMagic = 0x414E4331; // 'ANC1'
-    const unsigned int kVersion = 1;
-    const unsigned int kHeaderBytes = 40;
+    const unsigned int kVersionV1 = 1;
+    const unsigned int kVersion = 2;
+    const unsigned int kHeaderBytesV1 = 40;
+    const unsigned int kHeaderBytes = 56;
     const unsigned int kStateBytes = 20;
     const unsigned int kTransitionBytes = 36;
     const unsigned int kClipBytes = 16;
+    const unsigned int kModifierBytes = 92;
+
+    enum ModifierType
+    {
+        ModifierPhysics = 0,
+        ModifierCollision = 1
+    };
+
+    const unsigned int kModifierAffectsChildren = 0x1u;
 
     enum ConditionOp
     {

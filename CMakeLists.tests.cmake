@@ -74,7 +74,7 @@ target_link_libraries(animator_cooker_test PRIVATE assimp nlohmann_json::nlohman
 add_test(NAME animator_cooker_fox
     COMMAND animator_cooker_test
         "${CMAKE_SOURCE_DIR}/../360proj"
-        "${CMAKE_SOURCE_DIR}/../360proj/assets/animators/NewAnimator.anim")
+        "${CMAKE_SOURCE_DIR}/../360proj/assets/animators/FoxAnim.anim")
 
 add_executable(text_layout_test
     tests/TextLayoutTest.cpp

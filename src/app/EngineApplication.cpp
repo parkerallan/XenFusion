@@ -184,7 +184,12 @@ bool EngineApplication::Init()
     if (!renderer_.Init(window_))
     {
         CloseSplash(); // the topmost splash would hide the error box
-        ::MessageBoxW(nullptr, L"Failed to create the Direct3D 9 device.",
+        wchar_t message[256];
+        swprintf_s(message, L"Failed to create the Direct3D 9 device.\n\nHRESULT: 0x%08X\n\n"
+                            L"Check that a Direct3D 9-capable display adapter is available and that "
+                            L"the legacy DirectX runtime is installed.",
+                   static_cast<unsigned int>(renderer_.LastDeviceError()));
+        ::MessageBoxW(nullptr, message,
                       L"XenFusion", MB_OK | MB_ICONERROR);
         return false;
     }
@@ -365,6 +370,11 @@ void EngineApplication::RenderUI()
     performance_panel_.Render(state_);
     mapper_panel_.Render(state_);
     animator_panel_.Render(state_);
+    if (!state_.saved_animator_path.empty())
+    {
+        viewport_panel_.InvalidateAnimator(state_.saved_animator_path.generic_string());
+        state_.saved_animator_path.clear();
+    }
 
     if (!startup_tabs_selected_)
     {

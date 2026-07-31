@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Content.h"
+#include "RuntimeBoneModifiers.h"
 #include "StreamPak.h"
 
 #include <map>
@@ -20,10 +21,20 @@ public:
         float translation[3], rotation[4], scale[3];
     };
 
+    struct BoneColliderPose
+    {
+        unsigned int boneHash;
+        float halfExtents[3];
+        float modelMatrix[16];
+    };
+
     bool Load(StreamPak* pak, StreamCache* streamCache, const std::string& controllerPath,
               const std::string& initialState, float playbackSpeed, bool autoPlay);
     void Update(float deltaTime);
-    bool BuildPalette(const RtMesh& mesh, std::vector<float>& output);
+    bool BuildPalette(const RtMesh& mesh, const float objectWorld[16],
+                      std::vector<float>& output);
+    void GetBoneColliders(const RtMesh& mesh, std::vector<BoneColliderPose>& output) const;
+    const char* BoneName(unsigned int hash) const;
 
     void SetFloat(const char* name, float value);
     void SetBool(const char* name, bool value);
@@ -70,6 +81,7 @@ private:
         std::vector<State> states;
         std::vector<Transition> transitions;
         std::vector<Clip> clips;
+        std::vector<RuntimeBoneModifier> modifiers;
         Resource() : defaultState(0) {}
     };
     struct FrameCache
@@ -87,7 +99,8 @@ private:
     bool LoadClip(Clip& clip);
     bool Evaluate(const Transition& transition);
     bool SamplePalette(const RtMesh& mesh, const State& state, float time,
-                       std::vector<float>& output, FrameCache& frameCache);
+                       std::vector<float>& output, FrameCache& frameCache,
+                       bool applyPhysics, const float objectWorld[16]);
     void PageForFrame(const Clip& clip, unsigned int frame, unsigned int& firstFrame,
                       unsigned int& offset, unsigned int& bytes) const;
     void DecodeTransform(const Track& track, const unsigned char* sample,
@@ -106,11 +119,16 @@ private:
     unsigned int m_activeState, m_previousState;
     float m_stateTime, m_previousTime, m_previousSpeed;
     float m_blendDuration, m_blendRemaining;
+    float m_lastDeltaTime;
     float m_playbackSpeed;
     bool m_autoPlay;
     std::vector<float> m_globalMatrices;
+    std::vector<float> m_collisionMatrices;
     std::vector<float> m_previousPalette;
     std::vector<float> m_activePalette;
     FrameCache m_activeFrames;
     FrameCache m_previousFrames;
+    unsigned int m_modifierSkeletonFingerprint;
+    std::vector<int> m_jointModifiers;
+    std::vector<RuntimeBonePhysicsState> m_physicsStates;
 };

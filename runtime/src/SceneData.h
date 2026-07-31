@@ -66,6 +66,7 @@ struct RtAttribute
     float phys_friction;
     bool  phys_gravity;
     float phys_gravity_scale;
+    bool  phys_lock_rotation[3];
 
     // For "Trigger Volume" (overlap-report only).
     int   trig_shape;       // 0=Box, 1=Sphere
@@ -153,6 +154,7 @@ struct RtAttribute
         phys_friction = 0.5f;
         phys_gravity = true;
         phys_gravity_scale = 1.0f;
+        phys_lock_rotation[0] = phys_lock_rotation[1] = phys_lock_rotation[2] = false;
         trig_shape = 0;
         trig_size[0] = trig_size[1] = trig_size[2] = 0.5f;
         image_x = 0.0f; image_y = 0.0f;

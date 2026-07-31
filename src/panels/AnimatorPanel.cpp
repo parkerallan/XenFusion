@@ -1,5 +1,6 @@
 #include "panels/AnimatorPanel.h"
 
+#include "anim/AnimationClip.h"
 #include "imgui.h"
 #include "state/EngineState.h"
 #include "ui/Icons.h"
@@ -10,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <set>
+#include <unordered_set>
 
 namespace
 {
@@ -83,6 +85,18 @@ namespace
         value = values[(std::size_t)selected];
         return true;
     }
+
+    std::string UniqueName(const std::string& requested,
+                           const std::unordered_set<std::string>& used)
+    {
+        if (used.find(requested) == used.end()) return requested;
+        for (unsigned suffix = 2; suffix < 10000; ++suffix)
+        {
+            const std::string candidate = requested + "_" + std::to_string(suffix);
+            if (used.find(candidate) == used.end()) return candidate;
+        }
+        return requested;
+    }
 }
 
 void AnimatorPanel::RefreshControllers(const EngineState& state)
@@ -113,9 +127,6 @@ void AnimatorPanel::OpenController(const std::filesystem::path& path,
     loaded_path_ = path;
     loaded_ = true;
     dirty_ = false;
-    bone_modifier_text_.clear();
-    for (const nlohmann::json& modifier : controller_.bone_modifiers)
-        bone_modifier_text_.push_back(modifier.dump(2));
 }
 
 void AnimatorPanel::NewController()
@@ -125,7 +136,51 @@ void AnimatorPanel::NewController()
     loaded_path_.clear();
     loaded_ = true;
     dirty_ = true;
-    bone_modifier_text_.clear();
+}
+
+bool AnimatorPanel::ImportAnimationsFromModel(EngineState& state, const std::string& path)
+{
+    if (!IsModelPath(path))
+    {
+        state.AddLog("Animator expects an FBX, glTF, GLB, or OBJ model", LogLevel::Error);
+        return false;
+    }
+    std::vector<std::string> animation_names;
+    std::string error;
+    if (!animation::DiscoverClips(state.project_root / path, animation_names, error))
+    {
+        state.AddLog("Failed to inspect model animations: " + error, LogLevel::Error);
+        return false;
+    }
+    if (controller_.preview_model_path.empty()) controller_.preview_model_path = path;
+    std::unordered_set<std::string> clip_ids, state_names;
+    std::set<std::string> imported_pairs;
+    for (const AnimatorClipReference& clip : controller_.clips)
+    {
+        clip_ids.insert(clip.id);
+        imported_pairs.insert(clip.source_model_path + "#" + clip.clip_name);
+    }
+    for (const AnimatorStateDefinition& state_definition : controller_.states)
+        state_names.insert(state_definition.name);
+
+    unsigned imported = 0;
+    for (const std::string& animation_name : animation_names)
+    {
+        if (imported_pairs.find(path + "#" + animation_name) != imported_pairs.end()) continue;
+        const std::string clip_id = UniqueName(animation_name, clip_ids);
+        clip_ids.insert(clip_id);
+        controller_.clips.push_back({clip_id, path, animation_name});
+        const std::string state_name = UniqueName(animation_name, state_names);
+        state_names.insert(state_name);
+        controller_.states.push_back({state_name, clip_id, 1.0f, true});
+        if (controller_.default_state.empty()) controller_.default_state = state_name;
+        ++imported;
+    }
+    dirty_ = dirty_ || imported > 0 || controller_.preview_model_path == path;
+    state.AddLog(imported > 0
+        ? "Imported " + std::to_string(imported) + " animation clips from " + path
+        : "No new animation clips found in " + path);
+    return imported > 0;
 }
 
 bool AnimatorPanel::SaveController(EngineState& state)
@@ -152,6 +207,9 @@ bool AnimatorPanel::SaveController(EngineState& state)
     }
     loaded_path_ = target;
     dirty_ = false;
+    preview_.InvalidateClips();
+    state.saved_animator_path = std::filesystem::relative(target, state.project_root, fs_error);
+    if (fs_error) state.saved_animator_path = target;
     state.AddLog("Saved animator controller: " + target.filename().string());
     return true;
 }
@@ -182,13 +240,7 @@ void AnimatorPanel::RenderClips(EngineState& state)
                                                        (std::size_t)payload->DataSize);
             if (IsModelPath(path))
             {
-                AnimatorClipReference clip;
-                clip.id = "Clip_" + std::to_string(controller_.clips.size() + 1);
-                clip.source_model_path = path;
-                clip.clip_name = clip.id;
-                controller_.clips.push_back(clip);
-                if (controller_.preview_model_path.empty()) controller_.preview_model_path = path;
-                dirty_ = true;
+                ImportAnimationsFromModel(state, path);
             }
         }
         ImGui::EndDragDropTarget();
@@ -324,89 +376,90 @@ void AnimatorPanel::RenderTransitions()
 
 void AnimatorPanel::RenderBoneModifiers(EngineState& state)
 {
-    (void)state;
     ImGui::TextUnformatted("Bone Modifiers");
     ImGui::Separator();
-    ImGui::BeginDisabled();
-    ImGui::Button("+ Add Selected Bone");
-    ImGui::EndDisabled();
+    const std::string selected_bone = preview_.SelectedBoneName();
+    bool already_added = false;
+    for (const AnimatorBoneModifier& modifier : controller_.bone_modifiers)
+        if (modifier.bone_name == selected_bone) already_added = true;
+    const bool can_add = !selected_bone.empty() && !already_added;
+    if (!can_add) ImGui::BeginDisabled();
+    if (ImGui::Button("+ Add Selected Bone"))
+    {
+        AnimatorBoneModifier modifier;
+        modifier.bone_name = selected_bone;
+        controller_.bone_modifiers.push_back(modifier);
+        dirty_ = true;
+    }
+    if (!can_add) ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled("(click a bone in the preview)");
+    ImGui::TextDisabled(selected_bone.empty() ? "(click a bone in the preview)" : "(%s)", selected_bone.c_str());
     int remove = -1;
     for (std::size_t index = 0; index < controller_.bone_modifiers.size(); ++index)
     {
-        nlohmann::json& modifier = controller_.bone_modifiers[index];
+        AnimatorBoneModifier& modifier = controller_.bone_modifiers[index];
         ImGui::PushID((int)index);
-        std::string bone_name = modifier.value("bone_name", std::string());
-        const std::string title = bone_name.empty() ? "Modifier" : bone_name;
+        const std::string title = modifier.bone_name.empty() ? "Modifier" : modifier.bone_name;
         if (ImGui::TreeNode(title.c_str()))
         {
-            if (InputString("Bone", bone_name)) { modifier["bone_name"] = bone_name; dirty_ = true; }
+            dirty_ |= InputString("Bone", modifier.bone_name);
 
-            std::string type = modifier.value("type", std::string("Physics"));
-            int type_index = type == "Collision" ? 1 : 0;
+            int type_index = (int)modifier.type;
             const char* type_names[] = {"Physics", "Collision"};
             if (ImGui::Combo("Type", &type_index, type_names, IM_ARRAYSIZE(type_names)))
-            { modifier["type"] = type_names[type_index]; dirty_ = true; }
+            {
+                const AnimatorBoneModifierType new_type = (AnimatorBoneModifierType)type_index;
+                if (new_type == AnimatorBoneModifierType::Collision &&
+                    modifier.type != AnimatorBoneModifierType::Collision)
+                    preview_.ComputeBoneFitBox(modifier.bone_name, modifier.box_half_extents,
+                                               modifier.box_center);
+                modifier.type = new_type;
+                dirty_ = true;
+            }
 
             if (type_index == 0)
             {
                 int preset = 0;
-                const char* presets[] = {"Custom", "Hair (short)", "Hair (long)",
-                    "Breast", "Cloth (light)", "Cloth (heavy)", "Tail / Antenna"};
-                ImGui::Combo("Preset", &preset, presets, IM_ARRAYSIZE(presets));
+                std::size_t preset_count = 0;
+                const BonePhysicsPreset* presets = bone_modifiers::PhysicsPresets(preset_count);
+                std::vector<const char*> preset_names;
+                for (std::size_t preset_index = 0; preset_index < preset_count; ++preset_index)
+                    preset_names.push_back(presets[preset_index].name);
+                if (ImGui::Combo("Preset", &preset, preset_names.data(), (int)preset_names.size()) && preset > 0)
+                {
+                    bone_modifiers::ApplyPhysicsPreset(modifier, (std::size_t)preset);
+                    dirty_ = true;
+                }
 
-                struct Field { const char* label; const char* key; float value; float minimum; float maximum; };
+                struct Field { const char* label; float* value; float speed; float minimum; float maximum; const char* format; };
                 Field fields[] = {
-                    {"Strength", "strength", modifier.value("strength", 1.0f), 0.0f, 2.0f},
-                    {"Stiffness", "stiffness", modifier.value("stiffness", 0.3f), 0.0f, 1.0f},
-                    {"Damping", "damping", modifier.value("damping", 1.0f), 0.0f, 3.0f},
-                    {"Mass", "mass", modifier.value("mass", 1.0f), 0.001f, 100.0f},
-                    {"Drag", "drag", modifier.value("drag", 0.05f), 0.0f, 1.0f},
-                    {"Gravity Scale", "gravity_scale", modifier.value("gravity_scale", 0.0f), 0.0f, 5.0f},
+                    {"Strength", &modifier.strength, .01f, 0, 2, "%.2f"},
+                    {"Stiffness", &modifier.stiffness, .01f, 0, 1, "%.2f"},
+                    {"Damping", &modifier.damping, .01f, 0, 3, "%.2f"},
+                    {"Mass", &modifier.mass, .01f, .001f, 100, "%.3f"},
+                    {"Drag", &modifier.drag, .005f, 0, 1, "%.3f"},
+                    {"Gravity Scale", &modifier.gravity_scale, .01f, 0, 5, "%.2f"},
                 };
                 for (Field& field : fields)
-                    if (ImGui::DragFloat(field.label, &field.value, 0.01f, field.minimum, field.maximum, "%.2f"))
-                    { modifier[field.key] = (std::clamp)(field.value, field.minimum, field.maximum); dirty_ = true; }
+                    if (ImGui::DragFloat(field.label, field.value, field.speed, field.minimum, field.maximum, field.format))
+                    { *field.value = (std::clamp)(*field.value, field.minimum, field.maximum); dirty_ = true; }
 
                 if (ImGui::TreeNode("Advanced"))
                 {
-                    float gravity[3] = {0.0f, -1.0f, 0.0f};
-                    if (modifier.contains("gravity_dir") && modifier["gravity_dir"].is_array() && modifier["gravity_dir"].size() == 3)
-                        for (int axis = 0; axis < 3; ++axis) gravity[axis] = modifier["gravity_dir"][axis].get<float>();
-                    if (ImGui::DragFloat3("Gravity Dir", gravity, 0.01f, -1.0f, 1.0f, "%.2f"))
-                    { modifier["gravity_dir"] = {gravity[0], gravity[1], gravity[2]}; dirty_ = true; }
-                    float angle = modifier.value("angle_limit_deg", 60.0f);
-                    if (ImGui::DragFloat("Angle Limit", &angle, 0.5f, 0.0f, 180.0f, "%.1f deg"))
-                    { modifier["angle_limit_deg"] = (std::clamp)(angle, 0.0f, 180.0f); dirty_ = true; }
-                    float radius = modifier.value("radius", 0.05f);
-                    if (ImGui::DragFloat("Radius", &radius, 0.001f, 0.0f, 1.0f, "%.3f"))
-                    { modifier["radius"] = (std::max)(0.0f, radius); dirty_ = true; }
-                    bool affects_children = modifier.value("affects_children", true);
-                    if (ImGui::Checkbox("Affects Children", &affects_children))
-                    { modifier["affects_children"] = affects_children; dirty_ = true; }
+                    dirty_ |= ImGui::DragFloat3("Gravity Dir", modifier.gravity_dir.data(), .01f, -1, 1, "%.2f");
+                    dirty_ |= ImGui::DragFloat("Angle Limit", &modifier.angle_limit_deg, .5f, 0, 180, "%.1f deg");
+                    dirty_ |= ImGui::DragFloat("Radius", &modifier.radius, .001f, 0, 1, "%.3f");
+                    dirty_ |= ImGui::Checkbox("Affects Children", &modifier.affects_children);
                     ImGui::TreePop();
                 }
             }
             else
             {
-                const char* modes[] = {"Trigger", "Rigidbody"};
-                int mode = modifier.value("collision_mode", std::string("Trigger")) == "Rigidbody" ? 1 : 0;
-                if (ImGui::Combo("Mode", &mode, modes, IM_ARRAYSIZE(modes)))
-                { modifier["collision_mode"] = modes[mode]; dirty_ = true; }
-                ImGui::BeginDisabled();
-                ImGui::Button("Fit to Bone");
-                ImGui::EndDisabled();
-                float half_extents[3] = {0.05f, 0.05f, 0.05f};
-                float center[3] = {0.0f, 0.0f, 0.0f};
-                if (modifier.contains("box_half_extents") && modifier["box_half_extents"].is_array() && modifier["box_half_extents"].size() == 3)
-                    for (int axis = 0; axis < 3; ++axis) half_extents[axis] = modifier["box_half_extents"][axis].get<float>();
-                if (modifier.contains("box_center") && modifier["box_center"].is_array() && modifier["box_center"].size() == 3)
-                    for (int axis = 0; axis < 3; ++axis) center[axis] = modifier["box_center"][axis].get<float>();
-                if (ImGui::DragFloat3("Half Extents", half_extents, 0.005f, 0.0f, 100.0f, "%.3f"))
-                { modifier["box_half_extents"] = {half_extents[0], half_extents[1], half_extents[2]}; dirty_ = true; }
-                if (ImGui::DragFloat3("Center Offset", center, 0.005f, -100.0f, 100.0f, "%.3f"))
-                { modifier["box_center"] = {center[0], center[1], center[2]}; dirty_ = true; }
+                if (ImGui::Button("Fit to Bone"))
+                    dirty_ |= preview_.ComputeBoneFitBox(modifier.bone_name,
+                        modifier.box_half_extents, modifier.box_center);
+                dirty_ |= ImGui::DragFloat3("Half Extents", modifier.box_half_extents.data(), .005f, 0, 100, "%.3f");
+                dirty_ |= ImGui::DragFloat3("Center Offset", modifier.box_center.data(), .005f, -100, 100, "%.3f");
             }
 
             if (ImGui::Button("Remove Modifier")) remove = (int)index;
@@ -417,8 +470,6 @@ void AnimatorPanel::RenderBoneModifiers(EngineState& state)
     if (remove >= 0)
     {
         controller_.bone_modifiers.erase(controller_.bone_modifiers.begin() + remove);
-        if ((std::size_t)remove < bone_modifier_text_.size())
-            bone_modifier_text_.erase(bone_modifier_text_.begin() + remove);
         dirty_ = true;
     }
 }
@@ -448,6 +499,7 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
     preview_.SetShowMesh(preview_mesh_);
     preview_.SetShowTexture(preview_texture_);
     preview_.SetPlaying(preview_playing_);
+    preview_.SetBoneModifiers(controller_.bone_modifiers);
     preview_.RenderUi(state, controller_.preview_model_path, clip_source, clip_name,
                       viewport_min, canvas_max);
 

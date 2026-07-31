@@ -1,10 +1,10 @@
 #pragma once
 
+#include "anim/BoneModifiers.h"
+
 #include <filesystem>
 #include <string>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 struct AnimatorClipReference
 {
@@ -40,9 +40,7 @@ struct AnimatorController
     std::vector<AnimatorClipReference> clips;
     std::vector<AnimatorStateDefinition> states;
     std::vector<AnimatorTransitionDefinition> transitions;
-    // Bone modifiers are deliberately out of runtime scope, but retaining the
-    // authored JSON prevents this editor from erasing future Vulkan data.
-    std::vector<nlohmann::json> bone_modifiers;
+    std::vector<AnimatorBoneModifier> bone_modifiers;
 };
 
 namespace animator

@@ -425,6 +425,8 @@ void SceneRuntime::BuildPhysics()
                 d.friction     = at.phys_friction;
                 d.gravity      = at.phys_gravity;
                 d.gravityScale = at.phys_gravity_scale;
+                for (int axis = 0; axis < 3; ++axis)
+                    d.lockRotation[axis] = at.phys_lock_rotation[axis];
             }
             else
             {
@@ -1049,8 +1051,6 @@ void SceneRuntime::Render(float dt)
         DrawItem& item = m_draw_items[index];
         if (!item.animator.IsValid()) continue;
         item.animator.Update(dt);
-        RtMesh* mesh = ResolveMesh(item.model_path);
-        if (mesh && mesh->IsSkinned()) item.animator.BuildPalette(*mesh, item.skin_palette);
     }
 
     // Poll the controller, then run scripts before the physics step so their
@@ -1083,7 +1083,47 @@ void SceneRuntime::Render(float dt)
         m_phys.DrainTriggerEvents(events);
         for (size_t ei = 0; ei < events.size(); ++ei)
             if (events[ei].entered)
-                m_script.FireTrigger(events[ei].triggerObjectIndex, events[ei].otherObjectIndex);
+            {
+                const char* boneName = NULL;
+                if (events[ei].boneHash)
+                    for (size_t drawIndex = 0; drawIndex < m_draw_items.size() && !boneName; ++drawIndex)
+                        if (m_draw_items[drawIndex].object_index == events[ei].triggerObjectIndex)
+                            boneName = m_draw_items[drawIndex].animator.BoneName(events[ei].boneHash);
+                m_script.FireTrigger(events[ei].triggerObjectIndex,
+                                     events[ei].otherObjectIndex, boneName);
+            }
+    }
+
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+    {
+        DrawItem& item = m_draw_items[index];
+        if (!item.animator.IsValid()) continue;
+        RtMesh* mesh = ResolveMesh(item.model_path);
+        if (!mesh || !mesh->IsSkinned()) continue;
+        item.animator.BuildPalette(*mesh, &item.world.m[0][0], item.skin_palette);
+        item.animator.GetBoneColliders(*mesh, item.bone_collider_poses);
+        if (item.bone_collider_handles.size() != item.bone_collider_poses.size())
+        {
+            item.bone_collider_handles.clear();
+            for (size_t colliderIndex = 0; colliderIndex < item.bone_collider_poses.size(); ++colliderIndex)
+            {
+                RuntimeAnimator::BoneColliderPose& pose = item.bone_collider_poses[colliderIndex];
+                float scaledExtents[3] = {pose.halfExtents[0] * fabsf(item.scale[0]),
+                                          pose.halfExtents[1] * fabsf(item.scale[1]),
+                                          pose.halfExtents[2] * fabsf(item.scale[2])};
+                item.bone_collider_handles.push_back(m_phys.AddBoneCollider(
+                    item.object_index, pose.boneHash, scaledExtents));
+            }
+        }
+        for (size_t colliderIndex = 0; colliderIndex < item.bone_collider_poses.size(); ++colliderIndex)
+        {
+            D3DMATRIX boneModel;
+            memcpy(&boneModel.m[0][0], item.bone_collider_poses[colliderIndex].modelMatrix,
+                   sizeof(item.bone_collider_poses[colliderIndex].modelMatrix));
+            const D3DMATRIX colliderWorld = Multiply(boneModel, item.world);
+            m_phys.UpdateBoneCollider(item.bone_collider_handles[colliderIndex],
+                                      &colliderWorld.m[0][0]);
+        }
     }
 
     // View through the scene's active "Camera" attribute when it has one, else

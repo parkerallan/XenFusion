@@ -77,6 +77,8 @@ private:
         float       scale[3];     // authored scale (collider is sized separately)
         RuntimeAnimator animator;
         std::vector<float> skin_palette;
+        std::vector<int> bone_collider_handles;
+        std::vector<RuntimeAnimator::BoneColliderPose> bone_collider_poses;
     };
     struct ShaderItem
     {

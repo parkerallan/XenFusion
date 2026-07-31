@@ -31,6 +31,12 @@ namespace phys
         // Enter/exit events for trigger volumes since the previous call.
         void DrainTriggerEvents(std::vector<TriggerEvent>& out);
 
+        // Animated bone boxes are added after Build and driven every frame.
+        // Returns a stable handle, or -1 when no world exists.
+        int AddBoneCollider(int ownerObjectIndex, unsigned int boneHash,
+                    const float halfExtents[3]);
+        void UpdateBoneCollider(int handle, const float worldMatrix[16]);
+
         // --- Scripting verbs: mutate/query a body by its objectIndex. All are
         // no-ops / return false if the object has no rigid body. ---
 

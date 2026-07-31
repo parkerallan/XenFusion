@@ -64,7 +64,7 @@ function on_update(dt)
 end
 ```
 
-### `on_trigger(entrant)`
+### `on_trigger(entrant, bone_name)`
 Runs on an object that has **both** a **Trigger Volume** attribute and this
 script, the moment *another* object enters that volume. Fires **once per entry**
 (not per frame, not on exit).
@@ -73,6 +73,9 @@ script, the moment *another* object enters that volume. Fires **once per entry**
 - **`entrant`** is the object that entered — a full [handle](#3-objects) with every
   [Physics](#4-physics) method plus `:name()` and `:id()`. (The parameter name is
   yours to choose; this doc calls it `entrant`.)
+- **`bone_name`** is the animated bone name for a Collision bone modifier in
+    Trigger mode. It is `nil` for a regular scene Trigger Volume. Existing
+    one-argument handlers remain valid because Lua ignores unused arguments.
 
 ```lua
 -- Jump pad: launch whatever enters this trigger straight up.

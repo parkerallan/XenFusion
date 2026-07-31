@@ -19,6 +19,7 @@ public:
     void BeginFrame()                   { scene_renderer_.BeginFrame(); }
     void Render(EngineState& state);
     void RenderSceneGpuPass(float dt)   { scene_renderer_.RenderGpu(dt); }
+    void InvalidateAnimator(const std::string& path) { scene_renderer_.InvalidateAnimator(path); }
 
 private:
     SceneRenderer scene_renderer_;

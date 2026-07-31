@@ -79,6 +79,7 @@ struct ObjectAttribute
     float phys_friction    = 0.5f; // contact friction
     bool  phys_gravity     = true; // false = this body ignores world gravity
     float phys_gravity_scale = 1.0f; // world-gravity multiplier (2 = falls faster)
+    bool  phys_lock_rotation[3] = {false, false, false};
 
     // For "Trigger Volume" (overlap-report only, no physical response).
     int   trig_shape       = 0;    // 0=Box, 1=Sphere
@@ -207,6 +208,7 @@ struct EngineState
     // Text/code file currently open in the Editor panel (empty = none).
     std::filesystem::path open_file_path;
     std::filesystem::path open_animator_path;
+    std::filesystem::path saved_animator_path;
 
     // --- Project ---
     std::filesystem::path project_root; // empty = no project open

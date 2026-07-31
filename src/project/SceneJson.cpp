@@ -93,6 +93,8 @@ namespace project
                     ja["friction"]    = a.phys_friction;
                     ja["gravity"]     = a.phys_gravity;
                     ja["gravityScale"]= a.phys_gravity_scale;
+                    ja["lockRotation"] = {a.phys_lock_rotation[0], a.phys_lock_rotation[1],
+                                           a.phys_lock_rotation[2]};
                 }
                 else if (a.type == "Trigger Volume")
                 {
@@ -266,6 +268,12 @@ namespace project
                             a.phys_friction    = ja.value("friction", 0.5f);
                             a.phys_gravity     = ja.value("gravity", true);
                             a.phys_gravity_scale = ja.value("gravityScale", 1.0f);
+                            if (ja.contains("lockRotation") && ja["lockRotation"].is_array() &&
+                                ja["lockRotation"].size() == 3)
+                            {
+                                for (int axis = 0; axis < 3; ++axis)
+                                    a.phys_lock_rotation[axis] = ja["lockRotation"][axis].get<bool>();
+                            }
                         }
                         else if (a.type == "Trigger Volume")
                         {

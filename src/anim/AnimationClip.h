@@ -31,6 +31,8 @@ struct AnimationClip
 namespace animation
 {
     uint32_t NameHash(const char* name);
+    bool DiscoverClips(const std::filesystem::path& source,
+                       std::vector<std::string>& names, std::string& error);
     bool BakeClip(const std::filesystem::path& source, const std::string& clip_name,
                   float sample_rate, AnimationClip& output, std::string& error);
 }

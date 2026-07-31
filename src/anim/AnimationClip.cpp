@@ -62,6 +62,28 @@ namespace animation
         return hash;
     }
 
+    bool DiscoverClips(const std::filesystem::path& source,
+                       std::vector<std::string>& names, std::string& error)
+    {
+        names.clear();
+        error.clear();
+        Assimp::Importer importer;
+        const aiScene* scene = importer.ReadFile(source.string(), aiProcess_ConvertToLeftHanded);
+        if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE))
+        {
+            error = importer.GetErrorString();
+            return false;
+        }
+        names.reserve(scene->mNumAnimations);
+        for (unsigned index = 0; index < scene->mNumAnimations; ++index)
+        {
+            std::string name = scene->mAnimations[index]->mName.C_Str();
+            if (name.empty()) name = "Animation_" + std::to_string(index + 1);
+            names.push_back(name);
+        }
+        return true;
+    }
+
     bool BakeClip(const std::filesystem::path& source, const std::string& clip_name,
                   float sample_rate, AnimationClip& output, std::string& error)
     {

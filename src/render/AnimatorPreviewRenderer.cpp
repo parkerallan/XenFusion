@@ -263,6 +263,7 @@ void AnimatorPreviewRenderer::EvaluatePose(const GpuMesh& mesh, const AnimationC
     out_palette.resize(joint_count * 12);
     out_joint_world.resize(joint_count * 3);
     std::vector<aiMatrix4x4> globals(joint_count);
+    pending_joint_globals_.resize(joint_count * 16);
 
     uint32_t frame0 = 0, frame1 = 0;
     float blend = 0.0f;
@@ -304,11 +305,26 @@ void AnimatorPreviewRenderer::EvaluatePose(const GpuMesh& mesh, const AnimationC
                 break;
             }
         }
-        globals[joint_index] = joint.parent >= 0
+        aiMatrix4x4 global = joint.parent >= 0
             ? globals[(std::size_t)joint.parent] * local : local;
+        aiMatrix4x4 descendant_global = global;
+        for (const AnimatorBoneModifier& modifier : bone_modifiers_)
+        {
+            if (modifier.type != AnimatorBoneModifierType::Physics ||
+                modifier.bone_name != joint.name || joint.parent < 0) continue;
+            BoneModifierPhysicsState& simulation = physics_states_[joint.name];
+            const aiMatrix4x4& parent_global = globals[(std::size_t)joint.parent];
+            bone_modifiers::ApplyPreviewPhysics(modifier, pose_dt_, parent_global,
+                                                simulation, global);
+            if (modifier.affects_children) descendant_global = global;
+            break;
+        }
+        globals[joint_index] = descendant_global;
+        std::memcpy(pending_joint_globals_.data() + joint_index * 16,
+                    &descendant_global, sizeof(descendant_global));
 
         // Joint origin (model space): the transform's translation component.
-        const aiMatrix4x4& g = globals[joint_index];
+        const aiMatrix4x4& g = global;
         float* origin = out_joint_world.data() + joint_index * 3;
         origin[0] = g.a4; origin[1] = g.b4; origin[2] = g.c4;
 
@@ -325,6 +341,52 @@ void AnimatorPreviewRenderer::EvaluatePose(const GpuMesh& mesh, const AnimationC
 void AnimatorPreviewRenderer::BeginFrame()
 {
     m_renderRequested = false;
+}
+
+bool AnimatorPreviewRenderer::ComputeBoneFitBox(const std::string& bone_name,
+                                                std::array<float, 3>& half_extents,
+                                                std::array<float, 3>& center)
+{
+    if (m_pending_model.empty() || bone_name.empty()) return false;
+    GpuMesh* mesh = m_meshes.Get(m_pending_model);
+    if (!mesh || !mesh->skeleton.IsSkinned()) return false;
+
+    int bone_index = -1;
+    for (std::size_t index = 0; index < mesh->skeleton.joints.size(); ++index)
+        if (mesh->skeleton.joints[index].name == bone_name)
+        { bone_index = (int)index; break; }
+    if (bone_index < 0) return false;
+
+    std::vector<aiMatrix4x4> globals(mesh->skeleton.joints.size());
+    for (std::size_t index = 0; index < mesh->skeleton.joints.size(); ++index)
+    {
+        aiMatrix4x4 local;
+        std::memcpy(&local, mesh->skeleton.joints[index].bindLocal, sizeof(local));
+        const int parent = mesh->skeleton.joints[index].parent;
+        globals[index] = parent >= 0 ? globals[(std::size_t)parent] * local : local;
+    }
+    aiMatrix4x4 inverse_bone = globals[(std::size_t)bone_index];
+    inverse_bone.Inverse();
+    aiVector3D minimum(0.0f), maximum(0.0f);
+    bool found_child = false;
+    for (std::size_t index = 0; index < mesh->skeleton.joints.size(); ++index)
+    {
+        if (mesh->skeleton.joints[index].parent != bone_index) continue;
+        aiVector3D point(globals[index].a4, globals[index].b4, globals[index].c4);
+        point *= inverse_bone;
+        minimum.x = (std::min)(minimum.x, point.x); maximum.x = (std::max)(maximum.x, point.x);
+        minimum.y = (std::min)(minimum.y, point.y); maximum.y = (std::max)(maximum.y, point.y);
+        minimum.z = (std::min)(minimum.z, point.z); maximum.z = (std::max)(maximum.z, point.z);
+        found_child = true;
+    }
+    if (!found_child) return false;
+    center = {(minimum.x + maximum.x) * 0.5f,
+              (minimum.y + maximum.y) * 0.5f,
+              (minimum.z + maximum.z) * 0.5f};
+    half_extents = {(std::max)(0.01f, (maximum.x - minimum.x) * 0.5f),
+                    (std::max)(0.01f, (maximum.y - minimum.y) * 0.5f),
+                    (std::max)(0.01f, (maximum.z - minimum.z) * 0.5f)};
+    return true;
 }
 
 void AnimatorPreviewRenderer::RenderUi(EngineState& state, const std::string& model_path,
@@ -373,6 +435,7 @@ void AnimatorPreviewRenderer::RenderUi(EngineState& state, const std::string& mo
     if (mesh && m_framed_model != model_path)
     {
         m_framed_model = model_path;
+        physics_states_.clear();
         const float cx = (mesh->boundsMin[0] + mesh->boundsMax[0]) * 0.5f;
         const float cy = (mesh->boundsMin[1] + mesh->boundsMax[1]) * 0.5f;
         const float cz = (mesh->boundsMin[2] + mesh->boundsMax[2]) * 0.5f;
@@ -439,6 +502,7 @@ void AnimatorPreviewRenderer::RenderUi(EngineState& state, const std::string& mo
     m_pending_model = model_path;
     m_pending_palette.clear();
     std::vector<float> joint_world;
+    pose_dt_ = (std::clamp)(dt, 0.0f, 4.0f / 60.0f);
     if (mesh && mesh->skeleton.IsSkinned())
         EvaluatePose(*mesh, clip, current_time_seconds_, m_pending_palette, joint_world);
 
@@ -490,6 +554,45 @@ void AnimatorPreviewRenderer::RenderUi(EngineState& state, const std::string& mo
             if (!visible[j]) continue;
             const bool hot = (int)j == selected_index;
             dl->AddCircleFilled(screen[j], hot ? 4.5f : 2.5f, hot ? sel_col : bone_col);
+        }
+    }
+
+    if (mesh && mesh->skeleton.IsSkinned() && ready && m_rt &&
+        pending_joint_globals_.size() == mesh->skeleton.joints.size() * 16)
+    {
+        const D3DMATRIX view_projection = Multiply(m_view, m_proj);
+        const int edges[12][2] = {{0,1},{0,2},{0,4},{1,3},{1,5},{2,3},
+                                  {2,6},{3,7},{4,5},{4,6},{5,7},{6,7}};
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        for (const AnimatorBoneModifier& modifier : bone_modifiers_)
+        {
+            if (modifier.type != AnimatorBoneModifierType::Collision) continue;
+            std::size_t joint_index = mesh->skeleton.joints.size();
+            for (std::size_t candidate = 0; candidate < mesh->skeleton.joints.size(); ++candidate)
+                if (mesh->skeleton.joints[candidate].name == modifier.bone_name)
+                { joint_index = candidate; break; }
+            if (joint_index == mesh->skeleton.joints.size()) continue;
+            aiMatrix4x4 bone_global;
+            std::memcpy(&bone_global, pending_joint_globals_.data() + joint_index * 16,
+                        sizeof(bone_global));
+            ImVec2 projected[8];
+            bool visible[8] = {};
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                aiVector3D point(
+                    modifier.box_center[0] + ((corner & 1) ? modifier.box_half_extents[0] : -modifier.box_half_extents[0]),
+                    modifier.box_center[1] + ((corner & 2) ? modifier.box_half_extents[1] : -modifier.box_half_extents[1]),
+                    modifier.box_center[2] + ((corner & 4) ? modifier.box_half_extents[2] : -modifier.box_half_extents[2]));
+                point *= bone_global;
+                const float model_point[3] = {point.x, point.y, point.z};
+                visible[corner] = ProjectToScreen(view_projection, model_point,
+                                                   canvas_min, canvas_max, projected[corner]);
+            }
+            const ImU32 color = IM_COL32(60, 220, 150, 235);
+            for (int edge = 0; edge < 12; ++edge)
+                if (visible[edges[edge][0]] && visible[edges[edge][1]])
+                    draw_list->AddLine(projected[edges[edge][0]], projected[edges[edge][1]],
+                                       color, 2.0f);
         }
     }
 }

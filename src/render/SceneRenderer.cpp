@@ -81,7 +81,11 @@ namespace
     }
 
     void BuildAnimationPalette(const GpuMesh& mesh, const AnimationClip& clip,
-                               float sample_time, std::vector<float>& output)
+                               float sample_time, std::vector<float>& output,
+                               const std::vector<AnimatorBoneModifier>* modifiers = nullptr,
+                               std::map<std::string, BoneModifierPhysicsState>* physics_states = nullptr,
+                               float delta_time = 0.0f, const float* object_world = nullptr,
+                               std::vector<SceneBoneColliderPose>* collider_poses = nullptr)
     {
         const float frame_position = sample_time * clip.sample_rate;
         const uint32_t frame0 = (std::min)((uint32_t)frame_position, clip.frame_count - 1);
@@ -89,6 +93,7 @@ namespace
         const float blend = frame_position - (float)frame0;
         std::vector<aiMatrix4x4> globals(mesh.skeleton.joints.size());
         output.resize(mesh.skeleton.joints.size() * 12);
+        if (collider_poses) collider_poses->clear();
 
         for (size_t joint_index = 0; joint_index < mesh.skeleton.joints.size(); ++joint_index)
         {
@@ -117,11 +122,56 @@ namespace
                 local = aiMatrix4x4(scale, rotation, translation);
                 break;
             }
-            globals[joint_index] = joint.parent >= 0
+            aiMatrix4x4 global = joint.parent >= 0
                 ? globals[(size_t)joint.parent] * local : local;
+            aiMatrix4x4 descendant_global = global;
+            if (modifiers && physics_states && object_world && joint.parent >= 0)
+            {
+                for (const AnimatorBoneModifier& modifier : *modifiers)
+                {
+                    if (modifier.type != AnimatorBoneModifierType::Physics ||
+                        modifier.bone_name != joint.name) continue;
+                    BoneModifierPhysicsState& simulation = (*physics_states)[joint.name];
+                    bone_modifiers::ApplyScenePhysics(modifier, delta_time,
+                        globals[(size_t)joint.parent], object_world, simulation, global);
+                    if (modifier.affects_children) descendant_global = global;
+                    break;
+                }
+            }
+            globals[joint_index] = descendant_global;
+            if (modifiers && collider_poses)
+                for (const AnimatorBoneModifier& modifier : *modifiers)
+                {
+                    if (modifier.type != AnimatorBoneModifierType::Collision ||
+                        modifier.bone_name != joint.name) continue;
+                    SceneBoneColliderPose pose;
+                    pose.bone_name = joint.name;
+                    for (int axis = 0; axis < 3; ++axis)
+                        pose.half_extents[axis] = modifier.box_half_extents[axis];
+                    const aiMatrix4x4& matrix = global;
+                    pose.model_matrix[0] = matrix.a1; pose.model_matrix[1] = matrix.b1;
+                    pose.model_matrix[2] = matrix.c1; pose.model_matrix[3] = matrix.d1;
+                    pose.model_matrix[4] = matrix.a2; pose.model_matrix[5] = matrix.b2;
+                    pose.model_matrix[6] = matrix.c2; pose.model_matrix[7] = matrix.d2;
+                    pose.model_matrix[8] = matrix.a3; pose.model_matrix[9] = matrix.b3;
+                    pose.model_matrix[10] = matrix.c3; pose.model_matrix[11] = matrix.d3;
+                    pose.model_matrix[12] = matrix.a4; pose.model_matrix[13] = matrix.b4;
+                    pose.model_matrix[14] = matrix.c4; pose.model_matrix[15] = matrix.d4;
+                    pose.model_matrix[12] += modifier.box_center[0] * pose.model_matrix[0] +
+                        modifier.box_center[1] * pose.model_matrix[4] +
+                        modifier.box_center[2] * pose.model_matrix[8];
+                    pose.model_matrix[13] += modifier.box_center[0] * pose.model_matrix[1] +
+                        modifier.box_center[1] * pose.model_matrix[5] +
+                        modifier.box_center[2] * pose.model_matrix[9];
+                    pose.model_matrix[14] += modifier.box_center[0] * pose.model_matrix[2] +
+                        modifier.box_center[1] * pose.model_matrix[6] +
+                        modifier.box_center[2] * pose.model_matrix[10];
+                    collider_poses->push_back(pose);
+                    break;
+                }
             aiMatrix4x4 inverse_bind;
             std::memcpy(&inverse_bind, joint.inverseBind, sizeof(inverse_bind));
-            const aiMatrix4x4 skin = globals[joint_index] * inverse_bind;
+            const aiMatrix4x4 skin = global * inverse_bind;
             float* palette = output.data() + joint_index * 12;
             palette[0] = skin.a1; palette[1] = skin.a2; palette[2] = skin.a3; palette[3] = skin.a4;
             palette[4] = skin.b1; palette[5] = skin.b2; palette[6] = skin.b3; palette[7] = skin.b4;
@@ -646,6 +696,7 @@ void SceneRenderer::UpdateAnimations(float dt)
         if (instance.controller_path != item.animator_controller_path)
         {
             instance.controller_path = item.animator_controller_path;
+            instance.physics_states.clear();
             animator::InitializeRuntime(controller, item.animator_initial_state, instance.runtime);
         }
         animator::AdvanceRuntime(controller, dt, item.animator_playback_speed,
@@ -683,7 +734,35 @@ void SceneRenderer::UpdateAnimations(float dt)
         else
             sample_time = (std::min)(sample_time, clip.duration_seconds);
 
-        BuildAnimationPalette(*mesh, clip, sample_time, item.skin_palette);
+        BuildAnimationPalette(*mesh, clip, sample_time, item.skin_palette,
+            &controller.bone_modifiers, &instance.physics_states,
+            (std::clamp)(dt, 0.0f, 4.0f / 60.0f), &item.world.m[0][0],
+            &instance.bone_collider_poses);
+
+        if (instance.bone_collider_handles.size() != instance.bone_collider_poses.size())
+        {
+            instance.bone_collider_handles.clear();
+            for (const SceneBoneColliderPose& pose : instance.bone_collider_poses)
+            {
+                float scaled_extents[3] = {
+                    pose.half_extents[0] * std::fabs(item.scale[0]),
+                    pose.half_extents[1] * std::fabs(item.scale[1]),
+                    pose.half_extents[2] * std::fabs(item.scale[2])};
+                instance.bone_collider_handles.push_back(m_phys.AddBoneCollider(
+                    item.object_index, animation::NameHash(pose.bone_name.c_str()),
+                    scaled_extents));
+            }
+        }
+        for (size_t collider_index = 0;
+             collider_index < instance.bone_collider_poses.size(); ++collider_index)
+        {
+            D3DMATRIX bone_model;
+            std::memcpy(&bone_model.m[0][0],
+                instance.bone_collider_poses[collider_index].model_matrix, sizeof(bone_model.m));
+            const D3DMATRIX collider_world = Multiply(bone_model, item.world);
+            m_phys.UpdateBoneCollider(instance.bone_collider_handles[collider_index],
+                                      &collider_world.m[0][0]);
+        }
 
         if (!instance.runtime.previous_state.empty() && instance.runtime.blend_duration > 0.0f)
         {
@@ -729,6 +808,33 @@ void SceneRenderer::UpdateAnimations(float dt)
                 }
             }
         }
+    }
+}
+
+void SceneRenderer::InvalidateAnimator(const std::string& controller_path)
+{
+    std::set<std::string> clip_keys;
+    std::map<std::string, ControllerCacheEntry>::iterator cached =
+        m_animator_controllers.find(controller_path);
+    if (cached != m_animator_controllers.end() && cached->second.valid)
+        for (const AnimatorClipReference& clip : cached->second.controller.clips)
+            clip_keys.insert(clip.source_model_path + "#" + clip.clip_name);
+
+    AnimatorController saved;
+    std::string error;
+    if (animator::LoadController(m_project_root / controller_path, saved, error))
+        for (const AnimatorClipReference& clip : saved.clips)
+            clip_keys.insert(clip.source_model_path + "#" + clip.clip_name);
+
+    m_animator_controllers.erase(controller_path);
+    for (const std::string& key : clip_keys) m_animation_clips.erase(key);
+    for (std::map<int, AnimatorInstance>::iterator instance = m_animator_instances.begin();
+         instance != m_animator_instances.end();)
+    {
+        if (instance->second.controller_path == controller_path)
+            instance = m_animator_instances.erase(instance);
+        else
+            ++instance;
     }
 }
 
@@ -1561,7 +1667,6 @@ void SceneRenderer::RenderGpu(float dt)
         return;
 
     m_time += dt; // drives animated custom shaders (gTime)
-    UpdateAnimations(dt);
 
     // Physics preview: step Bullet, then override this frame's draw items with the
     // simulated poses (world = Scale * pose, keeping authored scale). Trigger
@@ -1594,6 +1699,8 @@ void SceneRenderer::RenderGpu(float dt)
             if (events[ei].entered)
                 m_script.FireTrigger(events[ei].triggerObjectIndex, events[ei].otherObjectIndex);
     }
+
+    UpdateAnimations(dt);
 
     // Redirect rendering to the offscreen target, remembering the back buffer.
     IDirect3DSurface9* prevRt    = nullptr;
@@ -2816,6 +2923,8 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
                 d.friction     = a.phys_friction;
                 d.gravity      = a.phys_gravity;
                 d.gravityScale = a.phys_gravity_scale;
+                for (int axis = 0; axis < 3; ++axis)
+                    d.lockRotation[axis] = a.phys_lock_rotation[axis];
             }
             else
             {

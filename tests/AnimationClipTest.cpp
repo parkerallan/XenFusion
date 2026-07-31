@@ -18,6 +18,13 @@ int main(int argc, char** argv)
         return Fail("expected the path to Fox.gltf");
 
     const char* names[] = {"Survey", "Walk", "Run"};
+    std::vector<std::string> discovered;
+    std::string discovery_error;
+    if (!animation::DiscoverClips(argv[1], discovered, discovery_error))
+        return Fail(discovery_error);
+    if (discovered.size() != 3 || discovered[0] != names[0] ||
+        discovered[1] != names[1] || discovered[2] != names[2])
+        return Fail("clip discovery did not return Survey, Walk, Run");
     for (const char* name : names)
     {
         AnimationClip clip;

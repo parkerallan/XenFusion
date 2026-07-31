@@ -46,6 +46,7 @@ namespace phys
         float gravityScale;    // multiplier on world gravity (1 = normal, 2 = 2x
                                // faster fall, 0 = float, <0 = drift up). Applied
                                // only when gravity is true.
+        bool  lockRotation[3]; // true prevents angular motion around that axis
         bool  isTrigger;       // true = ghost/overlap-only, no contact response
 
         float pos[3];          // initial world position (authored)
@@ -65,6 +66,7 @@ namespace phys
             friction = 0.5f;
             gravity = true;
             gravityScale = 1.0f;
+            lockRotation[0] = lockRotation[1] = lockRotation[2] = false;
             isTrigger = false;
             pos[0] = pos[1] = pos[2] = 0.0f;
             rotEulerDeg[0] = rotEulerDeg[1] = rotEulerDeg[2] = 0.0f;
@@ -81,9 +83,10 @@ namespace phys
     {
         int  triggerObjectIndex;
         int  otherObjectIndex;
+        unsigned int boneHash;
         bool entered;          // true = entered, false = exited
 
-        TriggerEvent() : triggerObjectIndex(-1), otherObjectIndex(-1), entered(false) {}
+        TriggerEvent() : triggerObjectIndex(-1), otherObjectIndex(-1), boneHash(0), entered(false) {}
     };
 
     // A simulated body's world transform read back after a step. `matrix` is a

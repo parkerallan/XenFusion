@@ -32,7 +32,8 @@ namespace script
 
         void Start();                 // call each loaded on_start once
         void Update(float dt);        // call each on_update(dt)
-        void FireTrigger(int objectIndex, int otherObjectIndex); // on_trigger(other)
+        void FireTrigger(int objectIndex, int otherObjectIndex,
+                 const char* boneName = 0); // on_trigger(other, bone)
 
         void Clear();                 // tear down the VM
         bool Empty() const;           // no scripts loaded

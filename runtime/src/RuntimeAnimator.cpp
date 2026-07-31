@@ -101,6 +101,7 @@ RuntimeAnimator::RuntimeAnimator()
             m_activeState(0), m_previousState(0),
       m_stateTime(0), m_previousTime(0), m_previousSpeed(1),
       m_blendDuration(0), m_blendRemaining(0), m_playbackSpeed(1), m_autoPlay(true)
+    , m_lastDeltaTime(0), m_modifierSkeletonFingerprint(0)
 {
 }
 
@@ -128,9 +129,13 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
     }
     m_resource = new Resource();
     unsigned char header[animcook::kHeaderBytes];
-    if (!m_pak->ReadRawRange(m_entry, 0, header, sizeof(header)) ||
-        endian::LoadU32BE(header) != animcook::kMagic ||
-        endian::LoadU32BE(header + 4) != animcook::kVersion)
+    if (m_entry->uncompressedSize < animcook::kHeaderBytesV1 ||
+        !m_pak->ReadRawRange(m_entry, 0, header,
+            m_entry->uncompressedSize < sizeof(header) ? m_entry->uncompressedSize : sizeof(header)) ||
+        endian::LoadU32BE(header) != animcook::kMagic)
+        return FailResourceLoad();
+    const unsigned int version = endian::LoadU32BE(header + 4);
+    if (version != animcook::kVersionV1 && version != animcook::kVersion)
         return FailResourceLoad();
     const unsigned int stateCount = endian::LoadU32BE(header + 12);
     const unsigned int transitionCount = endian::LoadU32BE(header + 16);
@@ -138,10 +143,21 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
     const unsigned int stateOffset = endian::LoadU32BE(header + 24);
     const unsigned int transitionOffset = endian::LoadU32BE(header + 28);
     const unsigned int clipOffset = endian::LoadU32BE(header + 32);
+    const unsigned int modifierCount = version >= animcook::kVersion
+        ? endian::LoadU32BE(header + 40) : 0;
+    const unsigned int modifierOffset = version >= animcook::kVersion
+        ? endian::LoadU32BE(header + 44) : 0;
+    const unsigned int stringOffset = version >= animcook::kVersion
+        ? endian::LoadU32BE(header + 48) : 0;
+    const unsigned int stringBytes = version >= animcook::kVersion
+        ? endian::LoadU32BE(header + 52) : 0;
     if (stateCount == 0 || stateCount > 1024 || transitionCount > 4096 || clipCount == 0 || clipCount > 1024 ||
+        modifierCount > 1024 ||
         stateOffset + stateCount * animcook::kStateBytes > m_entry->uncompressedSize ||
         transitionOffset + transitionCount * animcook::kTransitionBytes > m_entry->uncompressedSize ||
-        clipOffset + clipCount * animcook::kClipBytes > m_entry->uncompressedSize)
+        clipOffset + clipCount * animcook::kClipBytes > m_entry->uncompressedSize ||
+        modifierOffset + modifierCount * animcook::kModifierBytes > m_entry->uncompressedSize ||
+        stringOffset + stringBytes > m_entry->uncompressedSize)
         return FailResourceLoad();
 
     std::vector<unsigned char> records;
@@ -184,6 +200,43 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
         clip.size = endian::LoadU32BE(record + 12);
         if (clip.offset + clip.size > m_entry->uncompressedSize || clip.size < animfmt::kHeaderBytes) return FailResourceLoad();
         m_resource->clips.push_back(clip);
+    }
+    records.resize(modifierCount * animcook::kModifierBytes);
+    if (modifierCount && !m_pak->ReadRawRange(m_entry, modifierOffset, &records[0],
+                                               (unsigned int)records.size()))
+        return FailResourceLoad();
+    std::vector<unsigned char> strings(stringBytes);
+    if (stringBytes && !m_pak->ReadRawRange(m_entry, stringOffset, &strings[0], stringBytes))
+        return FailResourceLoad();
+    for (unsigned int index = 0; index < modifierCount; ++index)
+    {
+        const unsigned char* record = &records[index * animcook::kModifierBytes];
+        RuntimeBoneModifier modifier;
+        modifier.boneHash = endian::LoadU32BE(record);
+        modifier.type = endian::LoadU32BE(record + 4);
+        modifier.flags = endian::LoadU32BE(record + 8);
+        if (modifier.type > animcook::ModifierCollision)
+            return FailResourceLoad();
+        modifier.strength = ReadFloatBE(record + 16);
+        modifier.damping = ReadFloatBE(record + 20);
+        modifier.stiffness = ReadFloatBE(record + 24);
+        modifier.mass = ReadFloatBE(record + 28);
+        modifier.drag = ReadFloatBE(record + 32);
+        modifier.gravityScale = ReadFloatBE(record + 36);
+        for (int axis = 0; axis < 3; ++axis) modifier.gravityDir[axis] = ReadFloatBE(record + 40 + axis * 4);
+        modifier.angleLimitDeg = ReadFloatBE(record + 52);
+        modifier.radius = ReadFloatBE(record + 56);
+        for (int axis = 0; axis < 3; ++axis) modifier.boxHalfExtents[axis] = ReadFloatBE(record + 60 + axis * 4);
+        for (int axis = 0; axis < 3; ++axis) modifier.boxCenter[axis] = ReadFloatBE(record + 72 + axis * 4);
+        const unsigned int nameOffset = endian::LoadU32BE(record + 84);
+        const unsigned int nameLength = endian::LoadU32BE(record + 88);
+        if (nameOffset > stringBytes || nameLength > stringBytes - nameOffset)
+            return FailResourceLoad();
+        if (nameLength) modifier.boneName.assign((const char*)&strings[nameOffset], nameLength);
+        if (!(modifier.mass > 0.0f) || modifier.boxHalfExtents[0] < 0.0f ||
+            modifier.boxHalfExtents[1] < 0.0f || modifier.boxHalfExtents[2] < 0.0f)
+            return FailResourceLoad();
+        m_resource->modifiers.push_back(modifier);
     }
     m_resource->defaultState = endian::LoadU32BE(header + 8);
     m_activeState = spak::NameHash(initialState.c_str());
@@ -278,6 +331,7 @@ void RuntimeAnimator::Update(float deltaTime)
         m_stateTime += delta * m_playbackSpeed * (active->speed > 0.0f ? active->speed : 0.0f);
         if (m_previousState) m_previousTime += delta * m_playbackSpeed * m_previousSpeed;
     }
+    m_lastDeltaTime = Clamp(deltaTime, 0.0f, 4.0f / 60.0f);
     if (m_blendRemaining > 0.0f)
     {
         m_blendRemaining -= deltaTime;
@@ -389,7 +443,8 @@ bool RuntimeAnimator::ReadTransform(const Clip& clip, const Track& track,
 }
 
 bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, float time,
-                                    std::vector<float>& output, FrameCache& frameCache)
+                                    std::vector<float>& output, FrameCache& frameCache,
+                                    bool applyPhysics, const float objectWorld[16])
 {
     Clip* clip = FindClip(state.clipHash);
     if (!clip || !LoadClip(*clip)) return false;
@@ -463,6 +518,15 @@ bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, floa
     }
     m_globalMatrices.resize(mesh.joints.size() * 16);
     output.resize(mesh.joints.size() * 12);
+    if (applyPhysics && m_resource &&
+        (m_modifierSkeletonFingerprint != mesh.skeletonFingerprint ||
+         m_jointModifiers.size() != mesh.joints.size()))
+    {
+        runtime_bone_modifiers::MapPhysicsModifiers(
+            m_resource->modifiers, mesh, m_jointModifiers);
+        m_physicsStates.assign(m_resource->modifiers.size(), RuntimeBonePhysicsState());
+        m_modifierSkeletonFingerprint = mesh.skeletonFingerprint;
+    }
     for (size_t jointIndex = 0; jointIndex < mesh.joints.size(); ++jointIndex)
     {
         const RtJoint& joint = mesh.joints[jointIndex];
@@ -495,7 +559,20 @@ bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, floa
             memcpy(parentGlobal.m, &m_globalMatrices[(size_t)joint.parent * 16], sizeof(parentGlobal.m));
             global = MultiplyMatrix(parentGlobal, local);
         }
-        memcpy(&m_globalMatrices[jointIndex * 16], global.m, sizeof(global.m));
+        Matrix descendantGlobal = global;
+        const int modifierIndex = applyPhysics && jointIndex < m_jointModifiers.size()
+            ? m_jointModifiers[jointIndex] : -1;
+        if (modifierIndex >= 0 && joint.parent >= 0)
+        {
+            const RuntimeBoneModifier& modifier = m_resource->modifiers[(size_t)modifierIndex];
+            RuntimeBonePhysicsState& simulation = m_physicsStates[(size_t)modifierIndex];
+            Matrix parentGlobal;
+            memcpy(parentGlobal.m, &m_globalMatrices[(size_t)joint.parent * 16], sizeof(parentGlobal.m));
+            runtime_bone_modifiers::ApplyPhysics(modifier, m_lastDeltaTime,
+                &parentGlobal.m[0][0], objectWorld, simulation, &global.m[0][0]);
+            if (modifier.flags & animcook::kModifierAffectsChildren) descendantGlobal = global;
+        }
+        memcpy(&m_globalMatrices[jointIndex * 16], descendantGlobal.m, sizeof(descendantGlobal.m));
         Matrix inverseBind;
         memcpy(inverseBind.m, joint.inverseBind, sizeof(inverseBind.m));
         const Matrix skin = MultiplyMatrix(global, inverseBind);
@@ -507,15 +584,19 @@ bool RuntimeAnimator::SamplePalette(const RtMesh& mesh, const State& state, floa
     return true;
 }
 
-bool RuntimeAnimator::BuildPalette(const RtMesh& mesh, std::vector<float>& output)
+bool RuntimeAnimator::BuildPalette(const RtMesh& mesh, const float objectWorld[16],
+                                   std::vector<float>& output)
 {
     const State* active = FindState(m_activeState);
-    bool success = active && SamplePalette(mesh, *active, m_stateTime, m_activePalette, m_activeFrames);
+    bool success = active && SamplePalette(mesh, *active, m_stateTime, m_activePalette,
+                                           m_activeFrames, true, objectWorld);
+    if (success) m_collisionMatrices = m_globalMatrices;
     const State* previous = FindState(m_previousState);
     const bool blending = success && previous && m_blendDuration > 0.0f;
     if (blending)
     {
-        if (SamplePalette(mesh, *previous, m_previousTime, m_previousPalette, m_previousFrames) &&
+        if (SamplePalette(mesh, *previous, m_previousTime, m_previousPalette,
+                  m_previousFrames, false, objectWorld) &&
             m_previousPalette.size() == m_activePalette.size())
         {
             const float alpha = 1.0f - Clamp(m_blendRemaining / m_blendDuration, 0.0f, 1.0f);
@@ -527,6 +608,40 @@ bool RuntimeAnimator::BuildPalette(const RtMesh& mesh, std::vector<float>& outpu
     }
     if (success) output.swap(m_activePalette);
     return success;
+}
+
+void RuntimeAnimator::GetBoneColliders(const RtMesh& mesh,
+                                       std::vector<BoneColliderPose>& output) const
+{
+    output.clear();
+    if (!m_resource || m_collisionMatrices.size() != mesh.joints.size() * 16) return;
+    for (size_t modifierIndex = 0; modifierIndex < m_resource->modifiers.size(); ++modifierIndex)
+    {
+        const RuntimeBoneModifier& modifier = m_resource->modifiers[modifierIndex];
+        if (modifier.type != animcook::ModifierCollision) continue;
+        size_t jointIndex = mesh.joints.size();
+        for (size_t candidate = 0; candidate < mesh.joints.size(); ++candidate)
+            if (mesh.joints[candidate].nameHash == modifier.boneHash)
+            { jointIndex = candidate; break; }
+        if (jointIndex == mesh.joints.size()) continue;
+        const float* columnMatrix = &m_collisionMatrices[jointIndex * 16];
+        BoneColliderPose pose;
+        pose.boneHash = modifier.boneHash;
+        for (int axis = 0; axis < 3; ++axis) pose.halfExtents[axis] = modifier.boxHalfExtents[axis];
+        for (int row = 0; row < 4; ++row)
+            for (int column = 0; column < 4; ++column)
+                pose.modelMatrix[row * 4 + column] = columnMatrix[column * 4 + row];
+        pose.modelMatrix[12] += modifier.boxCenter[0] * pose.modelMatrix[0] +
+                                modifier.boxCenter[1] * pose.modelMatrix[4] +
+                                modifier.boxCenter[2] * pose.modelMatrix[8];
+        pose.modelMatrix[13] += modifier.boxCenter[0] * pose.modelMatrix[1] +
+                                modifier.boxCenter[1] * pose.modelMatrix[5] +
+                                modifier.boxCenter[2] * pose.modelMatrix[9];
+        pose.modelMatrix[14] += modifier.boxCenter[0] * pose.modelMatrix[2] +
+                                modifier.boxCenter[1] * pose.modelMatrix[6] +
+                                modifier.boxCenter[2] * pose.modelMatrix[10];
+        output.push_back(pose);
+    }
 }
 
 void RuntimeAnimator::SetFloat(const char* name, float value)
@@ -563,4 +678,13 @@ void RuntimeAnimator::ClearSharedResources()
          it != s_resources.end(); ++it)
         delete it->second;
     s_resources.clear();
+}
+
+const char* RuntimeAnimator::BoneName(unsigned int hash) const
+{
+    if (!m_resource) return NULL;
+    for (size_t index = 0; index < m_resource->modifiers.size(); ++index)
+        if (m_resource->modifiers[index].boneHash == hash)
+            return m_resource->modifiers[index].boneName.c_str();
+    return NULL;
 }

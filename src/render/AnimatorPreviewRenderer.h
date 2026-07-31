@@ -1,12 +1,15 @@
 #pragma once
 
 #include "render/MeshCache.h"
+#include "render/BoneModifiers.h"
 #include "anim/AnimationClip.h"
+#include "anim/AnimatorController.h"
 
 #include "imgui.h"
 
 #include <d3d9.h>
 
+#include <array>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -52,6 +55,8 @@ public:
     void SetShowMesh(bool show)     { show_mesh_ = show; }
     void SetShowTexture(bool show)  { show_texture_ = show; }
     void SetPlaying(bool playing)   { playing_ = playing; }
+    void SetBoneModifiers(const std::vector<AnimatorBoneModifier>& modifiers)
+    { bone_modifiers_ = modifiers; }
 
     // Normalized playback position over the active clip (0..1). Reading it lets
     // the toolbar slider follow playback; writing it scrubs.
@@ -59,6 +64,10 @@ public:
     void  SetTimeNormalized(float t);
 
     const std::string& SelectedBoneName() const { return selected_bone_name_; }
+    void InvalidateClips() { m_clips.clear(); }
+    bool ComputeBoneFitBox(const std::string& bone_name,
+                           std::array<float, 3>& half_extents,
+                           std::array<float, 3>& center);
 
 private:
     bool EnsureTarget(int width, int height);
@@ -123,6 +132,11 @@ private:
 
     // Bone selection (screen-space click on the overlay).
     std::string selected_bone_name_;
+
+    std::vector<AnimatorBoneModifier> bone_modifiers_;
+    std::map<std::string, BoneModifierPhysicsState> physics_states_;
+    float pose_dt_ = 0.0f;
+    std::vector<float> pending_joint_globals_;
 
     // Set by RenderUi, consumed by RenderGpu (the "pending" state pattern).
     bool        m_renderRequested = false;

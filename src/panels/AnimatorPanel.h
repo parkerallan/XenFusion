@@ -29,6 +29,7 @@ private:
     void OpenController(const std::filesystem::path& path, EngineState& state);
     void NewController();
     bool SaveController(EngineState& state);
+    bool ImportAnimationsFromModel(EngineState& state, const std::string& path);
     void RenderClips(EngineState& state);
     void RenderStates();
     void RenderTransitions();
@@ -43,7 +44,6 @@ private:
     bool loaded_ = false;
     bool dirty_ = false;
     char new_name_[128] = "NewAnimator";
-    std::vector<std::string> bone_modifier_text_;
     bool preview_playing_ = false;
     bool preview_mesh_ = true;
     bool preview_skeleton_ = true;

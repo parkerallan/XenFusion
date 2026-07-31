@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <set>
@@ -10,6 +12,27 @@ using nlohmann::json;
 
 namespace animator
 {
+    namespace
+    {
+        bool ReadVector3(const json& value, const char* key, std::array<float, 3>& output)
+        {
+            const json::const_iterator found = value.find(key);
+            if (found == value.end() || !found->is_array() || found->size() != 3)
+                return false;
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                if (!(*found)[axis].is_number()) return false;
+            for (std::size_t axis = 0; axis < 3; ++axis)
+                output[axis] = (*found)[axis].get<float>();
+            return true;
+        }
+
+        bool FiniteVector3(const std::array<float, 3>& value)
+        {
+            return std::isfinite(value[0]) && std::isfinite(value[1]) &&
+                   std::isfinite(value[2]);
+        }
+    }
+
     bool ValidateController(const AnimatorController& controller, std::string& error)
     {
         error.clear();
@@ -69,6 +92,33 @@ namespace animator
                 return false;
             }
         }
+
+        std::set<std::string> modifier_bones;
+        for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
+        {
+            if (modifier.bone_name.empty())
+            {
+                error = "bone modifier requires a bone name";
+                return false;
+            }
+            if (!modifier_bones.insert(modifier.bone_name).second)
+            {
+                error = "duplicate bone modifier: " + modifier.bone_name;
+                return false;
+            }
+            if (!std::isfinite(modifier.strength) || !std::isfinite(modifier.damping) ||
+                !std::isfinite(modifier.stiffness) || !std::isfinite(modifier.mass) ||
+                !std::isfinite(modifier.drag) || !std::isfinite(modifier.gravity_scale) ||
+                !std::isfinite(modifier.angle_limit_deg) || !std::isfinite(modifier.radius) ||
+                modifier.mass <= 0.0f || !FiniteVector3(modifier.gravity_dir) ||
+                !FiniteVector3(modifier.box_half_extents) || !FiniteVector3(modifier.box_center) ||
+                modifier.box_half_extents[0] < 0.0f || modifier.box_half_extents[1] < 0.0f ||
+                modifier.box_half_extents[2] < 0.0f)
+            {
+                error = "bone modifier '" + modifier.bone_name + "' has invalid values";
+                return false;
+            }
+        }
         return true;
     }
 
@@ -117,7 +167,29 @@ namespace animator
             loaded.transitions.push_back(transition);
         }
         for (const json& value : root.value("bone_modifiers", json::array()))
-            loaded.bone_modifiers.push_back(value);
+        {
+            if (!value.is_object()) continue;
+            AnimatorBoneModifier modifier;
+            std::string type = value.value("type", std::string("physics"));
+            std::transform(type.begin(), type.end(), type.begin(),
+                [](unsigned char character) { return (char)std::tolower(character); });
+            modifier.type = type == "collision" ? AnimatorBoneModifierType::Collision
+                                                  : AnimatorBoneModifierType::Physics;
+            modifier.bone_name = value.value("bone", value.value("bone_name", std::string()));
+            modifier.strength = value.value("strength", 1.0f);
+            modifier.damping = value.value("damping", 1.0f);
+            modifier.stiffness = value.value("stiffness", 0.3f);
+            modifier.mass = value.value("mass", 1.0f);
+            modifier.drag = value.value("drag", 0.05f);
+            modifier.gravity_scale = value.value("gravity_scale", 0.0f);
+            ReadVector3(value, "gravity_dir", modifier.gravity_dir);
+            modifier.angle_limit_deg = value.value("angle_limit_deg", 60.0f);
+            modifier.radius = value.value("radius", 0.05f);
+            modifier.affects_children = value.value("affects_children", true);
+            ReadVector3(value, "box_half_extents", modifier.box_half_extents);
+            ReadVector3(value, "box_center", modifier.box_center);
+            loaded.bone_modifiers.push_back(modifier);
+        }
 
         if (!ValidateController(loaded, error))
             return false;
@@ -151,7 +223,21 @@ namespace animator
                 {"to_state", transition.to_state}, {"condition", transition.condition},
                 {"blend_duration", transition.blend_duration},
                 {"has_exit_time", transition.has_exit_time}, {"exit_time", transition.exit_time}});
-        root["bone_modifiers"] = controller.bone_modifiers;
+        root["bone_modifiers"] = json::array();
+        for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
+        {
+            root["bone_modifiers"].push_back({
+                {"type", modifier.type == AnimatorBoneModifierType::Collision ? "collision" : "physics"},
+                {"bone", modifier.bone_name},
+                {"strength", modifier.strength}, {"damping", modifier.damping},
+                {"stiffness", modifier.stiffness}, {"mass", modifier.mass},
+                {"drag", modifier.drag}, {"gravity_scale", modifier.gravity_scale},
+                {"gravity_dir", modifier.gravity_dir},
+                {"angle_limit_deg", modifier.angle_limit_deg}, {"radius", modifier.radius},
+                {"affects_children", modifier.affects_children},
+                {"box_half_extents", modifier.box_half_extents}, {"box_center", modifier.box_center}
+            });
+        }
 
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
         if (!output)

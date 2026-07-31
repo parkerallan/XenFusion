@@ -4,7 +4,10 @@ bool Renderer::Init(HWND hwnd)
 {
     m_d3d = Direct3DCreate9(D3D_SDK_VERSION);
     if (!m_d3d)
+    {
+        m_lastDeviceError = D3DERR_NOTAVAILABLE;
         return false;
+    }
 
     ZeroMemory(&m_pp, sizeof(m_pp));
     m_pp.Windowed               = TRUE;
@@ -14,11 +17,20 @@ bool Renderer::Init(HWND hwnd)
     m_pp.AutoDepthStencilFormat = D3DFMT_D16;
     m_pp.PresentationInterval   = D3DPRESENT_INTERVAL_ONE; // vsync
 
-    if (m_d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                            D3DCREATE_HARDWARE_VERTEXPROCESSING,
-                            &m_pp, &m_device) < 0)
+    m_lastDeviceError = m_d3d->CreateDevice(
+        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+        D3DCREATE_HARDWARE_VERTEXPROCESSING, &m_pp, &m_device);
+    if (FAILED(m_lastDeviceError))
     {
-        return false;
+        m_lastDeviceError = m_d3d->CreateDevice(
+            D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+            D3DCREATE_SOFTWARE_VERTEXPROCESSING, &m_pp, &m_device);
+        if (FAILED(m_lastDeviceError))
+        {
+            m_d3d->Release();
+            m_d3d = nullptr;
+            return false;
+        }
     }
     return true;
 }
