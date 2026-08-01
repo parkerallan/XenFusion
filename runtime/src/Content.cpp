@@ -69,6 +69,7 @@ void RtMesh::Release()
     for (size_t i = 0; i < subsets.size(); ++i)
     {
         RtSubset& s = subsets[i];
+        if (s.roughness) { s.roughness->Release(); s.roughness = NULL; }
         if (s.clearcoat) { s.clearcoat->Release(); s.clearcoat = NULL; }
         if (s.metallic) { s.metallic->Release(); s.metallic = NULL; }
         if (s.emissive) { s.emissive->Release(); s.emissive = NULL; }
@@ -101,12 +102,12 @@ void RtShader::Release()
 // flags; jointCount; skeletonFingerprint }
 // then vertexCount * 44-byte vertices, indexCount * u32 indices, then a u32
 // subset count followed by one record per material: u32 indexStart, u32
-// indexCount, then six length-prefixed strings (diffuse / normal / specular /
-// emissive / metallic / clearcoat, relative to the .mesh).
+// indexCount, then seven length-prefixed strings (diffuse / normal / specular /
+// emissive / metallic / clearcoat / roughness, relative to the .mesh).
 // ---------------------------------------------------------------------------
 namespace
 {
-    const unsigned int kMeshVersion = 8;   // must match the editor's MESH_VERSION
+    const unsigned int kMeshVersion = 9;   // must match the editor's MESH_VERSION
     const unsigned int kVertexBytes = 44;  // MeshVertex
 
     // Advance a cursor over a length-prefixed (u32 LE) string.
@@ -310,6 +311,7 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         std::string texEmis    = ReadStr(p, size, off);
         std::string texMetal   = ReadStr(p, size, off);
         std::string texCoat    = ReadStr(p, size, off);
+        std::string texRough   = ReadStr(p, size, off);
         if (!texDiffuse.empty())
         {
             const std::string dabs = Join(meshDir, texDiffuse);
@@ -326,6 +328,7 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         if (!texEmis.empty())   sub.emissive = LoadTexture(m_device, Join(meshDir, texEmis));
         if (!texMetal.empty())  sub.metallic = LoadTexture(m_device, Join(meshDir, texMetal));
         if (!texCoat.empty())   sub.clearcoat = LoadTexture(m_device, Join(meshDir, texCoat));
+        if (!texRough.empty())  sub.roughness = LoadTexture(m_device, Join(meshDir, texRough));
         mesh.subsets.push_back(sub);
     }
 

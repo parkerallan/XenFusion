@@ -92,11 +92,15 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
     const bool have_source  = !source.empty() && fs::exists(source, ec);
     const bool source_newer = have_source && baked_exists &&
                               fs::last_write_time(source, ec) > fs::last_write_time(baked, ec);
+    // A blob from an older MESH_VERSION is as stale as one older than its
+    // source: without this, bumping the version makes every existing .mesh fail
+    // to load with no re-bake ever triggered, and the models simply vanish.
+    const bool blob_stale = baked_exists && !mesh::BlobIsCurrent(baked);
 
     const bool loaded_ok = (!first_attempt && it->second.mesh.vb);
 
     // Rebuild when: first seen, previously failed, or the source changed.
-    const bool rebuild = first_attempt || !loaded_ok || source_newer;
+    const bool rebuild = first_attempt || !loaded_ok || source_newer || blob_stale;
     if (!rebuild)
     {
         it->second.next_check_ms = now + 1000;
@@ -106,7 +110,7 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
     // Bake from the source if we have one and the blob is missing/stale. On the
     // console there's no source, so this is skipped and we load the shipped blob.
     bool bake_failed = false;
-    if (have_source && (!baked_exists || source_newer))
+    if (have_source && (!baked_exists || source_newer || blob_stale))
     {
         std::string err;
         if (!mesh::BakeModel(source, baked, err))
@@ -146,6 +150,7 @@ GpuMesh* MeshCache::Get(const std::string& model_path)
                 gs.emissive = load(s.textures.emissive);
                 gs.metallic = load(s.textures.metallic);
                 gs.clearcoat = load(s.textures.clearcoat);
+                gs.roughness = load(s.textures.roughness);
                 g.subsets.push_back(gs);
             }
         }

@@ -24,6 +24,18 @@ namespace
 
 namespace mesh
 {
+    bool BlobIsCurrent(const fs::path& mesh_path)
+    {
+        std::ifstream in(mesh_path, std::ios::binary);
+        if (!in)
+            return false;
+        char     magic[4] = {};
+        uint32_t version  = 0;
+        in.read(magic, sizeof(magic));
+        in.read(reinterpret_cast<char*>(&version), sizeof(version));
+        return in && std::memcmp(magic, "M360", 4) == 0 && version == MESH_VERSION;
+    }
+
     bool LoadMeshBlob(IDirect3DDevice9* device, const fs::path& mesh_path, GpuMesh& out, std::vector<MeshSubset>& out_subsets)
     {
         out_subsets.clear();
@@ -80,6 +92,7 @@ namespace mesh
             ReadStr(in, s.textures.emissive);
             ReadStr(in, s.textures.metallic);
             ReadStr(in, s.textures.clearcoat);
+            ReadStr(in, s.textures.roughness);
             if (!in || s.indexStart + s.indexCount > h.indexCount)
                 return false;
             out_subsets.push_back(std::move(s));

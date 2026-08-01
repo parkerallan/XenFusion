@@ -1,11 +1,14 @@
 #include "render/Mesh.h"
 
+#include "render/TextureSetResolve.h"
+
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -25,6 +28,179 @@ namespace
         out.write(reinterpret_cast<const char*>(&len), sizeof(len));
         out.write(s.data(), len);
     }
+
+    // The seven material slots in blob order. Kept in one table so the importer
+    // query, the extracted-file naming and the sibling search cannot disagree
+    // about what a slot is: an embedded normal map named "_BaseColor" would be
+    // both misleading and would send the sibling search after the wrong files.
+    struct SlotDef
+    {
+        const char*   channel;      // name used for an extracted embedded file
+        aiTextureType types[3];     // importer types that can fill it, NONE-terminated
+        const char*   aliases[8];   // spellings accepted from sibling files, NULL-terminated
+    };
+
+    const SlotDef kSlots[7] = {
+        { "BaseColor", { aiTextureType_DIFFUSE, aiTextureType_BASE_COLOR, aiTextureType_NONE },
+          { "BaseColor", "Albedo", "Diffuse", NULL } },
+        { "Normal",    { aiTextureType_NORMALS, aiTextureType_HEIGHT, aiTextureType_NONE },
+          { "Normal", "Normal_OpenGL", "NormalOpenGL", "Normal_DirectX", "NormalDX", "NormalMap", "Nrm", NULL } },
+        { "Specular",  { aiTextureType_SPECULAR, aiTextureType_NONE, aiTextureType_NONE },
+          { "Specular", "Spec", NULL } },
+        { "Emissive",  { aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR, aiTextureType_NONE },
+          { "Emissive", "Emission", "Emis", NULL } },
+        { "Metallic",  { aiTextureType_METALNESS, aiTextureType_NONE, aiTextureType_NONE },
+          { "Metallic", "Metalness", "Metal", NULL } },
+        { "Clearcoat", { aiTextureType_CLEARCOAT, aiTextureType_NONE, aiTextureType_NONE },
+          { "Clearcoat", "ClearCoat", "Coat", NULL } },
+        { "Roughness", { aiTextureType_DIFFUSE_ROUGHNESS, aiTextureType_NONE, aiTextureType_NONE },
+          { "Roughness", "Rough", NULL } },
+    };
+
+    // What the model file itself declares for one slot, or empty.
+    std::string DeclaredTex(const aiMaterial* mat, const SlotDef& slot)
+    {
+        for (int t = 0; t < 3 && slot.types[t] != aiTextureType_NONE; ++t)
+        {
+            aiString tex;
+            if (mat->GetTexture(slot.types[t], 0, &tex) == AI_SUCCESS)
+            {
+                std::string s = tex.C_Str();
+                for (char& c : s) if (c == '\\') c = '/';
+                return s;
+            }
+        }
+        return {};
+    }
+
+    std::string SanitizeName(const std::string& s)
+    {
+        std::string out;
+        for (char c : s)
+            out += (c == ' ' || c == '.' || c == ':' || c == '/' || c == '\\' || c == '"') ? '_' : c;
+        return out;
+    }
+
+    // --- Embedded textures --------------------------------------------------
+    //
+    // GLB, and FBX with "embed media", carry their images inside the model file
+    // instead of as sibling files. Assimp hands those over as "*0", "*1", ...
+    // which is an index into aiScene::mTextures, not a path. Writing them out
+    // at bake time is what makes those models work at all: everything
+    // downstream (the .mesh blob, the editor's loader, the 360 cooker) deals in
+    // file paths.
+
+    // 32-bit uncompressed TGA, top-down. aiTexel is already laid out b,g,r,a,
+    // which is TGA's channel order, so the pixels copy straight through.
+    bool WriteTga(const fs::path& path, const aiTexel* texels, unsigned w, unsigned h)
+    {
+        if (!texels || w == 0 || h == 0 || w > 0xFFFF || h > 0xFFFF)
+            return false;
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        unsigned char header[18] = {};
+        header[2]  = 2;                              // uncompressed true-colour
+        header[12] = (unsigned char)(w & 0xFF);
+        header[13] = (unsigned char)(w >> 8);
+        header[14] = (unsigned char)(h & 0xFF);
+        header[15] = (unsigned char)(h >> 8);
+        header[16] = 32;                             // bits per pixel
+        header[17] = 0x28;                           // 8 alpha bits | top-down
+        out.write(reinterpret_cast<const char*>(header), sizeof(header));
+        out.write(reinterpret_cast<const char*>(texels), (std::streamsize)w * h * 4);
+        return (bool)out;
+    }
+
+    // achFormatHint is allowed to be empty, so fall back to the magic bytes.
+    const char* SniffImageExt(const unsigned char* d, std::size_t n)
+    {
+        if (n >= 8 && std::memcmp(d, "\x89PNG\r\n\x1a\n", 8) == 0) return "png";
+        if (n >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF)  return "jpg";
+        if (n >= 2 && d[0] == 'B' && d[1] == 'M')                    return "bmp";
+        if (n >= 4 && std::memcmp(d, "DDS ", 4) == 0)                return "dds";
+        return nullptr;
+    }
+
+    // Names for the extracted files, index-aligned with scene->mTextures.
+    //
+    // Named after the material and slot each texture is actually used in, so
+    // the folder is readable AND the names follow the same convention the
+    // sibling search understands. That second part matters: an extracted
+    // diffuse called "<mesh>_<material>_BaseColor.png" lets the search derive
+    // "<mesh>_<material>_Roughness.png" from it, which is its most reliable
+    // rule. An opaque "_embedded0" name would leave only weaker guesses.
+    //
+    // An embedded texture no material references keeps an index-based name;
+    // there is nothing better to call it.
+    std::vector<std::string> EmbeddedBaseNames(const aiScene* scene, const std::string& mesh_stem)
+    {
+        std::vector<std::string> names(scene->mNumTextures);
+        for (unsigned m = 0; m < scene->mNumMaterials; ++m)
+        {
+            const aiMaterial* mat = scene->mMaterials[m];
+            aiString mat_name;
+            mat->Get(AI_MATKEY_NAME, mat_name);
+            const std::string material = SanitizeName(mat_name.C_Str());
+
+            for (int s = 0; s < 7; ++s)
+            {
+                const std::string ref = DeclaredTex(mat, kSlots[s]);
+                if (ref.empty()) continue;
+                const int index = scene->GetEmbeddedTextureAndIndex(ref.c_str()).second;
+                if (index < 0 || (unsigned)index >= names.size()) continue;
+                if (!names[index].empty()) continue;   // first use names it
+                names[index] = mesh_stem + (material.empty() ? "" : "_" + material)
+                             + "_" + kSlots[s].channel;
+            }
+        }
+        for (unsigned i = 0; i < names.size(); ++i)
+            if (names[i].empty())
+                names[i] = mesh_stem + "_embedded" + std::to_string(i);
+        return names;
+    }
+
+    // Write every embedded texture next to the .mesh. The result is index
+    // aligned with scene->mTextures; an entry is empty where extraction failed.
+    std::vector<std::string> ExtractEmbedded(const aiScene* scene, const fs::path& out_mesh)
+    {
+        std::vector<std::string> rel(scene->mNumTextures);
+        const fs::path dir  = out_mesh.parent_path();
+        const std::vector<std::string> names = EmbeddedBaseNames(scene, out_mesh.stem().string());
+
+        for (unsigned i = 0; i < scene->mNumTextures; ++i)
+        {
+            const aiTexture* tex = scene->mTextures[i];
+            if (!tex || !tex->pcData) continue;
+            const std::string base = names[i];
+
+            if (tex->mHeight == 0)
+            {
+                // Compressed: pcData is mWidth bytes of an image file.
+                const unsigned char* bytes = reinterpret_cast<const unsigned char*>(tex->pcData);
+                const std::size_t    size  = tex->mWidth;
+                std::string ext = tex->achFormatHint;
+                if (ext.empty() || ext == "\0")
+                {
+                    const char* sniffed = SniffImageExt(bytes, size);
+                    if (!sniffed) continue;          // unknown container, leave empty
+                    ext = sniffed;
+                }
+                const std::string name = base + "." + ext;
+                std::ofstream out(dir / name, std::ios::binary | std::ios::trunc);
+                if (!out) continue;
+                out.write(reinterpret_cast<const char*>(bytes), (std::streamsize)size);
+                if (out) rel[i] = name;
+            }
+            else
+            {
+                const std::string name = base + ".tga";
+                if (WriteTga(dir / name, tex->pcData, tex->mWidth, tex->mHeight))
+                    rel[i] = name;
+            }
+        }
+        return rel;
+    }
+
 
     bool HasSkin(const aiScene* scene)
     {
@@ -211,20 +387,15 @@ namespace mesh
         for (unsigned m = 0; m < scene->mNumMeshes; ++m)
             by_material[scene->mMeshes[m]->mMaterialIndex].push_back(m);
 
-        auto find_tex = [](const aiMaterial* mat, std::initializer_list<aiTextureType> types) -> std::string
-        {
-            for (aiTextureType t : types)
-            {
-                aiString tex;
-                if (mat->GetTexture(t, 0, &tex) == AI_SUCCESS)
-                {
-                    std::string s = tex.C_Str();
-                    for (char& c : s) if (c == '\\') c = '/';
-                    return s;
-                }
-            }
-            return {};
-        };
+        // Embedded textures become real files before anything reads a path.
+        const std::vector<std::string> embedded = ExtractEmbedded(scene, out_mesh);
+
+        // One directory listing for the whole model, reused by every subset and
+        // every slot, instead of a stat per candidate filename.
+        const std::string model_stem = source.stem().string();
+        texset::MapIndex  map_index;
+        map_index.AddDir(source.parent_path(), "");
+        map_index.AddDir(source.parent_path(), "textures/");
 
         std::vector<MeshVertex> vertices;
         std::vector<uint32_t>   indices;
@@ -280,21 +451,50 @@ namespace mesh
                 continue;
 
             const aiMaterial* mat = scene->mMaterials[mat_index];
-            subset.textures.diffuse  = find_tex(mat, {aiTextureType_DIFFUSE, aiTextureType_BASE_COLOR});
-            subset.textures.normal   = find_tex(mat, {aiTextureType_NORMALS, aiTextureType_HEIGHT});
-            subset.textures.specular = find_tex(mat, {aiTextureType_SPECULAR});
-            subset.textures.emissive = find_tex(mat, {aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR});
-            subset.textures.metallic = find_tex(mat, {aiTextureType_METALNESS});
-            subset.textures.clearcoat = find_tex(mat, {aiTextureType_CLEARCOAT});
-            if (subset.textures.clearcoat.empty())
+            aiString mat_name;
+            mat->Get(AI_MATKEY_NAME, mat_name);
+            // The material name is Substance's texture-set name. Keying the
+            // sibling search off the model's filename alone would hand `body`
+            // and `head` the same maps.
+            const std::string material(mat_name.C_Str());
+
+            std::string* slot[7] = {
+                &subset.textures.diffuse,  &subset.textures.normal,
+                &subset.textures.specular, &subset.textures.emissive,
+                &subset.textures.metallic, &subset.textures.clearcoat,
+                &subset.textures.roughness,
+            };
+
+            // Pass 1: what the model file declares, with any "*N" swapped for
+            // the file ExtractEmbedded wrote. GetEmbeddedTextureAndIndex also
+            // matches by filename, which is how some FBX exporters reference
+            // their embedded media. A slot whose extraction failed goes empty
+            // rather than keeping a dead reference, so pass 2 can rescue it.
+            for (int s = 0; s < 7; ++s)
             {
-                // Substance-style sibling export: <model>_Clearcoat.png next to
-                // the source (OBJ/MTL has no clearcoat map statement to read).
-                const std::string sibling = source.stem().string() + "_Clearcoat.png";
-                std::error_code ec;
-                if (fs::exists(source.parent_path() / sibling, ec))
-                    subset.textures.clearcoat = sibling;
+                *slot[s] = DeclaredTex(mat, kSlots[s]);
+                if (slot[s]->empty()) continue;
+                const int index = scene->GetEmbeddedTextureAndIndex(slot[s]->c_str()).second;
+                if (index < 0) continue;                    // an ordinary path
+                *slot[s] = ((std::size_t)index < embedded.size()) ? embedded[index] : std::string();
             }
+
+            // Substance exports often sit beside the textures rather than
+            // beside the model, so index the diffuse's own directory too.
+            const std::string& d = subset.textures.diffuse;
+            if (!d.empty())
+            {
+                std::string ddir, dstem;
+                texset::SplitRel(d, ddir, dstem);
+                map_index.AddDir(source.parent_path(), ddir);
+            }
+
+            // Pass 2: sibling files, for whatever the format had no statement
+            // for. Declarations always win, so no existing import changes.
+            for (int s = 1; s < 7; ++s)   // the diffuse is never inferred
+                if (slot[s]->empty())
+                    *slot[s] = texset::Resolve(map_index, d, model_stem, material, kSlots[s].aliases);
+
             subsets.push_back(std::move(subset));
         }
 
@@ -335,6 +535,7 @@ namespace mesh
             WriteStr(out, s.textures.emissive);
             WriteStr(out, s.textures.metallic);
             WriteStr(out, s.textures.clearcoat);
+            WriteStr(out, s.textures.roughness);
         }
         if (skinned)
         {

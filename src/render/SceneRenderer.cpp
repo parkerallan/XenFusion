@@ -552,6 +552,7 @@ void SceneRenderer::LoadStandardShader()
     reload("bloom_bright",  m_bloom_bright_vs,  m_bloom_bright_ps);
     reload("bloom_blur",    m_bloom_blur_vs,    m_bloom_blur_ps);
     reload("bloom_combine", m_bloom_combine_vs, m_bloom_combine_ps);
+    reload("env_blur", m_env_blur_vs, m_env_blur_ps); // roughness reflection chain
     reload("beam", m_beam_vs, m_beam_ps); // spot volumetric shaft (optional)
     reload("image", m_image_vs, m_image_ps); // Image attribute overlay (optional)
     reload("text", m_text_vs, m_text_ps); // Text attribute overlay (optional)
@@ -614,6 +615,8 @@ void SceneRenderer::Shutdown()
     if (m_bloom_blur_vs)    { m_bloom_blur_vs->Release();    m_bloom_blur_vs = nullptr; }
     if (m_bloom_bright_ps)  { m_bloom_bright_ps->Release();  m_bloom_bright_ps = nullptr; }
     if (m_bloom_bright_vs)  { m_bloom_bright_vs->Release();  m_bloom_bright_vs = nullptr; }
+    if (m_env_blur_ps)      { m_env_blur_ps->Release();      m_env_blur_ps = nullptr; }
+    if (m_env_blur_vs)      { m_env_blur_vs->Release();      m_env_blur_vs = nullptr; }
     if (m_beam_ps)    { m_beam_ps->Release();    m_beam_ps = nullptr; }
     if (m_beam_vs)    { m_beam_vs->Release();    m_beam_vs = nullptr; }
     if (m_ps)         { m_ps->Release();         m_ps = nullptr; }
@@ -878,6 +881,8 @@ void SceneRenderer::AnimatorSetState(int objectIndex, const char* name)
 void SceneRenderer::OnDeviceLost()
 {
     if (m_env_dyn_depth) { m_env_dyn_depth->Release(); m_env_dyn_depth = nullptr; }
+    if (m_env_blur_tmp)  { m_env_blur_tmp->Release();  m_env_blur_tmp = nullptr; }
+    if (m_env_blur)      { m_env_blur->Release();      m_env_blur = nullptr; }
     if (m_env_dyn)       { m_env_dyn->Release();       m_env_dyn = nullptr; }
     if (m_bloomBSurf) { m_bloomBSurf->Release(); m_bloomBSurf = nullptr; }
     if (m_bloomB)     { m_bloomB->Release();     m_bloomB = nullptr; }
@@ -1708,32 +1713,46 @@ void SceneRenderer::RenderGpu(float dt)
     m_device->GetRenderTarget(0, &prevRt);
     m_device->GetDepthStencilSurface(&prevDepth);
 
-    // --- Dynamic environment capture (metal reflections) ---
-    // Metal reflects the ACTUAL scene: render it into a small cube map from the
-    // first metallic object's position; the main pass samples it on s5. The
-    // captured object itself is skipped (a mirror can't mirror itself).
+    // --- Dynamic environment capture (reflections) ---
+    // Reflective surfaces reflect the ACTUAL scene: render it into a small cube
+    // map from the first reflective object's position; the main pass samples it
+    // on s5. The captured object itself is skipped (a mirror can't mirror
+    // itself). Roughness counts as reflective just as much as metal does — a
+    // matte object alone in a scene must still reflect the room, not fall
+    // through to the painted env cube.
     m_env_captured = false;
     {
-        const UINT kEnvSize = 128;
+        const UINT kEnvSize = (UINT)envcube::kSize;
         int   env_obj = -1;
         float env_pos[3] = { 0.0f, 0.0f, 0.0f };
-        for (const DrawItem& item : m_draw_items)
-        {
-            GpuMesh* gm = m_meshes.Get(item.model_path);
-            if (!gm) continue;
-            bool metal = false;
-            for (const GpuSubset& s : gm->subsets)
-                if (s.metallic) { metal = true; break; }
-            if (!metal) continue;
-            env_obj = item.object_index;
-            env_pos[0] = item.world._41; env_pos[1] = item.world._42; env_pos[2] = item.world._43;
-            break;
-        }
+        // Two passes: metal first, so scenes that already had a capture keep
+        // capturing from exactly the object they did before; rough/clearcoat
+        // only supply a capture point when there is no metal at all.
+        for (int pass = 0; pass < 2 && env_obj == -1; ++pass)
+            for (const DrawItem& item : m_draw_items)
+            {
+                GpuMesh* gm = m_meshes.Get(item.model_path);
+                if (!gm) continue;
+                bool reflective = false;
+                for (const GpuSubset& s : gm->subsets)
+                    if (pass == 0 ? (s.metallic != nullptr) : (s.roughness || s.clearcoat))
+                    { reflective = true; break; }
+                if (!reflective) continue;
+                env_obj = item.object_index;
+                env_pos[0] = item.world._41; env_pos[1] = item.world._42; env_pos[2] = item.world._43;
+                break;
+            }
         if (env_obj != -1 && m_vs && m_ps && m_mesh_decl)
         {
             if (!m_env_dyn)
                 m_device->CreateCubeTexture(kEnvSize, 1, D3DUSAGE_RENDERTARGET,
                                             D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_env_dyn, nullptr);
+            if (!m_env_blur)
+                m_device->CreateCubeTexture(kEnvSize, envcube::kMips, D3DUSAGE_RENDERTARGET,
+                                            D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_env_blur, nullptr);
+            if (!m_env_blur_tmp)
+                m_device->CreateCubeTexture(kEnvSize, envcube::kMips, D3DUSAGE_RENDERTARGET,
+                                            D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_env_blur_tmp, nullptr);
             if (!m_env_dyn_depth)
                 m_device->CreateDepthStencilSurface(kEnvSize, kEnvSize, D3DFMT_D16,
                                                     D3DMULTISAMPLE_NONE, 0, TRUE, &m_env_dyn_depth, nullptr);
@@ -1760,6 +1779,7 @@ void SceneRenderer::RenderGpu(float dt)
                     DrawSceneForEnv(view, proj, env_pos, env_obj);
                     face->Release();
                 }
+                BuildEnvBlurChain();
                 m_device->EndScene();
                 m_env_captured = true;
             }
@@ -1824,20 +1844,33 @@ void SceneRenderer::RenderGpu(float dt)
                 m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
                 m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
             }
-            // s5 = environment cube (bound once per frame).
+            // s5 = environment cube (bound once per frame). MIPFILTER is the
+            // whole roughness blur: D3D9 defaults it to D3DTEXF_NONE, so without
+            // this line texCUBElod silently reads level 0 and nothing blurs.
             m_device->SetSamplerState(5, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
             m_device->SetSamplerState(5, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(5, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
-            // s6 = clearcoat mask (per subset, 2D).
-            m_device->SetSamplerState(6, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-            m_device->SetSamplerState(6, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-            m_device->SetSamplerState(6, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-            m_device->SetSamplerState(6, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-            m_device->SetTexture(5, m_env_captured ? (IDirect3DBaseTexture9*)m_env_dyn
+            // s6 = clearcoat mask, s7 = roughness (per subset, 2D).
+            for (DWORD s = 6; s <= 7; ++s)
+            {
+                m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+                m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+            }
+            // Only the blurred chain has levels to sample; the static painted
+            // cube and the black default are single-level, so roughness gets a
+            // max mip of 0 there rather than a level that was never written.
+            const bool env_blurred = m_env_captured && m_env_blur && m_env_blur_vs && m_env_blur_ps;
+            m_device->SetTexture(5, env_blurred   ? (IDirect3DBaseTexture9*)m_env_blur
+                                  : m_env_captured ? (IDirect3DBaseTexture9*)m_env_dyn
                                   : m_env          ? (IDirect3DBaseTexture9*)m_env
                                                    : (IDirect3DBaseTexture9*)m_def_envcube);
+            const float rough_cfg[4] = { env_blurred ? envcube::kMaxMip : 0.0f, 0.0f, 0.0f, 0.0f };
+            m_device->SetPixelShaderConstantF(22, rough_cfg, 1);
 
             // Pixel-shader constants: light direction, camera position, ambient.
             const float cam_pos[4]   = { m_eye[0], m_eye[1], m_eye[2], 0.0f };
@@ -1886,6 +1919,7 @@ void SceneRenderer::RenderGpu(float dt)
                 m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
                 m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
                 m_device->SetTexture(6, s.clearcoat ? s.clearcoat : m_def_black);
+                m_device->SetTexture(7, s.roughness ? s.roughness : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                gm->vertexCount, s.indexStart, s.indexCount / 3);
             };
@@ -2145,6 +2179,9 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
 
     const float cam[4]     = { eye[0], eye[1], eye[2], 0.0f };
     const float zero[4]    = { 0.0f, 0.0f, 0.0f, 0.0f };
+    // s5 here is the single-level black cube, so roughness must not reach for a
+    // mip that does not exist (c22.x = 0 -> texCUBElod stays at level 0).
+    m_device->SetPixelShaderConstantF(22, zero, 1);
     m_device->SetPixelShaderConstantF(0, m_light_dir, 1);
     m_device->SetPixelShaderConstantF(1, cam, 1);
     m_device->SetPixelShaderConstantF(2, m_ambient, 1);
@@ -2200,6 +2237,7 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
                 m_device->SetTexture(3, s.emissive ? s.emissive : m_def_black);
                 m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
                 m_device->SetTexture(6, s.clearcoat ? s.clearcoat : m_def_black);
+                m_device->SetTexture(7, s.roughness ? s.roughness : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                gm->vertexCount, s.indexStart, s.indexCount / 3);
             }
@@ -2208,6 +2246,103 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
     m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
     m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
     m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+}
+
+// Fill m_env_blur from the sharp capture by running env_blur.hlsl over every
+// face of every level. Each level filters the one below it, repeatedly, so the
+// blur compounds out of narrow gap-free steps (see envcube::BlurPasses).
+//
+// Two rules this depends on:
+//   - m_env_blur and m_env_blur_tmp take turns as source and destination, since
+//     D3D9 cannot sample a texture while rendering into another of its levels.
+//   - Levels run outermost: taps cross face boundaries, so all six faces of
+//     level L-1 must exist before any face of level L.
+//
+// Level 0 uses zero tap spacing, making it a plain copy — and the cheapest check
+// that the shader's direction math is right, since it must come out identical to
+// the capture.
+//
+// Runs inside the capture's BeginScene, after the six faces are drawn.
+void SceneRenderer::BuildEnvBlurChain()
+{
+    if (!m_env_dyn || !m_env_blur || !m_env_blur_tmp || !m_env_blur_vs || !m_env_blur_ps)
+        return;
+
+    struct QuadVtx { float x, y, z, u, v; };
+    static const QuadVtx quad[4] = {
+        { -1.0f,  1.0f, 0.0f, 0.0f, 0.0f },
+        {  1.0f,  1.0f, 0.0f, 1.0f, 0.0f },
+        { -1.0f, -1.0f, 0.0f, 0.0f, 1.0f },
+        {  1.0f, -1.0f, 0.0f, 1.0f, 1.0f },
+    };
+
+    m_device->SetDepthStencilSurface(nullptr);
+    m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+        D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+    m_device->SetVertexShader(m_env_blur_vs);
+    m_device->SetPixelShader(m_env_blur_ps);
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    // POINT: the shader's explicit LOD must land on exactly the level we built,
+    // not blend in one that was never written.
+    m_device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_POINT);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
+
+    for (int level = 0; level < envcube::kMips; ++level)
+    {
+        const int   size    = envcube::kSize >> level;
+        const int   passes  = envcube::BlurPasses(level);
+        const float half[4] = { 1.0f / (float)size, 1.0f / (float)size, 0.0f, 0.0f };
+        m_device->SetVertexShaderConstantF(0, half, 1);
+
+        // Pass 0 halves resolution, the rest re-filter in place. The cubes
+        // alternate and the count is even, so the last write always lands in
+        // m_env_blur — what s5 binds and what the next level reads.
+        for (int pass = 0; pass < passes; ++pass)
+        {
+            const bool to_blur = (level == 0) || (pass & 1);
+            IDirect3DCubeTexture9* dst = to_blur ? m_env_blur : m_env_blur_tmp;
+            IDirect3DCubeTexture9* src = (level == 0) ? m_env_dyn
+                                       : (to_blur ? m_env_blur_tmp : m_env_blur);
+            const float src_lod = (pass == 0) ? (float)(level - 1) : (float)level;
+            const float step[4] = { (pass == 0) ? envcube::TapStep(level)
+                                                : envcube::TapStepAt(level),
+                                    (level == 0) ? 0.0f : src_lod,
+                                    envcube::EdgeFixup(level), 0.0f };
+            m_device->SetTexture(0, src);
+            m_device->SetPixelShaderConstantF(3, step, 1);
+            for (int f = 0; f < 6; ++f)
+            {
+                IDirect3DSurface9* surf = nullptr;
+                if (FAILED(dst->GetCubeMapSurface((D3DCUBEMAP_FACES)f, level, &surf)))
+                    continue;
+                float r3[3], u3[3], f3[3];
+                envcube::FaceBasis(f, r3, u3, f3);
+                const float face_r[4] = { r3[0], r3[1], r3[2], 0.0f };
+                const float face_u[4] = { u3[0], u3[1], u3[2], 0.0f };
+                const float face_f[4] = { f3[0], f3[1], f3[2], 0.0f };
+                m_device->SetPixelShaderConstantF(0, face_r, 1);
+                m_device->SetPixelShaderConstantF(1, face_u, 1);
+                m_device->SetPixelShaderConstantF(2, face_f, 1);
+                m_device->SetRenderTarget(0, surf);
+                D3DVIEWPORT9 vp = { 0, 0, (DWORD)size, (DWORD)size, 0.0f, 1.0f };
+                m_device->SetViewport(&vp);
+                m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+                surf->Release();
+            }
+        }
+    }
+    m_device->SetTexture(0, nullptr);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
 }
 
 // The bloom chain: extract the glow (scene rgb * exported alpha mask) into a

@@ -17,9 +17,16 @@
 //            (metal reflects the env tinted by the diffuse; black cube = none)
 //       s6 = clearcoat (r: clear-lacquer amount — untinted env sheen ADDED over
 //            the lit surface; the paint keeps its color, car-paint style)
+//       s7 = roughness (r: 0 = glossy, 1 = matte) — widens every specular lobe
+//            AND picks a blurrier mip of the env cube; also dials in a broad
+//            dim reflection on plain dielectrics, which is what makes a matte
+//            character still catch its surroundings. No map = black = 0 =
+//            exactly the pre-roughness math.
 //       c15 = glow-mask switch: 1 = output alpha carries the emissive strength
 //             (the bloom chain's glow source — opaque subsets only), 0 = output
 //             alpha is the diffuse's (cutout / blend passes need it)
+//       c22.x = max env mip (3 when the blurred capture chain is bound, 0 when
+//             s5 is the painted/black fallback, which has no mip chain)
 // (PS c3/c4 stay free: the custom-shader convention claims them for gTime/gCamObj.)
 
 float4x4 gWVP   : register(c0);
@@ -102,6 +109,8 @@ sampler2D sEmissive : register(s3);
 sampler2D sMetallic : register(s4);
 samplerCUBE sEnv    : register(s5);
 sampler2D sClearcoat : register(s6);
+sampler2D sRoughness : register(s7); // r: 0 = glossy (legacy), 1 = fully matte
+float4 gRough : register(c22);       // x = max env mip; yzw reserved
 
 float4 PSMain(VSOut i) : COLOR
 {
@@ -141,6 +150,13 @@ float4 PSMain(VSOut i) : COLOR
     float4 dtex = tex2D(sDiffuse, uv);
     float3 spec = tex2D(sSpecular, uv).rgb;
 
+    // Roughness sets every "how tight is this highlight" number below. At
+    // rough = 0 these are exactly 40 and 96, so a subset with no roughness map
+    // (s7 = the 1x1 black default) matches the pre-roughness shader term for term.
+    float rough    = tex2D(sRoughness, uv).r;
+    float specPow  = 40.0 * exp2(-3.3219281 * rough); // 40 .. 4
+    float glintPow = 96.0 * exp2(-4.5849625 * rough); // 96 .. 4
+
     // Directional light (diffuse + specular) plus up to four point lights
     // (diffuse only — the 360-era forward trade-off). Point falloff fades
     // smoothly to zero at range: (1 - (d/range)^2)^2, with w = 1/range^2.
@@ -159,7 +175,7 @@ float4 PSMain(VSOut i) : COLOR
         float3 Lp  = pl * rsqrt(d2);
         diffuse += gPointCol[k] * (saturate(dot(n, Lp)) * (att * att));
         float3 Hp  = normalize(Lp + V);
-        pglint += gPointCol[k] * (pow(saturate(dot(n, Hp)), 96.0) * (att * att));
+        pglint += gPointCol[k] * (pow(saturate(dot(n, Hp)), glintPow) * (att * att));
     }
     // Up to two spot lights, treated like the points (diffuse here, glint into
     // the metal/clearcoat terms) with the Vulkan editor's spot falloff pair:
@@ -180,9 +196,9 @@ float4 PSMain(VSOut i) : COLOR
         satt = satt * satt * (st * st * (3.0 - 2.0 * st));
         diffuse += gSpotCol[j].rgb * (saturate(dot(n, Ls)) * satt);
         float3 Hs = normalize(Ls + V);
-        pglint += gSpotCol[j].rgb * (pow(saturate(dot(n, Hs)), 96.0) * satt);
+        pglint += gSpotCol[j].rgb * (pow(saturate(dot(n, Hs)), glintPow) * satt);
     }
-    float3 color = dtex.rgb * (gAmbient + diffuse) + spec * (gLightColor * pow(ndh, 40.0));
+    float3 color = dtex.rgb * (gAmbient + diffuse) + spec * (gLightColor * pow(ndh, specPow));
 
     // Metal (360-era env-map look): the surface IS its environment — no flat
     // shading terms at all. Three parts, all tinted by the diffuse (the metal's
@@ -197,8 +213,15 @@ float4 PSMain(VSOut i) : COLOR
     float3 R    = reflect(-V, n);
     float  ndv  = saturate(dot(n, V));
     float  fres = 0.55 + 0.45 * pow(1.0 - ndv, 2.0);
-    float3 metal = texCUBE(sEnv, R).rgb * dtex.rgb * fres
-                 + dtex.rgb * (gLightColor * pow(ndh, 96.0) + pglint);
+    // The one env sample, shared by the metal, clearcoat and matte terms below,
+    // so a doubled reflection stays impossible. texCUBElod not texCUBEbias: the
+    // mip must be the material's choice, not the rasterizer's. rough = 0 gives
+    // LOD 0, the old texCUBE.
+    float3 envc = texCUBElod(sEnv, float4(R, rough * gRough.x)).rgb;
+    // Rough metal is duller as well as blurrier; blur alone keeps the average,
+    // which leaves a matte metal reading as bright chrome.
+    float3 metal = envc * dtex.rgb * (fres * (1.0 - 0.35 * rough))
+                 + dtex.rgb * (gLightColor * pow(ndh, glintPow) + pglint);
     color = lerp(color, metal, m);
 
     // Clearcoat: a clear lacquer over the lit surface — an UNTINTED env sheen
@@ -210,8 +233,17 @@ float4 PSMain(VSOut i) : COLOR
     // no second sample, so no ghosting.
     float coat  = tex2D(sClearcoat, uv).r;
     float cfres = 0.05 + 0.95 * pow(1.0 - ndv, 4.0);
-    color += texCUBE(sEnv, R).rgb * (coat * cfres)
-           + (gLightColor * pow(ndh, 96.0) + pglint) * coat;
+    color += envc * (coat * cfres)
+           + (gLightColor * pow(ndh, glintPow) + pglint) * coat;
+
+    // Matte surfaces still catch the room: a broad, dim, surface-tinted
+    // reflection the specular lobe cannot express, since that only knows about
+    // the light. Scaled by roughness, so the map is the dial and a subset
+    // without one contributes exactly zero. Its own Fresnel, not the
+    // clearcoat's — that one is near zero face-on, which would reduce "matte"
+    // to a rim effect visible only on silhouettes.
+    float mfres = 0.25 + 0.75 * pow(1.0 - ndv, 3.0);
+    color += envc * dtex.rgb * (mfres * rough * 0.40);
 
     float3 etex  = tex2D(sEmissive, uv).rgb; // self-illumination: unlit, additive
     color += etex;

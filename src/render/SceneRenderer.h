@@ -230,15 +230,31 @@ private:
     IDirect3DCubeTexture9*       m_env         = nullptr; // static env map (assets/env), fallback
 
     // Dynamic environment capture: each frame the scene is rendered into this
-    // small cube from the first metallic object's position, so metal reflects
-    // the ACTUAL scene (objects, lit walls) rather than a painted sky.
+    // small cube from the first reflective object's position, so reflections
+    // show the ACTUAL scene (objects, lit walls) rather than a painted sky.
     IDirect3DCubeTexture9*       m_env_dyn       = nullptr; // D3DPOOL_DEFAULT (device-lost aware)
     IDirect3DSurface9*           m_env_dyn_depth = nullptr;
-    bool                         m_env_captured  = false;   // captured this frame -> bind m_env_dyn
+    // Blurred copy of the capture, ENV_MIPS levels deep — what actually binds to
+    // s5. Roughness picks a level (standard.hlsl texCUBElod). Kept separate from
+    // m_env_dyn because D3D9 cannot render into level L of a texture while
+    // sampling its level 0; filtering every level from the sharp capture also
+    // means no ping-pong ordering to get wrong.
+    IDirect3DCubeTexture9*       m_env_blur      = nullptr;
+    // Scratch chain the blur ping-pongs against: the filter is progressive
+    // (level L reads level L-1), and D3D9 cannot sample a texture while
+    // rendering into another level of it, so the two cubes take turns.
+    IDirect3DCubeTexture9*       m_env_blur_tmp  = nullptr;
+    IDirect3DVertexShader9*      m_env_blur_vs   = nullptr;
+    IDirect3DPixelShader9*       m_env_blur_ps   = nullptr;
+    bool                         m_env_captured  = false;   // captured this frame -> bind m_env_blur
     // One cube face of the capture: a reduced scene pass (models only — no
-    // grid/gizmos/outlines/post) from the metal object's point of view.
+    // grid/gizmos/outlines/post) from the reflective object's point of view.
     void DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj,
                          const float eye[3], int skip_object);
+    // Fill m_env_blur from m_env_dyn: level 0 is a straight copy, levels 1+ are
+    // direction-space cone filters (env_blur.hlsl). Call inside the capture's
+    // BeginScene, after the six faces are drawn.
+    void BuildEnvBlurChain();
     std::filesystem::path        m_standard_src;         // <exe>/standard.hlsl (engine source)
     std::filesystem::path        m_project_root;         // compiled shaders live in <root>/shaders
 

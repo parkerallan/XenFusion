@@ -486,7 +486,7 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
         return;
 
     // Per-material subsets: index range + alpha mode + texture hashes.
-    cm.texHash.assign((size_t)subsetCount * 6, 0);
+    cm.texHash.assign((size_t)subsetCount * spak::kMeshTexSlots, 0);
     for (unsigned int i = 0; i < subsetCount; ++i)
     {
         const unsigned char* sp = p + headerBytes + (size_t)i * spak::kMeshSubsetBytes;
@@ -498,12 +498,8 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
         sub.alpha = (kind == spak::kAlphaCutout) ? RtCutout
                   : (kind == spak::kAlphaBlend)  ? RtBlend : RtOpaque;
         sub.normalHasHeight = (alpha & spak::kAlphaHeightBit) != 0;
-        cm.texHash[(size_t)i * 6 + 0] = endian::LoadU32BE(sp + 12);
-        cm.texHash[(size_t)i * 6 + 1] = endian::LoadU32BE(sp + 16);
-        cm.texHash[(size_t)i * 6 + 2] = endian::LoadU32BE(sp + 20);
-        cm.texHash[(size_t)i * 6 + 3] = endian::LoadU32BE(sp + 24);
-        cm.texHash[(size_t)i * 6 + 4] = endian::LoadU32BE(sp + 28);
-        cm.texHash[(size_t)i * 6 + 5] = endian::LoadU32BE(sp + 32);
+        for (unsigned int s = 0; s < spak::kMeshTexSlots; ++s)
+            cm.texHash[(size_t)i * spak::kMeshTexSlots + s] = endian::LoadU32BE(sp + 12 + s * 4);
         if ((size_t)sub.indexStart + sub.indexCount > icount)
         { cm.mesh.subsets.clear(); return; }
         cm.mesh.subsets.push_back(sub);
@@ -638,15 +634,17 @@ const text::CookedFont* StreamCache::GetFont(const std::string& relPath,
 
 void StreamCache::RefreshMeshTextures(CacheMesh& cm)
 {
-    for (size_t i = 0; i < cm.mesh.subsets.size() && i * 6 + 5 < cm.texHash.size(); ++i)
+    const size_t n = spak::kMeshTexSlots;
+    for (size_t i = 0; i < cm.mesh.subsets.size() && i * n + (n - 1) < cm.texHash.size(); ++i)
     {
         RtSubset& s = cm.mesh.subsets[i];
-        s.diffuse   = GetTextureByHash(cm.texHash[i * 6 + 0]);
-        s.normal    = GetTextureByHash(cm.texHash[i * 6 + 1]);
-        s.specular  = GetTextureByHash(cm.texHash[i * 6 + 2]);
-        s.emissive  = GetTextureByHash(cm.texHash[i * 6 + 3]);
-        s.metallic  = GetTextureByHash(cm.texHash[i * 6 + 4]);
-        s.clearcoat = GetTextureByHash(cm.texHash[i * 6 + 5]);
+        s.diffuse   = GetTextureByHash(cm.texHash[i * n + 0]);
+        s.normal    = GetTextureByHash(cm.texHash[i * n + 1]);
+        s.specular  = GetTextureByHash(cm.texHash[i * n + 2]);
+        s.emissive  = GetTextureByHash(cm.texHash[i * n + 3]);
+        s.metallic  = GetTextureByHash(cm.texHash[i * n + 4]);
+        s.clearcoat = GetTextureByHash(cm.texHash[i * n + 5]);
+        s.roughness = GetTextureByHash(cm.texHash[i * n + 6]);
     }
 }
 

@@ -9,7 +9,7 @@
 
 // Current baked-blob version. Bumped whenever MeshVertex or the material
 // section changes so stale blobs are re-baked from their source.
-constexpr uint32_t MESH_VERSION = 8;
+constexpr uint32_t MESH_VERSION = 9;
 constexpr uint32_t MESH_FLAG_SKINNED = 0x1u;
 
 // The first Xbox skinning path uploads one 3x4 matrix per joint to vertex
@@ -72,14 +72,14 @@ struct MeshHeader
 };
 // After the header: vertexCount vertices, indexCount uint32 indices, then a
 // uint32 subset count followed by one subset per source material: uint32
-// indexStart, uint32 indexCount, then six length-prefixed strings (diffuse,
-// normal, specular, emissive, metallic, clearcoat texture paths relative to
-// the mesh file; empty = absent). Skinned meshes then store vertexCount
+// indexStart, uint32 indexCount, then seven length-prefixed strings (diffuse,
+// normal, specular, emissive, metallic, clearcoat, roughness texture paths
+// relative to the mesh file; empty = absent). Skinned meshes then store vertexCount
 // MeshSkinInfluence records followed by jointCount records: length-prefixed
 // name, int32 parent, 16-float inverse bind, and 16-float local bind matrix.
 
-// Diffuse / normal / specular / emissive / metallic / clearcoat texture
-// references for one material.
+// Diffuse / normal / specular / emissive / metallic / clearcoat / roughness
+// texture references for one material.
 struct MeshTextures
 {
     std::string diffuse;
@@ -88,6 +88,7 @@ struct MeshTextures
     std::string emissive;
     std::string metallic;
     std::string clearcoat;
+    std::string roughness;
 };
 
 // One material's range within a baked mesh: draw indices [indexStart,
@@ -116,6 +117,7 @@ struct GpuSubset
     IDirect3DTexture9* emissive = nullptr; // null = no glow (black default)
     IDirect3DTexture9* metallic = nullptr; // null = dielectric (black default)
     IDirect3DTexture9* clearcoat = nullptr; // null = no lacquer (black default)
+    IDirect3DTexture9* roughness = nullptr; // null = glossy (black default)
     AlphaKind          alpha    = AlphaKind::Opaque;
     bool               normalHasHeight = false; // normal map's alpha carries a
                                                 // height field (0.5 = neutral)
@@ -139,6 +141,7 @@ struct GpuMesh
     {
         for (GpuSubset& s : subsets)
         {
+            if (s.roughness) { s.roughness->Release(); s.roughness = nullptr; }
             if (s.clearcoat) { s.clearcoat->Release(); s.clearcoat = nullptr; }
             if (s.metallic) { s.metallic->Release(); s.metallic = nullptr; }
             if (s.emissive) { s.emissive->Release(); s.emissive = nullptr; }
@@ -163,6 +166,13 @@ namespace mesh
     bool BakeModel(const std::filesystem::path& source,
                    const std::filesystem::path& out_mesh,
                    std::string& error);
+
+    // True when a .mesh blob on disk carries the current magic + MESH_VERSION.
+    // Cheap (an 8-byte header peek) and deliberately separate from LoadMeshBlob:
+    // after a version bump an existing blob whose source is UNCHANGED would
+    // otherwise fail to load forever, because MeshCache only re-bakes when the
+    // source is newer than the blob. Missing/unreadable counts as not current.
+    bool BlobIsCurrent(const std::filesystem::path& mesh_path);
 
     // Load a .mesh blob into GPU buffers; out_subsets receives each material's
     // index range + texture paths.

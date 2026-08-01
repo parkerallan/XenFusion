@@ -647,10 +647,13 @@ void AnimatorPreviewRenderer::RenderGpu(float /*dt*/)
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             m_device->SetSamplerState(5, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
-            m_device->SetSamplerState(6, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-            m_device->SetSamplerState(6, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-            m_device->SetSamplerState(6, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-            m_device->SetSamplerState(6, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+            for (DWORD s = 6; s <= 7; ++s)
+            {
+                m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+                m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+            }
             m_device->SetTexture(5, (IDirect3DBaseTexture9*)m_def_envcube);
 
             // Neutral single-directional lighting; no point/spot lights, no glow.
@@ -666,7 +669,9 @@ void AnimatorPreviewRenderer::RenderGpu(float /*dt*/)
             m_device->SetPixelShaderConstantF(2, ambient, 1);
             m_device->SetPixelShaderConstantF(5, bump, 1);
             m_device->SetPixelShaderConstantF(6, light_col, 1);
-            for (int c = 7; c <= 21; ++c)
+            // c22 (roughness max env mip) is zeroed with the rest: the preview
+            // binds the 1x1 black cube, which has no levels to blur into.
+            for (int c = 7; c <= 22; ++c)
                 m_device->SetPixelShaderConstantF(c, zero, 1);
             m_device->SetPixelShaderConstantF(15, mask, 1);
 
@@ -713,6 +718,7 @@ void AnimatorPreviewRenderer::RenderGpu(float /*dt*/)
                 m_device->SetTexture(3, (show_texture_ && s.emissive) ? s.emissive : m_def_black);
                 m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
                 m_device->SetTexture(6, s.clearcoat ? s.clearcoat : m_def_black);
+                m_device->SetTexture(7, s.roughness ? s.roughness : m_def_black);
                 m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                                mesh->vertexCount, s.indexStart, s.indexCount / 3);
             }

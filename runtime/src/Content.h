@@ -30,10 +30,11 @@ struct RtSubset
     IDirect3DTexture9* emissive; // NULL = no glow (black default at draw)
     IDirect3DTexture9* metallic; // NULL = dielectric (black default at draw)
     IDirect3DTexture9* clearcoat; // NULL = no lacquer (black default at draw)
+    IDirect3DTexture9* roughness; // NULL = glossy (black default at draw)
 
     RtSubset() : indexStart(0), indexCount(0), alpha(RtOpaque), normalHasHeight(false),
                  diffuse(NULL), normal(NULL), specular(NULL), emissive(NULL), metallic(NULL),
-                 clearcoat(NULL) {}
+                 clearcoat(NULL), roughness(NULL) {}
 };
 
 struct RtJoint

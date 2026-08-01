@@ -62,17 +62,18 @@ namespace spak
     const unsigned int kMaxFontGlyphs   = 256;
     const unsigned int kMaxFontKerning  = 65536;
 
-    // Static mesh payload (big-endian): a fixed 16-byte header, then one 36-byte record
+    // Static mesh payload (big-endian): a fixed 16-byte header, then one 40-byte record
     // per material subset, then vertexCount*44 bytes of native-endian vertices,
     // then indexCount*4 bytes of native-endian u32 indices. Each subset draws its
     // index range with its own textures (referenced by nameHash into TX2D
     // entries) and its own alphaKind.
     //   u32 magic 'MSH2' | vertexCount | indexCount | subsetCount
-    //   per subset: u32 indexStart | indexCount | alphaKind | diffuseHash | normalHash | specHash | emissiveHash | metallicHash | clearcoatHash
+    //   per subset: u32 indexStart | indexCount | alphaKind | diffuseHash | normalHash | specHash | emissiveHash | metallicHash | clearcoatHash | roughnessHash
     const unsigned int kMeshMagic       = 0x4D534832; // 'MSH2'
     const unsigned int kMeshHeaderBytes = 16;         // 4 * u32
-    const unsigned int kMeshSubsetBytes = 36;         // 9 * u32
+    const unsigned int kMeshSubsetBytes = 40;         // 10 * u32
     const unsigned int kMeshVertexBytes = 44;         // MeshVertex (pos/nrm/tan/uv)
+    const unsigned int kMeshTexSlots    = 7;          // diffuse..roughness, in record order
 
     // Skinned mesh payload extends the same layout with an 8-byte influence
     // stream and fixed-size skeleton records:
@@ -89,8 +90,9 @@ namespace spak
     const unsigned int kMaxSkinJoints       = 72;
 
     // alphaKind values (match RtAlphaKind: Opaque/Cutout/Blend). The low byte is
-    // the kind; the byte above carries per-subset flags (record stays 24 bytes —
-    // the xex and the pak always deploy together, so no magic bump).
+    // the kind; the byte above carries per-subset flags. The record length is
+    // kMeshSubsetBytes above — the xex and the pak always deploy together, so
+    // adding a texture slot needs no magic bump.
     const unsigned int kAlphaOpaque = 0;
     const unsigned int kAlphaCutout = 1;
     const unsigned int kAlphaBlend  = 2;

@@ -307,8 +307,8 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     { fprintf(stderr, "spakc: bad mesh magic %s\n", meshRel.c_str()); return false; }
 
     const unsigned int version = ReadU32LE(&blob[4]);
-    if (version != 8)
-    { fprintf(stderr, "spakc: mesh %s is format v%u (need v8) - open the project in the editor to re-bake it\n",
+    if (version != 9)
+    { fprintf(stderr, "spakc: mesh %s is format v%u (need v9) - open the project in the editor to re-bake it\n",
               meshRel.c_str(), version); return false; }
 
     const unsigned int vcount = ReadU32LE(&blob[8]);
@@ -326,9 +326,9 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     { fprintf(stderr, "spakc: mesh empty/truncated %s\n", meshRel.c_str()); return false; }
 
     // Material subset table follows the buffers: u32 count, then per subset
-    // u32 indexStart, u32 indexCount and 6 texture refs (u32 LE length + bytes).
+    // u32 indexStart, u32 indexCount and 7 texture refs (u32 LE length + bytes).
     size_t off = 28 + vbytes + ibytes;
-    struct SubsetIn { unsigned int start, count; std::string tex[6]; };
+    struct SubsetIn { unsigned int start, count; std::string tex[spak::kMeshTexSlots]; };
     std::vector<SubsetIn> subs;
     {
         if (off + 4 > blob.size())
@@ -343,7 +343,7 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
             { fprintf(stderr, "spakc: mesh subset truncated %s\n", meshRel.c_str()); return false; }
             si.start = ReadU32LE(&blob[off]); off += 4;
             si.count = ReadU32LE(&blob[off]); off += 4;
-            for (int s = 0; s < 6; ++s)
+            for (int s = 0; s < (int)spak::kMeshTexSlots; ++s)
             {
                 if (off + 4 > blob.size()) break;
                 unsigned int len = ReadU32LE(&blob[off]); off += 4;
@@ -388,28 +388,34 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     // runtime otherwise uses (which does no gamma decode on sample) — baking the
     // diffuse sRGB decodes it to linear on sample and shifts the whole scene
     // darker/more saturated. A gamma-correct pipeline is a separate future change.
-    // Diffuse (slot 0) + emissive (3) + metallic (4) + clearcoat (5) = DXT5;
-    // normal + specular (1,2) = uncompressed A8R8G8B8: DXT block-quantises a
-    // normal map's smooth gradients into a visible grid.
-    const bool  slotSRGB[6]   = { false, false, false, false, false, false };
-    const char* slotFormat[6] = { "D3DFMT_DXT5", "D3DFMT_A8R8G8B8", "D3DFMT_A8R8G8B8", "D3DFMT_DXT5", "D3DFMT_DXT5", "D3DFMT_DXT5" };
+    // Diffuse (slot 0) + emissive (3) + metallic (4) + clearcoat (5) +
+    // roughness (6) = DXT5; normal + specular (1,2) = uncompressed A8R8G8B8:
+    // DXT block-quantises a normal map's smooth gradients into a visible grid.
+    // Roughness takes DXT5 for the memory: the shader reads .r, i.e. the 5-bit
+    // endpoint channel, so a smooth roughness ramp quantises to ~32 steps —
+    // acceptable on authored (noisy) Substance output, and a 2048-square map
+    // costs 4 MB here instead of 16.
+    const bool  slotSRGB[spak::kMeshTexSlots]   = { false, false, false, false, false, false, false };
+    const char* slotFormat[spak::kMeshTexSlots] = { "D3DFMT_DXT5", "D3DFMT_A8R8G8B8", "D3DFMT_A8R8G8B8",
+                                                    "D3DFMT_DXT5", "D3DFMT_DXT5", "D3DFMT_DXT5", "D3DFMT_DXT5" };
 
     // Cook each subset's textures (deduped across subsets/meshes via `seen`) and
     // classify each subset's alpha from its own diffuse.
-    std::vector<unsigned int> subHash(subs.size() * 6, 0);
+    std::vector<unsigned int> subHash(subs.size() * spak::kMeshTexSlots, 0);
     std::vector<unsigned int> subAlpha(subs.size(), spak::kAlphaOpaque);
     unsigned int texTotal = 0;
     for (size_t i = 0; i < subs.size(); ++i)
     {
-        for (int s = 0; s < 6; ++s)
+        for (int s = 0; s < (int)spak::kMeshTexSlots; ++s)
         {
             if (subs[i].tex[s].empty()) continue;
             const std::string texAbs = AbsFrom(meshDir, subs[i].tex[s]);
             std::string key = texAbs;
             for (size_t c = 0; c < key.size(); ++c) key[c] = (char)tolower((unsigned char)key[c]);
             const unsigned int h = spak::NameHash(key.c_str());
-            subHash[i * 6 + s] = AddTexture(entries, seen, texAbs, subs[i].tex[s], h, slotSRGB[s], slotFormat[s]);
-            if (subHash[i * 6 + s] != 0) ++texTotal;
+            subHash[i * spak::kMeshTexSlots + s] =
+                AddTexture(entries, seen, texAbs, subs[i].tex[s], h, slotSRGB[s], slotFormat[s]);
+            if (subHash[i * spak::kMeshTexSlots + s] != 0) ++texTotal;
             if (s == 0)
                 subAlpha[i] = ClassifyAlpha(texAbs);
             if (s == 1 && NormalAlphaHasHeight(texAbs))
@@ -435,12 +441,8 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
         PushU32BE(e.payload, subs[i].start);
         PushU32BE(e.payload, subs[i].count);
         PushU32BE(e.payload, subAlpha[i]);
-        PushU32BE(e.payload, subHash[i * 6 + 0]);
-        PushU32BE(e.payload, subHash[i * 6 + 1]);
-        PushU32BE(e.payload, subHash[i * 6 + 2]);
-        PushU32BE(e.payload, subHash[i * 6 + 3]);
-        PushU32BE(e.payload, subHash[i * 6 + 4]);
-        PushU32BE(e.payload, subHash[i * 6 + 5]);
+        for (unsigned int s = 0; s < spak::kMeshTexSlots; ++s)
+            PushU32BE(e.payload, subHash[i * spak::kMeshTexSlots + s]);
     }
     PushSwappedWords(e.payload, &blob[28], vbytes);
     if (skinned)
