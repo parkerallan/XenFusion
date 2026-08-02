@@ -14,6 +14,8 @@
 #include "script/ScriptTypes.h"
 #include "input/InputState.h"
 #include "text/TextLayout.h"
+#include "gui/GuiContext.h"
+#include "gui/GuiHost.h"
 
 #include <d3d9.h>
 
@@ -44,7 +46,7 @@ struct SceneBoneColliderPose
 //
 // Rendering goes to a D3DPOOL_DEFAULT render-target texture, so OnDeviceLost()
 // releases it before a device Reset; RenderUi lazily recreates it.
-class SceneRenderer : public script::ScriptHost
+class SceneRenderer : public script::ScriptHost, public gui::HostAssets
 {
 public:
     // script::ScriptHost — input is stubbed until the input system lands; log
@@ -56,6 +58,15 @@ public:
     int   FindObject(const char* name);
     const char* ObjectName(int index);
     void  TextSetValue(int objectIndex, const char* value);
+
+    // gui::HostAssets — the GUI core's only per-target seam. Paths are project
+    // relative; the editor resolves them against the project root, loads
+    // textures through the shared mesh texture cache, and bakes font atlases
+    // live from the source TTF (the same PreviewFont the Text attribute uses).
+    int  AcquireTexture(const char* relPath);
+    bool TextureSize(int textureId, int& outWidth, int& outHeight);
+    const text::FontMetrics* AcquireFont(const char* relPath);
+    int  AcquireFontAtlas(const char* relPath);
     void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
     bool  VideoIsPlaying(int objectIndex);
     void  AudioSetPlaying(int objectIndex, bool play); // Lua audio.*
@@ -440,6 +451,21 @@ private:
 
     void RenderOverlay(float dt);
     VideoTex* EnsureVideoTex(const std::string& key, const vid::Frame& frame);
+
+    // --- Lua-scriptable GUI (the `gui` table; src/gui is shared with the 360) ---
+    // The tree lives for the Play session only, like the ScriptVM. Drawn by
+    // RenderGui straight after the overlay — i.e. AFTER the bloom combine, so a
+    // menu is always crisp and never glows.
+    void RenderGui();
+    gui::Context m_gui;
+    // Texture ids handed to the GUI core are indices into this vector, so they
+    // stay stable for the session even as the map behind them grows.
+    std::vector<IDirect3DTexture9*>   m_gui_textures;
+    std::map<std::string, int>        m_gui_texture_ids;
+    std::map<std::string, int>        m_gui_font_atlas_ids;
+    IDirect3DTexture9*                m_gui_white = nullptr; // 1x1, for solid quads
+    IDirect3DVertexShader9*           m_gui_vs = nullptr;
+    IDirect3DPixelShader9*            m_gui_ps = nullptr;
     // The item's stream key / play mode with any script override applied
     // (evaluated at draw time, after this frame's scripts ran).
     std::string VideoKeyFor(const VideoItem& item) const;

@@ -141,6 +141,28 @@ if (Test-Path $sceneFile) {
         }
     }
 }
+# Assets a Lua script names (gui.panel{ texture = "assets/ui/panel.png" }). The
+# scene scan above only sees attribute paths, so anything a script references
+# would be missing from the pak. The path written in the script IS the lookup
+# key at runtime, so cooking exactly those paths means a file works wherever the
+# developer put it — no folder convention, nothing to declare.
+#
+# A literal that doesn't resolve is warned about, never fatal: a script may hold
+# an asset-shaped string that isn't a path, and a path built at run time
+# ("icons/" .. n .. ".png") can't be seen here at all.
+Get-ChildItem $Project -Filter *.lua -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    $script = $_
+    foreach ($m in [regex]::Matches((Get-Content $script.FullName -Raw),
+                                    '["'']([^"'']+\.(?:png|jpg|jpeg|ttf|otf))["'']')) {
+        $rel = $m.Groups[1].Value.Replace('\', '/')
+        if (-not (Test-Path (Join-Path $Project $rel))) {
+            Write-Warning "$($script.Name): asset not found, not cooked - $rel"
+            continue
+        }
+        if ($rel -match '\.(ttf|otf)$') { $fonts += $rel } else { $images += $rel }
+    }
+}
+
 $meshes = @($meshes | Select-Object -Unique)
 $images = @($images | Select-Object -Unique)
 $videos = @($videos | Select-Object -Unique)

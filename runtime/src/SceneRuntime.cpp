@@ -318,10 +318,89 @@ bool SceneRuntime::VideoIsPlaying(int objectIndex)
     return false;
 }
 
+// --- gui::HostAssets ------------------------------------------------------
+// Ids are handed out once per path and never change; the POINTER behind an id
+// is resolved every frame, because the StreamCache serves a placeholder while
+// a load is in flight and can evict under LRU pressure.
+
+int SceneRuntime::AcquireTexture(const char* relPath)
+{
+    if (!relPath || !*relPath)
+        return -1;
+    const std::string key = relPath;
+    std::map<std::string, int>::const_iterator cached = m_gui_texture_ids.find(key);
+    if (cached != m_gui_texture_ids.end())
+        return cached->second;
+    GuiAsset asset;
+    asset.path = key;
+    asset.isFont = false;
+    const int id = (int)m_gui_assets.size();
+    m_gui_assets.push_back(asset);
+    m_gui_texture_ids[key] = id;
+    return id;
+}
+
+IDirect3DTexture9* SceneRuntime::GuiTexture(int textureId)
+{
+    if (textureId < 0 || textureId >= (int)m_gui_assets.size())
+        return NULL;
+    const GuiAsset& asset = m_gui_assets[textureId];
+    if (!asset.isFont)
+        return m_cache.GetTexture(asset.path);
+    IDirect3DTexture9* atlas = NULL;
+    m_cache.GetFont(asset.path, &atlas);
+    return atlas;
+}
+
+bool SceneRuntime::TextureSize(int textureId, int& outWidth, int& outHeight)
+{
+    IDirect3DTexture9* texture = GuiTexture(textureId);
+    D3DSURFACE_DESC desc;
+    if (!texture || FAILED(texture->GetLevelDesc(0, &desc)))
+        return false;
+    outWidth = (int)desc.Width;
+    outHeight = (int)desc.Height;
+    return true;
+}
+
+const text::FontMetrics* SceneRuntime::AcquireFont(const char* relPath)
+{
+    if (!relPath || !*relPath)
+        return NULL;
+    IDirect3DTexture9* atlas = NULL;
+    const text::CookedFont* font = m_cache.GetFont(relPath, &atlas);
+    // The atlas is half the answer: metrics without it would lay glyphs out
+    // against a texture that is not there yet.
+    if (!font || !atlas)
+        return NULL;
+    return &font->metrics;
+}
+
+int SceneRuntime::AcquireFontAtlas(const char* relPath)
+{
+    if (!relPath || !*relPath)
+        return -1;
+    IDirect3DTexture9* atlas = NULL;
+    if (!m_cache.GetFont(relPath, &atlas) || !atlas)
+        return -1;
+    const std::string key = relPath;
+    std::map<std::string, int>::const_iterator cached = m_gui_font_atlas_ids.find(key);
+    if (cached != m_gui_font_atlas_ids.end())
+        return cached->second;
+    GuiAsset asset;
+    asset.path = key;
+    asset.isFont = true;
+    const int id = (int)m_gui_assets.size();
+    m_gui_assets.push_back(asset);
+    m_gui_font_atlas_ids[key] = id;
+    return id;
+}
+
 // Load each object's .lua from the deployed content and run its on_start.
 void SceneRuntime::BuildScripts()
 {
-    m_script.Begin(&m_phys, this);
+    m_gui.Begin(this);
+    m_script.Begin(&m_phys, this, &m_gui);
     for (size_t i = 0; i < m_scene.objects.size(); ++i)
     {
         const RtObject& o = m_scene.objects[i];
@@ -520,6 +599,7 @@ void SceneRuntime::InitBloom(XboxRenderer& renderer)
     m_content.LoadBuiltin("beam", m_beam);
     m_content.LoadBuiltin("image", m_image_shader); // Image attribute overlay (optional)
     m_content.LoadBuiltin("text", m_text_shader);   // Text attribute overlay (optional)
+    m_content.LoadBuiltin("gui", m_gui_shader);     // Lua-scriptable GUI (optional)
     m_content.LoadBuiltin("video", m_video_shader); // Video attribute overlay (optional)
 }
 
@@ -762,6 +842,7 @@ void SceneRuntime::Shutdown()
     m_video_tex.clear();
     m_image_shader.Release();
     m_text_shader.Release();
+    m_gui_shader.Release();
     m_video_shader.Release();
     m_bloom_combine.Release();
     m_bloom_blur.Release();
@@ -1163,23 +1244,32 @@ void SceneRuntime::Render(float dt)
     // (the worker thread did the read + decompress off this thread).
     m_cache.Update(8);
 
+    // A menu freezes animation along with physics (gui.set_paused).
+    const float animDt = m_gui.Paused() ? 0.0f : dt;
     for (size_t index = 0; index < m_draw_items.size(); ++index)
     {
         DrawItem& item = m_draw_items[index];
         if (!item.animator.IsValid()) continue;
-        item.animator.Update(dt);
+        item.animator.Update(animDt);
     }
 
     // Poll the controller, then run scripts before the physics step so their
     // impulses/velocity/transforms are integrated this frame (no-op if none).
+    // The GUI reads the same snapshot first, turning it into focus/confirm
+    // events that ScriptVM::Update drains before any on_update runs.
     input::PollXInput(m_input);
+    m_gui.Update(dt, m_input);
     m_script.Update(dt);
 
     // Physics: step Bullet, then override the draw items whose objects are
     // simulated (world = Scale * pose). Same code path as the editor preview.
+    // gui.set_paused(true) freezes the step but still reads poses back, so
+    // simulated objects hold where they stopped instead of snapping to their
+    // authored transforms.
     if (!m_phys.Empty())
     {
-        m_phys.Step(dt);
+        if (!m_gui.Paused())
+            m_phys.Step(dt);
         m_phys.ReadPoses(m_phys_poses);
         for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
         {
@@ -1479,8 +1569,108 @@ void SceneRuntime::Render(float dt)
     // Drawn inside the tiled pass — a clip-space quad replays fine per band.
     RenderOverlay(dt);
 
+    // --- Lua-scriptable GUI (menus), last so it sits over the overlays ---
+    RenderGui();
+
     // --- Audio attribute sources (the console always plays) ---
     UpdateAudio(dt, view);
+}
+
+// Draw the GUI tree. Runs inside the tiling bracket, right after the overlay:
+// the geometry is clip-space, so replaying it per tile band is correct, and the
+// separate-alpha blend below drives the frame's ALPHA (the emissive glow mask
+// the post-resolve bloom reads) to zero underneath the menu — without it, a
+// glowing object behind a pause screen would bleed through it.
+void SceneRuntime::RenderGui()
+{
+    if (!m_device || !m_gui_shader.Valid())
+        return;
+    const gui::DrawList& list = m_gui.Emit();
+    if (list.Empty())
+        return;
+
+    m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+        D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    m_device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ZERO);
+    m_device->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+
+    const float halfTexel[4] = { 1.0f / 1280.0f, 1.0f / 720.0f, 0.0f, 0.0f };
+    m_device->SetVertexShader(m_gui_shader.vs);
+    m_device->SetPixelShader(m_gui_shader.ps);
+    m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+
+    struct QuadVtx { float x, y, z, u, v; };
+    std::vector<QuadVtx> vertices;
+
+    for (size_t b = 0; b < list.batches.size(); ++b)
+    {
+        const gui::Batch& batch = list.batches[b];
+        IDirect3DTexture9* texture = batch.textureId >= 0
+            ? GuiTexture(batch.textureId) : m_def_white;
+        // A textured/glyph batch with nothing resident is still streaming in —
+        // skip it rather than draw it wrong. A solid quad's sample is multiplied
+        // out by the shader's kind select, so it draws fine with nothing bound.
+        if (!texture && batch.kind != gui::QuadSolid)
+            continue;
+
+        // Kind select, matching gui.hlsl: Solid (0,0) Texture (0,1) Glyph (1,0).
+        float mode[4];
+        mode[0] = batch.kind == gui::QuadGlyph   ? 1.0f : 0.0f;
+        mode[1] = batch.kind == gui::QuadTexture ? 1.0f : 0.0f;
+        mode[2] = 0.0f;
+        mode[3] = 0.0f;
+
+        vertices.clear();
+        vertices.reserve((size_t)batch.count * 6);
+        for (int i = 0; i < batch.count; ++i)
+        {
+            const gui::Quad& q = list.quads[batch.first + i];
+            // 1280x720 reference space -> NDC, top-left origin. Same mapping the
+            // Image/Text overlays use, so a GUI and an authored overlay line up.
+            const float x0 = q.x0 / gui::kRefWidth * 2.0f - 1.0f;
+            const float x1 = q.x1 / gui::kRefWidth * 2.0f - 1.0f;
+            const float y0 = 1.0f - q.y0 / gui::kRefHeight * 2.0f;
+            const float y1 = 1.0f - q.y1 / gui::kRefHeight * 2.0f;
+            QuadVtx tri[6];
+            tri[0].x = x0; tri[0].y = y0; tri[0].z = 0.0f; tri[0].u = q.u0; tri[0].v = q.v0;
+            tri[1].x = x1; tri[1].y = y0; tri[1].z = 0.0f; tri[1].u = q.u1; tri[1].v = q.v0;
+            tri[2].x = x0; tri[2].y = y1; tri[2].z = 0.0f; tri[2].u = q.u0; tri[2].v = q.v1;
+            tri[3].x = x0; tri[3].y = y1; tri[3].z = 0.0f; tri[3].u = q.u0; tri[3].v = q.v1;
+            tri[4].x = x1; tri[4].y = y0; tri[4].z = 0.0f; tri[4].u = q.u1; tri[4].v = q.v0;
+            tri[5].x = x1; tri[5].y = y1; tri[5].z = 0.0f; tri[5].u = q.u1; tri[5].v = q.v1;
+            vertices.insert(vertices.end(), tri, tri + 6);
+        }
+        if (vertices.empty())
+            continue;
+
+        m_device->SetPixelShaderConstantF(0, batch.rgba, 1);
+        m_device->SetPixelShaderConstantF(1, mode, 1);
+        m_device->SetTexture(0, texture);
+        m_device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)batch.count * 2,
+                                  &vertices[0], sizeof(QuadVtx));
+    }
+
+    // Leave the states the overlay's own epilogue leaves them in.
+    m_device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    m_device->SetTexture(0, NULL);
 }
 
 // The Audio attribute reconciler: every playing attribute becomes a wanted

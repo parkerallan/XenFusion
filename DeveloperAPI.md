@@ -16,6 +16,7 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 8. [Animator](#8-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`
 9. [Utility](#9-utility) — `log`
 10. [Text](#10-text) — `text.set`
+11. [GUI](#11-gui) — `gui.panel`, `gui.label`, `gui.image`, `gui.button`, `gui.set_focus`, `gui.set_paused`, `gui.clear`
 
 ---
 
@@ -545,3 +546,183 @@ Unsupported or malformed characters render as `?`. Values are bounded to 4,096
 UTF-8 bytes and 2,048 rendered glyphs.
 
 ---
+
+## 11. GUI
+
+Retained mode GUI to build menus from lua scripts. `gui.panel`, `gui.label`, `gui.image` and `gui.button`
+each create a widget and return a **handle**; keep the handle to change or
+destroy the widget later. Widgets can nest, and a child is positioned relative
+to its parent.
+
+Positions and sizes are in pixels in a **1280×720** space, origin top-left.
+Menus work in the editor's **Play** preview and on the console. They are
+**transient** — stopping the preview destroys them, and nothing is written to
+the scene.
+
+| Function | Effect |
+|---|---|
+| `gui.panel{ … }` → widget | a background plate — a texture, or a flat colour when it has none |
+| `gui.label{ … }` → widget | a line of text, no background |
+| `gui.image{ … }` → widget | a texture |
+| `gui.button{ … }` → widget | a plate plus a caption; **focusable** by default |
+| `gui.set_focus(widget)` | move the highlight to a widget |
+| `gui.focus()` → widget | the focused widget, or `nil` |
+| `gui.set_paused(b)` | pause gameplay while the menu stays live |
+| `gui.is_paused()` → `boolean` | true while paused |
+| `gui.root()` → widget | the screen — the default parent |
+| `gui.clear()` | destroy every widget |
+
+Each constructor takes one options table. Omitted options keep their default, so
+`gui.label{ text = "Hi", font = F }` is valid.
+
+```lua
+local plate = gui.panel{ anchor = "center", w = 520, h = 380,
+                         color = { 0.05, 0.06, 0.09, 0.88 } }
+
+gui.label{ parent = plate, anchor = "top", y = 30, w = 520, h = 64,
+           text = "PAUSED", font = "assets/menu.otf", size = 52, align = "center" }
+```
+
+### Widget options
+
+| Option | Effect |
+|---|---|
+| `parent` | widget to nest inside (default: the screen) |
+| `anchor` | which point of the parent to attach to — see **Anchoring** |
+| `x`, `y` | offset from that anchor point |
+| `w`, `h` | size |
+| `color` | a label's text colour; every other widget's background |
+| `focus_color` | background while focused |
+| `text_color` · `focus_text_color` | caption colour on widgets that also have a background |
+| `texture` | project-relative `.png` / `.jpg` |
+| `slice` | 9-slice border in pixels — the border keeps its size, the middle stretches |
+| `text` · `font` · `size` | caption, project-relative `.ttf` / `.otf`, pixel size |
+| `align` · `valign` | `left` `center` `right` · `top` `middle` `bottom` |
+| `wrap` | wrap text at the widget's width |
+| `visible` · `enabled` · `focusable` | booleans; buttons are focusable unless you say otherwise |
+| `on_confirm` · `on_cancel` · `on_focus` | callbacks, called with the widget |
+
+On a button, `color` is the plate and `text_color` is the caption. Set both
+pairs — with only `color`/`focus_color`, a focused button's caption renders in
+the highlight colour and disappears.
+
+### Anchoring
+
+`anchor` names a point on the **parent**; the child's matching point is placed
+there, then offset by `x`/`y`. A child moves when its parent moves.
+
+| Anchor | Names |
+|---|---|
+| Top | `topleft` `top` `topright` |
+| Middle | `left` `center` `right` |
+| Bottom | `bottomleft` `bottom` `bottomright` |
+
+```lua
+gui.label{ anchor = "bottomright", x = -16, y = -16, w = 200, h = 40,
+           text = "v1.0", font = F, align = "right" }   -- inset from the corner
+```
+
+### Widget methods
+
+| Method | Effect |
+|---|---|
+| `:set_visible(b)` · `:set_enabled(b)` | hiding a widget hides its children too |
+| `:set_pos(x, y)` · `:set_size(w, h)` · `:set_anchor(name)` | placement |
+| `:set_color(r,g,b,a)` · `:set_focus_color(r,g,b,a)` | background / label colour |
+| `:set_text_color(r,g,b,a)` · `:set_focus_text_color(r,g,b,a)` | caption colour |
+| `:set_text(s)` · `:set_font(path)` · `:set_font_size(px)` | text |
+| `:set_texture(path)` · `:set_align(h, v)` · `:set_wrap(b)` | appearance |
+| `:set_focusable(b)` | make a non-button selectable, or a button not |
+| `:text()` → `string` · `:visible()` → `boolean` · `:alive()` → `boolean` | read back |
+| `:rect()` → `x, y, w, h` | where the widget ended up on screen |
+| `:destroy()` | destroy the widget **and its children** |
+
+Calls on a destroyed widget do nothing and `:alive()` reports `false`, so a
+handle kept across a menu being torn down is safe to use.
+
+### Navigation
+
+Menus are driven by the controller. The D-pad and left stick move the highlight
+to the nearest widget in that direction, **A** raises `on_confirm`, and **B**
+raises `on_cancel`. A held direction repeats. Hidden, disabled and non-focusable
+widgets are skipped, and the highlight stops at the edge of a menu rather than
+wrapping.
+
+Call `gui.set_focus` when a menu opens so the player sees a highlight straight
+away. In the editor these read a gamepad plus whatever you bound in the
+**Mapping** panel — a control with nothing bound never reports pressed. See
+[Input](#5-input).
+
+### Worked example: a pause menu
+
+```lua
+-- Attach as a Script attribute on any object. Opens on Play; LY moves the
+-- highlight, A confirms.
+local FONT = "assets/Typo_Round_Bold_Demo.otf"
+
+local menu = nil
+
+local function close_menu()
+    if menu then
+        menu:destroy()                     -- takes the labels and buttons with it
+        menu = nil
+    end
+    gui.set_paused(false)
+end
+
+local function open_menu()
+    if menu then return end
+
+    menu = gui.panel{
+        anchor = "center", w = 520, h = 380,
+        color = { 0.05, 0.06, 0.09, 0.88 },
+    }
+
+    gui.label{                             -- child of the plate, moves with it
+        parent = menu, anchor = "top", y = 30, w = 520, h = 64,
+        text = "PAUSED", font = FONT, size = 52, align = "center",
+        color = { 1.0, 0.55, 0.15, 1.0 },
+    }
+
+    local first = nil
+    local captions = { "Resume", "Restart", "Quit" }
+    for i = 1, #captions do
+        local button = gui.button{
+            parent = menu, anchor = "center",
+            y = -60 + (i - 1) * 74, w = 400, h = 58,   -- one anchor, vary y
+            text = captions[i], font = FONT, size = 30,
+            color            = { 0.16, 0.17, 0.22, 1.0 },
+            focus_color      = { 1.00, 0.55, 0.15, 1.0 },
+            text_color       = { 1.00, 1.00, 1.00, 1.0 },
+            focus_text_color = { 0.05, 0.05, 0.06, 1.0 },
+            on_confirm = function(self)
+                if self:text() == "Resume" then close_menu() end
+            end,
+            on_cancel = function() close_menu() end,
+        }
+        first = first or button
+    end
+
+    gui.set_focus(first)
+    gui.set_paused(true)
+end
+
+function on_start()
+    open_menu()
+end
+```
+
+To open it from a button instead of at startup, edge-detect the press —
+`input.button` reports a button as **held**, not as newly pressed:
+
+```lua
+local was_down = false
+
+function on_update(dt)
+    local down = input.button("Start")
+    if down and not was_down then
+        if menu then close_menu() else open_menu() end
+    end
+    was_down = down
+end
+```

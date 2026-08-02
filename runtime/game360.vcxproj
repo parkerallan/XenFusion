@@ -75,6 +75,7 @@
     <ClCompile Include="src\stb_impl.cpp" />
     <ClCompile Include="..\src\text\TextLayout.cpp" />
     <ClCompile Include="..\src\text\CookedFont.cpp" />
+    <ClCompile Include="..\src\gui\GuiContext.cpp" />
     <ClCompile Include="..\src\physics\PhysicsWorld.cpp" />
     <ClCompile Include="..\src\script\ScriptVM.cpp" />
     <ClCompile Include="..\src\video\VideoPlayer.cpp" />

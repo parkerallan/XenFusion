@@ -140,6 +140,7 @@ add_executable(XenFusion
     src/render/ShaderCompiler.cpp
     src/text/TextLayout.cpp
     src/text/CookedFont.cpp
+    src/gui/GuiContext.cpp
     src/video/VideoImport.cpp
     src/video/VideoPlayer.cpp
     src/video/AudioOut.cpp
@@ -242,6 +243,7 @@ add_custom_command(TARGET XenFusion POST_BUILD
         "${SHADER_SRC_DIR}/env_blur.hlsl"
         "${SHADER_SRC_DIR}/image.hlsl"
         "${SHADER_SRC_DIR}/text.hlsl"
+        "${SHADER_SRC_DIR}/gui.hlsl"
         "${SHADER_SRC_DIR}/video.hlsl"
         "$<TARGET_FILE_DIR:XenFusion>/shaders"
     VERBATIM

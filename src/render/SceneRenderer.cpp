@@ -557,6 +557,7 @@ void SceneRenderer::LoadStandardShader()
     reload("image", m_image_vs, m_image_ps); // Image attribute overlay (optional)
     reload("text", m_text_vs, m_text_ps); // Text attribute overlay (optional)
     reload("video", m_video_vs, m_video_ps); // Video attribute overlay (optional)
+    reload("gui", m_gui_vs, m_gui_ps); // Lua-scriptable GUI (optional)
     if (m_vs && (!m_bloom_bright_ps || !m_bloom_blur_ps || !m_bloom_combine_ps))
         applog::Warn("Bloom shaders not compiled — emissive glow off until 'Compile shaders'");
 }
@@ -598,6 +599,14 @@ void SceneRenderer::Shutdown()
     if (m_text_vs)    { m_text_vs->Release();    m_text_vs = nullptr; }
     if (m_video_ps)   { m_video_ps->Release();   m_video_ps = nullptr; }
     if (m_video_vs)   { m_video_vs->Release();   m_video_vs = nullptr; }
+    // GUI: the textures themselves are owned by m_image_textures / m_text_fonts
+    // above, so only the id tables and the solid-fill white are ours to drop.
+    m_gui_textures.clear();
+    m_gui_texture_ids.clear();
+    m_gui_font_atlas_ids.clear();
+    if (m_gui_white)  { m_gui_white->Release();  m_gui_white = nullptr; }
+    if (m_gui_ps)     { m_gui_ps->Release();     m_gui_ps = nullptr; }
+    if (m_gui_vs)     { m_gui_vs->Release();     m_gui_vs = nullptr; }
     if (m_cube_ib)    { m_cube_ib->Release();    m_cube_ib = nullptr; }
     if (m_cube_vb)    { m_cube_vb->Release();    m_cube_vb = nullptr; }
     if (m_quad_ib)    { m_quad_ib->Release();    m_quad_ib = nullptr; }
@@ -1679,8 +1688,17 @@ void SceneRenderer::RenderGpu(float dt)
     if (m_phys_on)
     {
         // Input was polled in RenderUi (controller + Mapping-panel keyboard/mouse).
+        // GUI first: it turns this frame's input into focus/confirm events, and
+        // ScriptVM::Update drains them before running any on_update.
+        m_gui.Update(dt, m_input);
         m_script.Update(dt); // scripts set impulses/velocity/transforms for this step
-        m_phys.Step(dt);
+        // gui.set_paused(true) freezes the simulation but NOT scripts or
+        // rendering, so the menu that raised it stays live. Poses are still
+        // read back: the draw items are rebuilt from the scene every frame, so
+        // skipping the readback would snap simulated objects to their authored
+        // transforms instead of holding them where they stopped.
+        if (!m_gui.Paused())
+            m_phys.Step(dt);
         m_phys.ReadPoses(m_phys_poses);
         for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
         {
@@ -1705,7 +1723,7 @@ void SceneRenderer::RenderGpu(float dt)
                 m_script.FireTrigger(events[ei].triggerObjectIndex, events[ei].otherObjectIndex);
     }
 
-    UpdateAnimations(dt);
+    UpdateAnimations(m_gui.Paused() ? 0.0f : dt);
 
     // Redirect rendering to the offscreen target, remembering the back buffer.
     IDirect3DSurface9* prevRt    = nullptr;
@@ -2132,6 +2150,7 @@ void SceneRenderer::RenderGpu(float dt)
     // Image/video overlays, composited on top of the finished frame. The video
     // clock only advances in the Play preview; edit mode holds the first frame.
     RenderOverlay(m_phys_on ? dt : 0.0f);
+    RenderGui();
 
     // Audio attribute sources — audible only while the Play preview runs.
     UpdateAudio(dt);
@@ -2897,6 +2916,189 @@ void SceneRenderer::RenderOverlay(float dt)
     m_device->EndScene();
 }
 
+// --- gui::HostAssets ------------------------------------------------------
+// The GUI core is entirely shared code; these four functions are the only part
+// of it that knows about the editor. Paths arrive project-relative (that is
+// what a menu script writes and what the console cook records), so they are
+// resolved against the project root here and nowhere else.
+
+int SceneRenderer::AcquireTexture(const char* relPath)
+{
+    if (!relPath || !*relPath || m_project_root.empty())
+        return -1;
+    const std::string key = relPath;
+    const auto cached = m_gui_texture_ids.find(key);
+    if (cached != m_gui_texture_ids.end())
+        return cached->second;
+
+    const std::string abs = (m_project_root / relPath).string();
+    auto found = m_image_textures.find(abs);
+    if (found == m_image_textures.end())
+        found = m_image_textures.emplace(abs,
+            mesh::LoadTexture(m_device, abs, nullptr, nullptr)).first;
+    if (!found->second)
+    {
+        // Remember the failure as "no id" so a bad path costs one load attempt,
+        // not one per frame.
+        m_gui_texture_ids[key] = -1;
+        return -1;
+    }
+    const int id = (int)m_gui_textures.size();
+    m_gui_textures.push_back(found->second);
+    m_gui_texture_ids[key] = id;
+    return id;
+}
+
+bool SceneRenderer::TextureSize(int textureId, int& outWidth, int& outHeight)
+{
+    if (textureId < 0 || textureId >= (int)m_gui_textures.size())
+        return false;
+    IDirect3DTexture9* texture = m_gui_textures[textureId];
+    D3DSURFACE_DESC desc = {};
+    if (!texture || FAILED(texture->GetLevelDesc(0, &desc)))
+        return false;
+    outWidth = (int)desc.Width;
+    outHeight = (int)desc.Height;
+    return true;
+}
+
+const text::FontMetrics* SceneRenderer::AcquireFont(const char* relPath)
+{
+    if (!relPath || !*relPath || m_project_root.empty())
+        return nullptr;
+    PreviewFont* font = EnsurePreviewFont((m_project_root / relPath).string());
+    return font ? &font->metrics : nullptr;
+}
+
+int SceneRenderer::AcquireFontAtlas(const char* relPath)
+{
+    if (!relPath || !*relPath || m_project_root.empty())
+        return -1;
+    const std::string key = relPath;
+    const auto cached = m_gui_font_atlas_ids.find(key);
+    if (cached != m_gui_font_atlas_ids.end())
+        return cached->second;
+
+    PreviewFont* font = EnsurePreviewFont((m_project_root / relPath).string());
+    if (!font || !font->atlas)
+        return -1; // not cached: EnsurePreviewFont already guards its own retries
+    const int id = (int)m_gui_textures.size();
+    m_gui_textures.push_back(font->atlas);
+    m_gui_font_atlas_ids[key] = id;
+    return id;
+}
+
+// Draw the GUI tree. Called straight after RenderOverlay — that is, after the
+// bloom combine — so menus are never glowed and never tonemapped. The device
+// state block mirrors the overlay's proven one; the only difference is that a
+// whole batch of quads goes out in one DrawPrimitiveUP.
+void SceneRenderer::RenderGui()
+{
+    if (!m_device || !m_rtSurface || !m_gui_vs || !m_gui_ps)
+        return;
+    const gui::DrawList& list = m_gui.Emit();
+    if (list.Empty())
+        return;
+
+    // 1x1 white for solid quads: the shader always samples, so give it
+    // something defined. MANAGED, so it rides out a device reset like the
+    // overlay's textures.
+    if (!m_gui_white)
+    {
+        if (SUCCEEDED(m_device->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8,
+                                              D3DPOOL_MANAGED, &m_gui_white, nullptr)))
+        {
+            D3DLOCKED_RECT locked = {};
+            if (SUCCEEDED(m_gui_white->LockRect(0, &locked, nullptr, 0)))
+            {
+                *(DWORD*)locked.pBits = 0xFFFFFFFF;
+                m_gui_white->UnlockRect(0);
+            }
+        }
+    }
+
+    if (FAILED(m_device->BeginScene()))
+        return;
+
+    m_device->SetRenderTarget(0, m_rtSurface);
+    m_device->SetDepthStencilSurface(nullptr);
+    D3DVIEWPORT9 vp = { 0, 0, (DWORD)m_width, (DWORD)m_height, 0.0f, 1.0f };
+    m_device->SetViewport(&vp);
+
+    m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+    m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    // Preserve the target's alpha — ImGui samples it (bloom left it opaque).
+    m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+    m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+
+    const float halfTexel[4] = { 1.0f / (float)m_width, 1.0f / (float)m_height, 0.0f, 0.0f };
+    m_device->SetVertexShader(m_gui_vs);
+    m_device->SetPixelShader(m_gui_ps);
+    m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+
+    struct QuadVtx { float x, y, z, u, v; };
+    std::vector<QuadVtx> vertices;
+
+    for (const gui::Batch& batch : list.batches)
+    {
+        IDirect3DTexture9* texture = m_gui_white;
+        if (batch.textureId >= 0 && batch.textureId < (int)m_gui_textures.size())
+            texture = m_gui_textures[batch.textureId];
+        // A solid quad's sample is multiplied out by the shader's kind select,
+        // so it draws correctly with nothing bound. Only textured/glyph batches
+        // actually need one — skipping solids here would make a whole menu
+        // invisible if the 1x1 white ever failed to allocate.
+        if (!texture && batch.kind != gui::QuadSolid)
+            continue;
+
+        // Kind select, matching gui.hlsl: Solid (0,0) Texture (0,1) Glyph (1,0).
+        const float mode[4] = {
+            batch.kind == gui::QuadGlyph   ? 1.0f : 0.0f,
+            batch.kind == gui::QuadTexture ? 1.0f : 0.0f, 0.0f, 0.0f };
+
+        vertices.clear();
+        vertices.reserve((size_t)batch.count * 6);
+        for (int i = 0; i < batch.count; ++i)
+        {
+            const gui::Quad& q = list.quads[batch.first + i];
+            // 1280x720 reference space -> NDC, top-left origin. Same mapping as
+            // the Image/Text overlays, so a GUI and an authored overlay line up.
+            const float x0 = q.x0 / gui::kRefWidth * 2.0f - 1.0f;
+            const float x1 = q.x1 / gui::kRefWidth * 2.0f - 1.0f;
+            const float y0 = 1.0f - q.y0 / gui::kRefHeight * 2.0f;
+            const float y1 = 1.0f - q.y1 / gui::kRefHeight * 2.0f;
+            const QuadVtx tri[6] = {
+                { x0, y0, 0.0f, q.u0, q.v0 }, { x1, y0, 0.0f, q.u1, q.v0 }, { x0, y1, 0.0f, q.u0, q.v1 },
+                { x0, y1, 0.0f, q.u0, q.v1 }, { x1, y0, 0.0f, q.u1, q.v0 }, { x1, y1, 0.0f, q.u1, q.v1 },
+            };
+            vertices.insert(vertices.end(), tri, tri + 6);
+        }
+        if (vertices.empty())
+            continue;
+
+        m_device->SetPixelShaderConstantF(0, batch.rgba, 1);
+        m_device->SetPixelShaderConstantF(1, mode, 1);
+        m_device->SetTexture(0, texture);
+        m_device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)batch.count * 2,
+                                  &vertices[0], sizeof(QuadVtx));
+    }
+
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetTexture(0, nullptr);
+    m_device->EndScene();
+}
+
 // Draw one standalone shader: pick geometry, build its transform + uniforms,
 // set its parsed render states (raw values), and draw. The whole "how a shader
 // draws" story is here in one place.
@@ -3114,8 +3316,10 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
     for (std::size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
     for (std::size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
 
-    // Lua scripts: load each object's .lua and run its on_start.
-    m_script.Begin(&m_phys, this);
+    // Lua scripts: load each object's .lua and run its on_start. The GUI tree
+    // lives for exactly the Play session, so it starts fresh alongside the VM.
+    m_gui.Begin(this);
+    m_script.Begin(&m_phys, this, &m_gui);
     int scriptCount = 0;
     for (int i = 0; i < (int)scene.objects.size(); ++i)
     {
@@ -3146,6 +3350,7 @@ void SceneRenderer::StopPhysics()
     m_audio_overrides.clear();
     m_text_overrides.clear();
     m_script.Clear();
+    m_gui.Clear();
     m_phys.Clear();
     m_phys_poses.clear();
     m_phys_on = false;

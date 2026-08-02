@@ -11,10 +11,14 @@
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
 #include "input/InputState.h"
+#include "gui/GuiContext.h"
+#include "gui/GuiHost.h"
 
 #include <xtl.h>
 
 #include <map>
+#include <string>
+#include <vector>
 
 // The stripped-down runtime renderer: the console analogue of the editor's
 // SceneRenderer, minus everything editor-only. There is no grid, no gizmo, no
@@ -22,10 +26,20 @@
 // and custom-shader objects drawn from a fixed camera, straight to the back
 // buffer. It reuses the editor's binary formats (.mesh / .scene) and material
 // (standard.hlsl), so a scene authored in the editor renders the same here.
-class SceneRuntime : public script::ScriptHost
+class SceneRuntime : public script::ScriptHost, public gui::HostAssets
 {
 public:
     SceneRuntime();
+
+    // gui::HostAssets — the GUI core's only per-target seam. Textures and font
+    // atlases come out of game.spak through the ASYNC StreamCache, so ids map
+    // to PATHS and are resolved per frame: a menu asset can arrive a few frames
+    // late (or be evicted), and caching the pointer would freeze the
+    // placeholder in place forever.
+    int  AcquireTexture(const char* relPath);
+    bool TextureSize(int textureId, int& outWidth, int& outHeight);
+    const text::FontMetrics* AcquireFont(const char* relPath);
+    int  AcquireFontAtlas(const char* relPath);
 
     // script::ScriptHost — input is stubbed until the input system lands; log
     // goes to OutputDebugString; find resolves a scene object name to its index.
@@ -288,6 +302,27 @@ private:
 
     void        RenderOverlay(float dt);
     RtVideoTex* EnsureVideoTex(const std::string& key, const vid::Frame& frame);
+
+    // --- Lua-scriptable GUI (the `gui` table; ../src/gui is shared) ---
+    // Drawn straight after the overlay, INSIDE the tiling bracket: a clip-space
+    // quad replays fine per band, and the same separate-alpha blend the overlay
+    // uses zeroes the glow mask underneath so bloom can never halo through a
+    // menu.
+    void RenderGui();
+    // Texture ids are indices into this table. Fonts and plain textures share
+    // the id space; `isFont` picks which cache lookup resolves it.
+    struct GuiAsset
+    {
+        std::string path;
+        bool        isFont;
+        GuiAsset() : isFont(false) {}
+    };
+    IDirect3DTexture9* GuiTexture(int textureId);
+    std::vector<GuiAsset>      m_gui_assets;
+    std::map<std::string, int> m_gui_texture_ids;
+    std::map<std::string, int> m_gui_font_atlas_ids;
+    gui::Context               m_gui;
+    RtShader                   m_gui_shader;
     // The item's stream key / play mode with any script override applied
     // (evaluated at draw time, after this frame's scripts ran).
     std::string VideoKeyFor(const VideoItem& item) const;

@@ -13,6 +13,7 @@
 // the ScriptHost.
 
 namespace phys   { class PhysicsWorld; }
+namespace gui    { class Context; }
 namespace script { struct ScriptHost; }
 
 namespace script
@@ -24,7 +25,11 @@ namespace script
         ~ScriptVM();
 
         // Start a fresh VM bound to a physics world + host. Clears any prior run.
-        void Begin(phys::PhysicsWorld* phys, ScriptHost* host);
+        // `guiContext` may be null on a host without a GUI backend — the gui.*
+        // table is then absent and scripts that use it error loudly rather than
+        // silently doing nothing.
+        void Begin(phys::PhysicsWorld* phys, ScriptHost* host,
+                   gui::Context* guiContext = 0);
 
         // Compile a script for an object into its own environment. `name` is only
         // for error messages. Silently logs (via host) and skips on a parse error.
