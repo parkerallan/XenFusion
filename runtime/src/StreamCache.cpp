@@ -3,26 +3,8 @@
 
 #include <stdio.h>
 
-namespace
-{
-    IDirect3DTexture9* MakeMagenta2x2(IDirect3DDevice9* dev)
-    {
-        IDirect3DTexture9* t = NULL;
-        if (FAILED(dev->CreateTexture(2, 2, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &t, NULL)))
-            return NULL;
-        D3DLOCKED_RECT r;
-        if (SUCCEEDED(t->LockRect(0, &r, NULL, 0)))
-        {
-            D3DCOLOR* px = (D3DCOLOR*)r.pBits;
-            for (int i = 0; i < 4; ++i) px[i] = D3DCOLOR_ARGB(255, 255, 0, 255);
-            t->UnlockRect(0);
-        }
-        return t;
-    }
-}
-
 StreamCache::StreamCache()
-    : m_device(NULL), m_pak(NULL), m_placeholder(NULL),
+    : m_device(NULL), m_pak(NULL),
       m_thread(NULL), m_wake(NULL), m_running(0), m_inited(false),
     m_frame(0), m_budgetBytes(0), m_residentBytes(0),
     m_rangeBudgetBytes(8u * 1024u * 1024u), m_rangeResidentBytes(0)
@@ -60,16 +42,23 @@ void StreamCache::WorkerLoop()
             if (!m_running)
                 break;
 
-            // Pop the lowest-diskOffset pending request (march the DVD head forward).
+            // Pop the lowest-diskOffset pending request (march the DVD head forward),
+            // but never let a full-resolution TXHI jump ahead of a blurry TXLO: disk
+            // position alone would let one texture sharpen while another is still
+            // showing nothing at all.
             Request r; bool have = false;
             EnterCriticalSection(&m_reqLock);
             if (!m_requests.empty())
             {
                 size_t best = 0;
                 for (size_t i = 1; i < m_requests.size(); ++i)
+                {
+                    if (m_requests[i].hi != m_requests[best].hi)
+                    { if (!m_requests[i].hi) best = i; continue; }
                     if (m_requests[i].entry->diskOffset + m_requests[i].offset <
                         m_requests[best].entry->diskOffset + m_requests[best].offset)
                         best = i;
+                }
                 r = m_requests[best];
                 m_requests[best] = m_requests.back();
                 m_requests.pop_back();
@@ -113,6 +102,7 @@ void StreamCache::WorkerLoop()
             m_completions.back().bytes = r.bytes;
             m_completions.back().ok   = ok;
             m_completions.back().range = r.range;
+            m_completions.back().hi    = r.hi;
             m_completions.back().payload.swap(blob);
             LeaveCriticalSection(&m_compLock);
         }
@@ -130,7 +120,6 @@ void StreamCache::Init(IDirect3DDevice9* device, StreamPak* pak, unsigned int bu
     m_residentBytes = 0;
     m_rangeResidentBytes = 0;
     m_frame = 0;
-    m_placeholder = MakeMagenta2x2(device);
 
     InitializeCriticalSection(&m_reqLock);
     InitializeCriticalSection(&m_compLock);
@@ -176,7 +165,6 @@ void StreamCache::Shutdown()
     m_fonts.clear();
     m_ranges.clear();
 
-    if (m_placeholder) { m_placeholder->Release(); m_placeholder = NULL; }
     m_requests.clear();
     m_completions.clear();
     m_residentBytes = 0;
@@ -188,10 +176,11 @@ void StreamCache::Shutdown()
 // ---------------------------------------------------------------------------
 // Requests + render-thread completion drain
 // ---------------------------------------------------------------------------
-void StreamCache::Enqueue(unsigned int hash, const SpakEntry* entry)
+void StreamCache::Enqueue(unsigned int hash, const SpakEntry* entry, bool hi)
 {
     EnterCriticalSection(&m_reqLock);
     Request r; r.hash = hash; r.entry = entry; r.offset = r.bytes = 0; r.range = false;
+    r.hi = hi;
     m_requests.push_back(r);
     LeaveCriticalSection(&m_reqLock);
     if (m_wake) SetEvent(m_wake);
@@ -206,6 +195,7 @@ void StreamCache::EnqueueRange(const RangeKey& key, const SpakEntry* entry)
     request.bytes = key.bytes;
     request.entry = entry;
     request.range = true;
+    request.hi = false;
     m_requests.push_back(request);
     LeaveCriticalSection(&m_reqLock);
     if (m_wake) SetEvent(m_wake);
@@ -287,6 +277,7 @@ void StreamCache::Update(unsigned int budget)
             c.bytes = m_completions.back().bytes;
             c.ok   = m_completions.back().ok;
             c.range = m_completions.back().range;
+            c.hi   = m_completions.back().hi;
             c.payload.swap(m_completions.back().payload);
             m_completions.pop_back();
             have = true;
@@ -334,17 +325,47 @@ void StreamCache::Update(unsigned int budget)
         std::map<unsigned int, CacheTex>::iterator tit = m_textures.find(c.hash);
         if (tit != m_textures.end())
         {
-            if (c.ok)
-                m_pak->RegisterTextureFromBlob(c.payload.empty() ? NULL : &c.payload[0],
-                                               (unsigned int)c.payload.size(), tit->second.tex);
-            if (c.ok && tit->second.tex.tex)
+            CacheTex& ct = tit->second;
+            const BYTE* bytes = c.payload.empty() ? NULL : &c.payload[0];
+            const unsigned int size = (unsigned int)c.payload.size();
+
+            if (c.hi)
             {
-                tit->second.state   = StResident;
-                tit->second.bytes   = tit->second.entry ? (tit->second.entry->sysMemSize + tit->second.entry->vidMemSize) : 0;
-                tit->second.lastUse = m_frame;
-                m_residentBytes    += tit->second.bytes;
+                // Full-resolution half. Only meaningful if the blurry half is still
+                // the one we registered — an eviction + re-request in between leaves
+                // this completion stale, and ApplyTextureHi rejects it harmlessly.
+                if (c.ok && ct.state == StLo &&
+                    m_pak->ApplyTextureHi(m_device, bytes, size, ct.tex))
+                    ct.state = StResident;
+                else if (ct.state == StLo)
+                    ct.state = StResident; // stop waiting; it stays blurry but usable
+                ct.lastUse = m_frame;
+                continue;
             }
-            else tit->second.state = StMissing;
+
+            if (c.ok)
+            {
+                if (ct.entry && ct.entry->type == spak::kTypeTexLo)
+                    m_pak->RegisterTextureLo(bytes, size, ct.tex);
+                else
+                    m_pak->RegisterTextureFromBlob(bytes, size, ct.tex);
+            }
+            if (c.ok && ct.tex.tex)
+            {
+                // The vidmem allocation is full-size from the first chunk, so the
+                // budget is charged once here and never again when the rest lands.
+                ct.bytes   = ct.entry ? (ct.entry->sysMemSize + ct.entry->vidMemSize) : 0;
+                ct.lastUse = m_frame;
+                m_residentBytes += ct.bytes;
+
+                if (ct.hiEntry)
+                {
+                    ct.state = StLo;                       // drawable, blurry
+                    Enqueue(c.hash, ct.hiEntry, /*hi=*/true);
+                }
+                else ct.state = StResident;
+            }
+            else ct.state = StMissing;
             continue;
         }
         std::map<unsigned int, CacheFont>::iterator fit = m_fonts.find(c.hash);
@@ -585,14 +606,22 @@ IDirect3DTexture9* StreamCache::GetTextureByHash(unsigned int hash)
         CacheTex ct;
         const SpakEntry* e = m_pak ? m_pak->Find(hash) : NULL;
         ct.entry = e;
-        if (e && e->type == spak::kTypeTex2D) { ct.state = StLoading; m_textures[hash] = ct; Enqueue(hash, e); }
-        else                                  { ct.state = StMissing; m_textures[hash] = ct; }
+        if (e && (e->type == spak::kTypeTex2D || e->type == spak::kTypeTexLo))
+        {
+            // Progressively-cooked textures carry a TXHI companion keyed off their
+            // own hash; resolve it now so the drain can chain straight into it.
+            if (e->type == spak::kTypeTexLo && m_pak)
+                ct.hiEntry = m_pak->Find(spak::TexHiHash(hash));
+            ct.state = StLoading; m_textures[hash] = ct; Enqueue(hash, e);
+        }
+        else { ct.state = StMissing; m_textures[hash] = ct; }
         it = m_textures.find(hash);
     }
     CacheTex& ct = it->second;
-    if (ct.state == StResident) { ct.lastUse = m_frame; return ct.tex.tex; } // touch for LRU
-    if (ct.state == StMissing)  return NULL;         // absent -> default at draw
-    return m_placeholder;                            // loading -> magenta
+    // StLo and StResident are both drawable and both the SAME texture object — the
+    // sharpen happened in place, so nothing here has to swap a pointer.
+    if (ct.state == StLo || ct.state == StResident) { ct.lastUse = m_frame; return ct.tex.tex; }
+    return NULL; // absent, or nothing drawable yet -> caller's 1x1 default
 }
 
 IDirect3DTexture9* StreamCache::GetTexture(const std::string& relPath)
@@ -625,8 +654,11 @@ const text::CookedFont* StreamCache::GetFont(const std::string& relPath,
     if (cached.state != StResident)
         return NULL;
     cached.lastUse = m_frame;
+    // Atlases are cooked unsplit, so GetTextureByHash returns NULL until the real
+    // atlas is fully resident — text still declines to draw rather than showing
+    // glyphs sampled from partial SDF data.
     IDirect3DTexture9* atlas = GetTextureByHash(cached.font.atlasHash);
-    if (!atlas || atlas == m_placeholder)
+    if (!atlas)
         return NULL;
     if (outAtlas) *outAtlas = atlas;
     return &cached.font;

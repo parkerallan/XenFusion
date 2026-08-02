@@ -35,8 +35,18 @@ struct StreamTexture
     IDirect3DTexture9* tex;
     BYTE*              sysMem; // new[]-allocated resource headers
     void*              vidMem; // XPhysicalAlloc'd tiled data (write-combined)
+    unsigned int       vidBytes; // full allocation size (may exceed what's filled)
 
-    StreamTexture() : tex(NULL), sysMem(NULL), vidMem(NULL) {}
+    // Progressive load: while only the small mips are present the header's mip
+    // range is pinned to the split level, so the GPU cannot fetch the unwritten
+    // region. These hold the header's own values so the clamp can be lifted
+    // exactly, rather than guessed at, once the rest arrives.
+    unsigned char baseMinMip;
+    unsigned char baseMaxMip;
+    unsigned char baseMipFilter;
+
+    StreamTexture() : tex(NULL), sysMem(NULL), vidMem(NULL), vidBytes(0),
+                      baseMinMip(0), baseMaxMip(0), baseMipFilter(0) {}
     void Release();
 };
 
@@ -77,6 +87,19 @@ public:
     // texture via pointer fixup. No I/O — safe to call on the render thread with a
     // blob the async worker produced. Returns false on a malformed blob.
     bool RegisterTextureFromBlob(const BYTE* xpr, unsigned int size, StreamTexture& out);
+
+    // Register a 'TXLO' payload: the same pointer fixup, but the vidmem allocation
+    // is sized for the WHOLE texture while only the small-mip bytes are written,
+    // and the header's mip range is pinned to the split level so the GPU cannot
+    // fetch the unwritten region. The texture is immediately drawable — blurry.
+    bool RegisterTextureLo(const BYTE* payload, unsigned int size, StreamTexture& out);
+
+    // Apply the matching 'TXHI' payload into the SAME allocation and lift the mip
+    // clamp. After this the texture is bit-identical to an unsplit TX2D load. The
+    // bytes written are levels the clamp made unfetchable, so this is safe against
+    // an in-flight frame without any fencing.
+    bool ApplyTextureHi(IDirect3DDevice9* device, const BYTE* payload,
+                        unsigned int size, StreamTexture& tex);
 
     // Synchronous texture load: ReadBlob + RegisterTextureFromBlob. Only TX2D
     // entries are valid. Returns false on failure.

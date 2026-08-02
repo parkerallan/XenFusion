@@ -56,7 +56,7 @@ All multi-byte fields **big-endian** (baked on the PC cooker; the console reads 
 Header:  magic 'SPAK' | version | entryCount | sectorSize(2048) | tocOffset
 TOC[entryCount], sorted by nameHash (binary search), fixed-size entries:
     nameHash (FNV-1a of the asset's relative path)
-    type     (TEX2D | VBUF | IBUF | BUNDLE)
+    type     (TX2D | TXLO | TXHI | MESH | VIDE | AUDI | ANIM | FONT)
     flags    (bit0 = compressed; bits1-3 = codec id: 0 NONE / 1 LZX / 2 fast-reserved)
     diskOffset (sector-aligned) | compressedSize
     sysMemSize (resource headers) | vidMemSize (GPU data)
@@ -64,6 +64,14 @@ Data: per entry, an XPR2-style chunk {sysmem header block + vidmem data block},
       compressed as a unit, sector-aligned. Entries are emitted in **load-sequence
       order** (not name order) so streaming reads march forward across the disc.
 ```
+
+**Disk order is decoupled from TOC order.** The TOC stays sorted by `nameHash` for
+binary search, but `WriteSpak` assigns disk offsets in *group* order: every `TXLO`
+first, then meshes/fonts/unsplit textures/media, then every `TXHI`. So the pass
+that makes the whole scene visible (blurry) is one short forward march at the head
+of the file, and the full-resolution data — the bulk — is read afterwards. (This
+was always the stated contract above; until the progressive-mip work it was not
+actually done, and disk order simply followed hash order.)
 
 **Codec is pluggable, not hardcoded.** The codec lives in `flags` so the reader
 dispatches per entry and we can swap without a re-cook. Phase 1 ships **LZX only**
@@ -99,8 +107,10 @@ no layer change ever falls mid-stream.
   `D3DTexture*` / `D3DVertexBuffer*`. D3D header touches stay on the render thread.
 - **StreamCache (residency)** — ref-counted handles with a memory budget (e.g. 128 MB
   of 512). `Request(handle, priority)`: resident → bump refcount + lastUseFrame; else
-  enqueue + return a placeholder (2×2 magenta / empty mesh) until resident. Over budget
-  → LRU-evict unreferenced resident handles (`XPhysicalFree` + free sysmem).
+  enqueue. A not-yet-drawable mesh is skipped for the frame; a texture returns NULL and
+  the caller's 1×1 default stands in until its small mips land (see *Progressive mip
+  streaming* below). Over budget → LRU-evict unreferenced resident handles
+  (`XPhysicalFree` + free sysmem).
 - **Triggers** — lazy + frustum-culled: each frame `SceneRuntime` builds the world-space
   view frustum (Gribb-Hartmann from `view*proj`) and only requests objects whose bounding
   sphere is visible; first touch enqueues an async load. Culled objects stop being touched,
@@ -119,25 +129,70 @@ writes the `.spak`. It **self-verifies** by decompressing its own payload and
 re-checking the XPR2 magic. Links only `xcompress.lib`; no tiling code of its own.
 `cook.ps1` builds it and cooks one texture into a deploy folder.
 
-Static `Image` overlay attributes use this same `TX2D` path. PNG/JPG are source
-formats only: `spakc --image` inspects alpha with stb_image, selects DXT1 for
-opaque sources or DXT5 when alpha is present, and hashes the scene-relative
-`imagePath` as the runtime key. `StreamCache` reads, registers, touches, and
-LRU-evicts the complete XPR2 texture asynchronously. This is whole-texture
-streaming, not progressive mip streaming; animated GIF/WebP decoding is outside
-the current console format.
+Static `Image` overlay attributes use this same path. PNG/JPG are source formats
+only: `spakc --image` inspects alpha with stb_image, selects DXT1 for opaque
+sources or DXT5 when alpha is present, and hashes the scene-relative `imagePath`
+as the runtime key. `StreamCache` reads, registers, touches, and LRU-evicts
+textures asynchronously. Animated GIF/WebP decoding is outside the current
+console format.
 
-**Later: custom tiling (deferred swap behind the same format).** Replace the
-Bundler call with `d3dx9` + `xgraphics` directly, so there's no external tool and
-we can cook meshes the same way:
-- **textures**: `D3DXCreateTextureFromFile` → DXT1/5 + full mip chain →
-  `XGTileTextureLevel` into Xenos tiled layout → build `D3DTexture` header → XPR2 chunk.
-- **meshes**: M360 blob → native big-endian VB/IB + declaration → headers → XPR2 chunk.
-- compress each chunk with the entry's codec (LZX via `XMemCompress` in phase 1),
-  **pad the compressed buffer with 16 trailing zero bytes** (XMemDecompress overrun),
-  keep sector alignment; write big-endian TOC + data in **load-sequence order**.
-Wired into `deploy.ps1`, which places `game.spak` on a single outer-edge layer of the
-ISO; the game then ships **one `game.spak`** instead of loose assets.
+## Progressive mip streaming
+
+Large textures are cooked as a **pair** of entries so they can be drawn from their
+small mips while the full-resolution data is still in flight — blurry, then sharp.
+This replaced a 2×2 magenta placeholder.
+
+A 360 `D3DTexture` header addresses mip 0 and mips 1..N through independent
+addresses, and its fetch constant carries `MinMipLevel`/`MaxMipLevel`. So sampling
+can be pinned to one level **per texture**, with no sampler state involved — which
+is why this cannot disturb the cutout/hair `MIPFILTER` behaviour.
+
+- `TXLO` — XPR2 header + sysmem block + the split level and finer. Keyed at the
+  texture's own hash, so existing lookups find it.
+- `TXHI` — the rest. Keyed at `spak::TexHiHash(nameHash)`, derived from the hash
+  and not the path: the runtime resolves mesh textures out of subset records and
+  never sees a path. Both payloads carry a big-endian prefix with the destination
+  offset and byte count; `TXLO` also transmits the split level so the console never
+  recomputes it.
+
+**Cooker.** `spakc` links the XDK's *win32* `xgraphics.lib` + `d3d9.lib` and
+computes the layout with `XGSetTextureHeader` / `XGGetMipLevelOffset`. It never
+parses Bundler's big-endian output — the offsets are a pure function of
+(width, height, levels, format).
+
+- Split level = the first whose longest side is ≤ 32, so every split texture opens
+  at 32×32. No stepping to coarser levels; a texture already ≤ 32×32 never splits.
+- Slice start = the **lowest** offset among the levels kept, which is *not*
+  `offset(K)`: packed-tail levels share a tile and their offsets run backwards
+  (128² DXT5: L3 at 32832, L4 at 32800, L5 at 32784). Taking `offset(K)` would cut
+  finer levels off. Over-including is harmless — the high chunk covers the rest.
+- Computed `baseSize + mipSize` must equal the XPR2's `dwDataSize`, else the
+  texture ships unsplit with a warning. SDF font atlases never split.
+- Tile padding puts a ~16 KB floor under every mip level, so the low chunk is a
+  fixed ~32 KB whatever the texture size. `kSplitMaxLowFraction` (½) therefore just
+  sets the smallest texture worth splitting: 128² for DXT, 64² uncompressed.
+
+**Runtime.** `RegisterTextureLo` allocates the **full** `dwDataSize`, writes only
+the low bytes, does the same unchanged `XGOffsetBaseTextureAddress` fixup, and pins
+`MinMipLevel = MaxMipLevel = K` (plus `MipFilter = POINT`, since
+`GPUMIPFILTER_BASEMAP` would read level 0 — the one level not loaded).
+`ApplyTextureHi` memcpys the rest into the *same* allocation, calls
+`InvalidateGpuCache` (vidmem is write-combined), and restores the header's original
+values, after which the texture is bit-identical to an unsplit load.
+
+Nothing ever moves, so there is no allocation swap and no deferred-free race; the
+bytes `TXHI` writes are levels the clamp made unfetchable, so the copy needs no
+fencing. Peak memory is unchanged and the LRU budget is charged once, on `TXLO`.
+
+States are `StMissing → StLoading → StLo (blurry) → StResident`. The texture object
+is identical in `StLo` and `StResident`, so the sharpen is a header write, not a
+pointer swap. Before anything is drawable `GetTextureByHash` returns NULL and the
+caller's 1×1 default stands in. Eviction frees the whole allocation, so a re-stream
+replays blurry → sharp.
+
+`TXLO` entries are grouped at the head of the pak and outrank `TXHI` on the worker,
+so the blurry pass is one short forward march and never queues behind
+full-resolution data.
 
 ## Constraints
 - C++03, big-endian, no STL threads → Win32 `CreateThread` + `XSetThreadProcessor`,
@@ -169,9 +224,11 @@ ISO; the game then ships **one `game.spak`** instead of loose assets.
    The render thread drains ≤8/frame (`Update`) and does the D3D creation
    (`CreateVertexBuffer`/`RegisterTextureFromBlob`) — cache maps stay render-thread
    only, so no lock on them. `GetMesh` returns NULL+`inPak` while loading (skip the
-   draw, no stall); textures show a 2×2 magenta placeholder until resident. The
-   worker logs decoded MB/s per load (the measurement gate). PC-linked; Xenia visual
-   pending. Zero-copy buffer registration + multi-thread decode fan-out still open.
+   draw, no stall). Textures originally showed a 2×2 magenta placeholder until
+   resident; that was replaced by progressive mip streaming (see the section above)
+   and the placeholder no longer exists. The worker logs decoded MB/s per load (the
+   measurement gate). Zero-copy buffer registration + multi-thread decode fan-out
+   still open.
 4. **Residency**: budget + LRU eviction + refcounting.
    — **BUILT.** `StreamCache` tracks resident bytes (entry sysmem+vidmem) against a
    budget (default 128 MB via `Init`'s `budgetMB`); each `GetMesh`/texture request

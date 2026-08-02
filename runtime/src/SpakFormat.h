@@ -47,6 +47,33 @@ namespace spak
     const unsigned int kTypeFont  = 0x464F4E54; // 'FONT' — cooked glyph metrics +
                                                 // reference to a TX2D SDF atlas
 
+    // Progressive mip streaming. A large texture is cooked as a PAIR of entries so
+    // it can be drawn blurry while the full-resolution data is still in flight:
+    //
+    //   'TXLO' — XPR2 header + sysmem block + the small mips only (level splitLevel
+    //            and finer). Keyed at the texture's own nameHash, so every existing
+    //            lookup finds it. Registered exactly like a TX2D except the vidmem
+    //            allocation is sized for the WHOLE texture and only the low bytes
+    //            are filled; the header's MinMipLevel/MaxMipLevel pin sampling to
+    //            splitLevel so the unwritten region is never fetched.
+    //   'TXHI' — the remaining vidmem bytes (mip 0 plus the levels coarser than
+    //            splitLevel). Keyed at TexHiHash(nameHash) — see below. Copied into
+    //            the same allocation, after which the clamp is lifted and the
+    //            texture is bit-identical to an unsplit TX2D.
+    //
+    // Small textures, font atlases, and anything whose layout fails the cooker's
+    // cross-check stay a single TX2D entry — the original, unsplit path.
+    //
+    // Payload prefixes (big-endian), ahead of the bytes themselves:
+    //   TXLO: u32 magic 'TXLO' | u32 splitLevel | u32 destOffset | u32 byteCount
+    //   TXHI: u32 magic 'TXHI' | u32 destOffset | u32 byteCount
+    // splitLevel is transmitted rather than recomputed on the console so the two
+    // sides can never disagree about where the texture was cut.
+    const unsigned int kTypeTexLo = 0x54584C4F; // 'TXLO'
+    const unsigned int kTypeTexHi = 0x54584849; // 'TXHI'
+    const unsigned int kTexLoPrefixBytes = 16;  // 4 * u32
+    const unsigned int kTexHiPrefixBytes = 12;  // 3 * u32
+
     // Cooked font payload (all fields big-endian):
     //   header: magic, version, atlasHash, atlasWidth, atlasHeight,
     //           sourcePixelSize, ascent, descent, lineHeight, sdfSpread,
@@ -115,6 +142,23 @@ namespace spak
     inline unsigned int CodecOf(unsigned int flags)
     {
         return (flags & kFlagCompressed) ? ((flags & kCodecMask) >> kCodecShift) : kCodecNone;
+    }
+
+    // Key of a texture's 'TXHI' companion, derived from the texture's own nameHash.
+    // It must be computable from the HASH, not the path: the runtime resolves mesh
+    // textures out of the subset records, where only hashes are stored — it never
+    // sees the source path. One more FNV-1a round over the hash bytes plus a 'TXHI'
+    // tag; the cooker rejects any pak with duplicate keys, so a collision with a
+    // real asset fails the cook loudly rather than silently swapping two entries.
+    inline unsigned int TexHiHash(unsigned int texHash)
+    {
+        unsigned int h = 2166136261u;
+        h ^= (texHash      ) & 0xFFu; h *= 16777619u;
+        h ^= (texHash >>  8) & 0xFFu; h *= 16777619u;
+        h ^= (texHash >> 16) & 0xFFu; h *= 16777619u;
+        h ^= (texHash >> 24) & 0xFFu; h *= 16777619u;
+        h ^= 0x54584849u;             h *= 16777619u; // 'TXHI'
+        return h ? h : 1u;
     }
 
     // FNV-1a (32-bit) of a relative asset path, normalised: '\\' -> '/', lower-cased.

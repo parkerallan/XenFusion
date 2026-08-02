@@ -18,6 +18,8 @@
 //--------------------------------------------------------------------------------------
 #include <windows.h>
 #include <xcompress.h>
+#include <d3d9.h>      // XDK win32 D3D types (D3DFORMAT, IDirect3DTexture9 header)
+#include <xgraphics.h> // XGSetTextureHeader / XGGetMipLevelOffset — mip layout math
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -212,6 +214,113 @@ bool CookTextureXPR(const std::string& absSource, const std::string& name, bool 
     return ok;
 }
 
+// ---- 360 mip layout -------------------------------------------------------
+// The console's texture header addresses mip 0 and mips 1..N independently, so a
+// texture can be made renderable from just its small mips while the rest is still
+// streaming. Those offsets are a pure function of (width, height, levels, format),
+// so we compute them with the same XG library Bundler uses rather than parsing
+// its big-endian output — no endian surgery, no dependency on XPR2 internals.
+
+// Number of mip levels in a full chain (Levels="0" in the RDF), down to 1x1.
+unsigned int FullMipLevels(int width, int height)
+{
+    unsigned int levels = 1;
+    int w = width, h = height;
+    while (w > 1 || h > 1)
+    {
+        w = (w > 1) ? w / 2 : 1;
+        h = (h > 1) ? h / 2 : 1;
+        ++levels;
+    }
+    return levels;
+}
+
+struct MipSplit
+{
+    unsigned int levels;      // full chain length
+    unsigned int splitLevel;  // first level carried by the low chunk
+    unsigned int lowOffset;   // byte offset of the low chunk within the vidmem block
+    unsigned int totalSize;   // baseSize + mipSize; must equal the XPR2's dwDataSize
+    unsigned int splitWidth;  // pixel size of splitLevel, for logging
+    unsigned int splitHeight;
+};
+
+// Longest side we want the first-visible level to be. Small enough to read as
+// "still loading", large enough to show the material rather than a flat colour.
+const unsigned int kSplitMaxSide = 32;
+
+// Only split when the low chunk is at most this fraction of the whole — otherwise
+// the second entry buys nothing and just costs a seek.
+//
+// Tile padding puts a ~16 KB floor under EVERY mip level (a 32x32, 64x64 and
+// 128x128 DXT5 all occupy 16384 bytes), so the low chunk is a fixed ~32 KB — the
+// 32x32 level plus the packed tail — no matter how large the parent texture is.
+// The threshold is therefore really a statement about the smallest texture worth
+// splitting: at 1/2, that is 128x128 (64 KB, exactly half). Anything smaller has
+// nothing to save, since the whole texture is already near the floor.
+//
+// Deliberately NOT stepping to coarser levels when this fails: the first visible
+// level is then always 32x32 for everything that splits at all, which is a rule
+// you can hold in your head. Allowing a step-down would make 64x64 textures open
+// at 16x16 and reintroduce exactly the inconsistency this avoids.
+const unsigned int kSplitMaxLowFraction = 2; // i.e. low <= 1/2 of total
+
+bool ComputeMipSplit(int width, int height, D3DFORMAT format, MipSplit& out)
+{
+    if (width <= 0 || height <= 0) return false;
+
+    const unsigned int levels = FullMipLevels(width, height);
+    if (levels < 2) return false; // nothing to split
+
+    IDirect3DTexture9 header;
+    ZeroMemory(&header, sizeof(header));
+    UINT baseSize = 0, mipSize = 0;
+    XGSetTextureHeader((UINT)width, (UINT)height, levels, 0, format, D3DPOOL_DEFAULT,
+                       0, XGHEADER_CONTIGUOUS_MIP_OFFSET, 0, &header, &baseSize, &mipSize);
+    if (baseSize == 0 || mipSize == 0) return false;
+
+    // Level whose longest side has dropped to kSplitMaxSide — the level we would
+    // LIKE to be the first one visible.
+    unsigned int kSize = 0;
+    { int w = width, h = height;
+      while (((unsigned)w > kSplitMaxSide || (unsigned)h > kSplitMaxSide) && kSize + 1 < levels)
+      { ++kSize; w = (w > 1) ? w / 2 : 1; h = (h > 1) ? h / 2 : 1; } }
+    // kSize == 0 means the texture is ALREADY 32x32 or smaller, so mip 0 is the
+    // first look. Splitting would only make it open blurrier than its own full
+    // resolution, which is worse than not splitting at all.
+    if (kSize == 0) return false;
+
+    const unsigned int total = baseSize + mipSize;
+    const unsigned int k     = kSize;
+
+    // Start of the slice = the LOWEST offset among every level we are keeping. This
+    // is NOT the same as offset(k): levels from the packed-tail base share one tile
+    // and their offsets run BACKWARDS (128x128: L3=32832 but L4=32800, L5=32784).
+    // Taking offset(k) there would cut off finer levels and corrupt them.
+    // Over-including a few bytes is harmless — the high chunk covers the remainder,
+    // and together they still tile the block exactly once.
+    UINT offK = XGGetMipLevelOffset(&header, 0, k);
+    for (unsigned int L = k + 1; L < levels; ++L)
+    {
+        const UINT o = XGGetMipLevelOffset(&header, 0, L);
+        if (o < offK) offK = o;
+    }
+    if (offK >= mipSize) return false; // not relative to the mip block — bail loudly
+
+    const unsigned int lowBytes = mipSize - offK;
+    if (lowBytes * kSplitMaxLowFraction > total)
+        return false; // too much of the texture to be worth a second entry
+
+    out.levels     = levels;
+    out.splitLevel = k;
+    out.lowOffset  = baseSize + offK;
+    out.totalSize  = total;
+    { int w = width, h = height;
+      for (unsigned int i = 0; i < k; ++i) { w = (w > 1) ? w / 2 : 1; h = (h > 1) ? h / 2 : 1; }
+      out.splitWidth = (unsigned)w; out.splitHeight = (unsigned)h; }
+    return true;
+}
+
 // Classify the diffuse alpha like the editor: no alpha -> Opaque; >~3% fully
 // transparent texels (holes) -> Cutout; otherwise translucent -> Blend.
 unsigned int ClassifyAlpha(const std::string& absPng)
@@ -260,6 +369,18 @@ bool NormalAlphaHasHeight(const std::string& absPng)
 }
 
 // ---- entries + writer -----------------------------------------------------
+
+// Disk-placement groups. The TOC stays sorted by hash for binary search, but disk
+// offsets are assigned group by group so the blurry pass is one forward march
+// across the disc instead of seeking wherever hash order happens to scatter it.
+// (STREAMING.md always specified load-sequence order; until now it wasn't done.)
+enum DiskGroup
+{
+    kGroupLow  = 0, // TXLO — every texture's small mips, read first
+    kGroupMain = 1, // meshes, fonts, unsplit textures, media
+    kGroupHigh = 2  // TXHI — full-resolution data, read last
+};
+
 struct Entry
 {
     unsigned int hash;
@@ -268,28 +389,110 @@ struct Entry
     unsigned int sysMemSize;
     unsigned int vidMemSize;
     bool         noCompress; // video: stored raw so the runtime can range-read it
+    int          diskGroup;
 
-    Entry() : hash(0), type(0), sysMemSize(0), vidMemSize(0), noCompress(false) {}
+    Entry() : hash(0), type(0), sysMemSize(0), vidMemSize(0), noCompress(false),
+              diskGroup(kGroupMain) {}
 };
 
 bool EntryLess(const Entry& a, const Entry& b) { return a.hash < b.hash; }
 
+D3DFORMAT D3DFormatFromName(const char* name)
+{
+    if (!name) return (D3DFORMAT)0;
+    if (strcmp(name, "D3DFMT_DXT1")     == 0) return D3DFMT_DXT1;
+    if (strcmp(name, "D3DFMT_DXT5")     == 0) return D3DFMT_DXT5;
+    if (strcmp(name, "D3DFMT_A8R8G8B8") == 0) return D3DFMT_A8R8G8B8;
+    if (strcmp(name, "D3DFMT_A8")       == 0) return D3DFMT_A8;
+    return (D3DFORMAT)0; // unknown -> don't split
+}
+
 // Cook + add one texture entry, deduped by hash. `absSource` feeds Bundler;
 // `hash` is the internal link key (mesh -> texture). Returns the hash (0 if the
 // slot is empty or cook failed, so the runtime falls back to a default).
+//
+// Large textures are emitted as a TXLO/TXHI pair so they can be drawn blurry
+// while the full-resolution data is still streaming; see SpakFormat.h. Pass
+// allowSplit=false for textures where a blurry stage is meaningless (SDF atlases).
 unsigned int AddTexture(std::vector<Entry>& entries, std::set<unsigned int>& seen,
                         const std::string& absSource, const std::string& name,
-                        unsigned int hash, bool sRGB, const char* format)
+                        unsigned int hash, bool sRGB, const char* format,
+                        bool allowSplit = true)
 {
     if (absSource.empty() || hash == 0) return 0;
     if (seen.find(hash) != seen.end()) return hash; // already cooked
     std::vector<unsigned char> xpr;
     if (!CookTextureXPR(absSource, name, sRGB, format, xpr))
     { fprintf(stderr, "spakc: WARN texture cook failed: %s\n", absSource.c_str()); return 0; }
-    Entry e;
-    e.hash = hash; e.type = spak::kTypeTex2D; e.payload = xpr;
-    e.sysMemSize = ReadU32BE(&xpr[4]); e.vidMemSize = ReadU32BE(&xpr[8]);
-    entries.push_back(e);
+
+    const unsigned int kXprHeaderBytes = 12; // magic | dwHeaderSize | dwDataSize
+    const unsigned int sysMemSize = ReadU32BE(&xpr[4]);
+    const unsigned int vidMemSize = ReadU32BE(&xpr[8]);
+
+    // Decide whether to split. Every failure path here falls back to the original
+    // single-entry form, so a texture is never at risk of shipping corrupt.
+    MipSplit split;
+    bool doSplit = false;
+    if (allowSplit && xpr.size() >= kXprHeaderBytes + sysMemSize + vidMemSize)
+    {
+        const D3DFORMAT fmt = D3DFormatFromName(format);
+        int w = 0, h = 0, comp = 0;
+        if (fmt != (D3DFORMAT)0 && stbi_info(absSource.c_str(), &w, &h, &comp) &&
+            ComputeMipSplit(w, h, fmt, split))
+        {
+            // The one check that matters: our locally computed layout must agree
+            // with what Bundler actually emitted. If it does, the offsets are right
+            // by construction; if not, ship unsplit rather than guess.
+            if (split.totalSize == vidMemSize)
+                doSplit = true;
+            else
+                fprintf(stderr, "spakc: WARN mip layout mismatch for %s "
+                                "(computed %u, Bundler %u) — shipping unsplit\n",
+                        absSource.c_str(), split.totalSize, vidMemSize);
+        }
+    }
+
+    if (!doSplit)
+    {
+        Entry e;
+        e.hash = hash; e.type = spak::kTypeTex2D; e.payload = xpr;
+        e.sysMemSize = sysMemSize; e.vidMemSize = vidMemSize;
+        entries.push_back(e);
+        seen.insert(hash);
+        return hash;
+    }
+
+    const unsigned char* vid      = &xpr[kXprHeaderBytes + sysMemSize];
+    const unsigned int   lowBytes = vidMemSize - split.lowOffset;
+
+    // TXLO: the XPR2 header + sysmem block (so the texture header is complete)
+    // followed by the small-mip bytes only.
+    Entry lo;
+    lo.hash = hash; lo.type = spak::kTypeTexLo; lo.diskGroup = kGroupLow;
+    lo.sysMemSize = sysMemSize; lo.vidMemSize = vidMemSize;
+    PushU32BE(lo.payload, spak::kTypeTexLo);
+    PushU32BE(lo.payload, split.splitLevel);
+    PushU32BE(lo.payload, split.lowOffset);
+    PushU32BE(lo.payload, lowBytes);
+    lo.payload.insert(lo.payload.end(), xpr.begin(),
+                      xpr.begin() + kXprHeaderBytes + sysMemSize);
+    lo.payload.insert(lo.payload.end(), vid + split.lowOffset, vid + vidMemSize);
+    entries.push_back(lo);
+
+    // TXHI: mip 0 plus every level coarser than the split, copied into the same
+    // allocation later. Carries no headers — the TXLO already established them.
+    Entry hi;
+    hi.hash = spak::TexHiHash(hash); hi.type = spak::kTypeTexHi; hi.diskGroup = kGroupHigh;
+    PushU32BE(hi.payload, spak::kTypeTexHi);
+    PushU32BE(hi.payload, 0u);
+    PushU32BE(hi.payload, split.lowOffset);
+    hi.payload.insert(hi.payload.end(), vid, vid + split.lowOffset);
+    entries.push_back(hi);
+
+    printf("spakc: texture 0x%08x split at level %u (%ux%u) — %u B low / %u B total (%.1f%%)\n",
+           hash, split.splitLevel, split.splitWidth, split.splitHeight,
+           lowBytes, vidMemSize, 100.0 * lowBytes / (double)vidMemSize);
+
     seen.insert(hash);
     return hash;
 }
@@ -626,8 +829,11 @@ bool AddFont(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     const std::string atlasLogical = fontRel + "#atlas";
     const unsigned int atlasHash = spak::NameHash(atlasLogical.c_str());
     const std::string atlasTga = g_tmpBase + ".font.tmp.tga";
+    // Never split an SDF atlas: a 32px mip of signed-distance data is meaningless,
+    // and text already declines to draw until its atlas is fully resident.
     if (!WriteAtlasTga(atlasTga, atlas, atlasWidth, atlasHeight) ||
-        AddTexture(entries, seen, atlasTga, atlasLogical, atlasHash, false, "D3DFMT_A8") == 0)
+        AddTexture(entries, seen, atlasTga, atlasLogical, atlasHash, false, "D3DFMT_A8",
+                   /*allowSplit=*/false) == 0)
     {
         DeleteFileA(atlasTga.c_str());
         fprintf(stderr, "spakc: cannot cook font atlas %s\n", fontAbs.c_str());
@@ -704,6 +910,17 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
     const unsigned int count  = (unsigned int)entries.size();
     const unsigned int sector = spak::kSectorSize;
 
+    // Find() binary-searches the TOC, so two entries sharing a key would make one
+    // of them unreachable. Cheap to check, and it is the one way a derived TXHI
+    // key could go wrong.
+    for (unsigned int i = 1; i < count; ++i)
+        if (entries[i].hash == entries[i - 1].hash)
+        {
+            fprintf(stderr, "spakc: DUPLICATE entry key 0x%08x (types 0x%08x / 0x%08x)\n",
+                    entries[i].hash, entries[i - 1].type, entries[i].type);
+            return false;
+        }
+
     std::vector<std::vector<unsigned char> > diskPayload(count);
     std::vector<unsigned int> compSize(count), uncompSize(count), codec(count);
     for (unsigned int i = 0; i < count; ++i)
@@ -725,13 +942,27 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
         compSize[i] = (unsigned int)diskPayload[i].size();
     }
 
-    // Assign sector-aligned disk offsets.
+    // Assign sector-aligned disk offsets in DISK order, which is by group (all the
+    // small-mip chunks first, full-resolution data last) and not the TOC's hash
+    // order. The TOC carries an explicit diskOffset, so the two are free to differ.
+    std::vector<unsigned int> diskOrder(count);
+    for (unsigned int i = 0; i < count; ++i) diskOrder[i] = i;
+    for (unsigned int i = 1; i < count; ++i) // insertion sort: stable, C++03, tiny n
+    {
+        const unsigned int v = diskOrder[i];
+        unsigned int j = i;
+        while (j > 0 && entries[diskOrder[j - 1]].diskGroup > entries[v].diskGroup)
+        { diskOrder[j] = diskOrder[j - 1]; --j; }
+        diskOrder[j] = v;
+    }
+
     const unsigned int tocOffset = spak::kHeaderBytes;
     unsigned int cursor = tocOffset + count * spak::kEntryBytes;
     cursor = ((cursor + sector - 1) / sector) * sector;
     std::vector<unsigned int> diskOffset(count);
-    for (unsigned int i = 0; i < count; ++i)
+    for (unsigned int k = 0; k < count; ++k)
     {
+        const unsigned int i = diskOrder[k];
         diskOffset[i] = cursor;
         cursor += ((compSize[i] + sector - 1) / sector) * sector;
     }
@@ -754,8 +985,9 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
         PushU32BE(file, entries[i].sysMemSize);
         PushU32BE(file, entries[i].vidMemSize);
     }
-    for (unsigned int i = 0; i < count; ++i)
+    for (unsigned int k = 0; k < count; ++k) // payloads follow disk order, not TOC order
     {
+        const unsigned int i = diskOrder[k];
         file.resize(diskOffset[i], 0);
         file.insert(file.end(), diskPayload[i].begin(), diskPayload[i].end());
     }

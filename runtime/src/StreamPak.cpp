@@ -61,6 +61,8 @@ void StreamTexture::Release()
     tex = NULL;
     if (vidMem) { XPhysicalFree(vidMem); vidMem = NULL; }
     if (sysMem) { delete[] sysMem;       sysMem = NULL; }
+    vidBytes = 0;
+    baseMinMip = baseMaxMip = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +273,14 @@ bool StreamPak::ReadRawRange(const SpakEntry* e, unsigned int offset, void* out,
 // Register an already-decompressed XPR2 blob into a live texture. No file I/O and
 // no decompress, so the async worker can hand the blob over and this runs on the
 // render thread (only CPU-memory / kernel-alloc work — no D3D device calls).
-bool StreamPak::RegisterTextureFromBlob(const BYTE* xpr, unsigned int size, StreamTexture& out)
+//
+// `vidSrc`/`vidOffset`/`vidBytes` describe which slice of the vidmem block this
+// blob actually carries. The allocation is always the full dwDataSize, so a
+// partial load can be completed later by writing into the same memory — nothing
+// ever moves, which is what keeps the GPU from ever seeing a stale pointer.
+static bool RegisterXpr(const BYTE* xpr, unsigned int size,
+                        const BYTE* vidSrc, DWORD vidOffset, DWORD vidBytes,
+                        StreamTexture& out)
 {
     out.Release();
 
@@ -289,13 +298,17 @@ bool StreamPak::RegisterTextureFromBlob(const BYTE* xpr, unsigned int size, Stre
     }
     const DWORD headerSize = xh->dwHeaderSize;
     const DWORD dataSize   = xh->dwDataSize;
-    if (sizeof(XPR_HEADER) + headerSize + dataSize > size)
+    if (sizeof(XPR_HEADER) + headerSize > size)
     {
-        Log("XPR2 sizes overflow blob");
+        Log("XPR2 header overflows blob");
+        return false;
+    }
+    if (vidOffset > dataSize || vidBytes > dataSize - vidOffset)
+    {
+        Log("XPR2 vidmem slice out of range");
         return false;
     }
     const unsigned char* sysSrc = xpr + sizeof(XPR_HEADER);
-    const unsigned char* vidSrc = sysSrc + headerSize;
 
     // --- Split into the two runtime allocations: sysmem headers in a plain heap
     // block, vidmem tiled data in physically-contiguous write-combined memory the
@@ -311,7 +324,7 @@ bool StreamPak::RegisterTextureFromBlob(const BYTE* xpr, unsigned int size, Stre
         delete[] sysMem;
         return false;
     }
-    memcpy(vidMem, vidSrc, dataSize);
+    memcpy((BYTE*)vidMem + vidOffset, vidSrc, vidBytes);
 
     // --- Register: point the baked D3DTexture header at the real vidmem
     // allocation. The sysmem block is [numTags][RESOURCE tags...][headers...];
@@ -346,9 +359,89 @@ bool StreamPak::RegisterTextureFromBlob(const BYTE* xpr, unsigned int size, Stre
     IDirect3DTexture9* tex = (IDirect3DTexture9*)(sysMem + texTag->dwOffset);
     XGOffsetBaseTextureAddress(tex, vidMem, vidMem);
 
-    out.tex    = tex;
-    out.sysMem = sysMem;
-    out.vidMem = vidMem;
+    out.tex        = tex;
+    out.sysMem     = sysMem;
+    out.vidMem     = vidMem;
+    out.vidBytes   = dataSize;
+    out.baseMinMip    = (unsigned char)tex->Format.MinMipLevel;
+    out.baseMaxMip    = (unsigned char)tex->Format.MaxMipLevel;
+    out.baseMipFilter = (unsigned char)tex->Format.MipFilter;
+    return true;
+}
+
+bool StreamPak::RegisterTextureFromBlob(const BYTE* xpr, unsigned int size, StreamTexture& out)
+{
+    if (xpr == NULL || size < sizeof(XPR_HEADER)) { Log("XPR2 too small"); return false; }
+    const XPR_HEADER* xh = (const XPR_HEADER*)xpr;
+    const DWORD headerSize = xh->dwHeaderSize;
+    const DWORD dataSize   = xh->dwDataSize;
+    if (sizeof(XPR_HEADER) + headerSize + dataSize > size)
+    { Log("XPR2 sizes overflow blob"); return false; }
+    return RegisterXpr(xpr, size, xpr + sizeof(XPR_HEADER) + headerSize,
+                       0, dataSize, out);
+}
+
+// 'TXLO': [magic | splitLevel | destOffset | byteCount][XPR2 header + sysmem][low mips]
+bool StreamPak::RegisterTextureLo(const BYTE* payload, unsigned int size, StreamTexture& out)
+{
+    if (payload == NULL || size < spak::kTexLoPrefixBytes)
+    { Log("TXLO payload too small"); return false; }
+    const DWORD* p = (const DWORD*)payload;
+    if (p[0] != spak::kTypeTexLo) { Log("bad TXLO magic"); return false; }
+    const DWORD splitLevel = p[1];
+    const DWORD destOffset = p[2];
+    const DWORD byteCount  = p[3];
+
+    const BYTE*  xpr     = payload + spak::kTexLoPrefixBytes;
+    const unsigned int xprSize = size - spak::kTexLoPrefixBytes;
+    if (xprSize < sizeof(XPR_HEADER)) { Log("TXLO xpr too small"); return false; }
+    const XPR_HEADER* xh = (const XPR_HEADER*)xpr;
+    const DWORD sysBytes = sizeof(XPR_HEADER) + xh->dwHeaderSize;
+    if (xprSize < sysBytes || xprSize - sysBytes < byteCount)
+    { Log("TXLO payload truncated"); return false; }
+
+    if (!RegisterXpr(xpr, xprSize, xpr + sysBytes, destOffset, byteCount, out))
+        return false;
+
+    // Pin sampling to the one level we actually have. Nothing outside it can be
+    // fetched, so the rest of the allocation is free to stay uninitialised — and
+    // this is a per-texture header field, so no sampler state is touched and the
+    // cutout/hair MIPFILTER behaviour is untouched.
+    if (splitLevel > 15) { Log("TXLO split level out of range"); out.Release(); return false; }
+    out.tex->Format.MinMipLevel = splitLevel;
+    out.tex->Format.MaxMipLevel = splitLevel;
+    // GPUMIPFILTER_BASEMAP means "ignore the chain and read level 0" — which is
+    // exactly the level we have NOT loaded. Force POINT while clamped; with
+    // Min == Max it resolves to the single level that is present.
+    out.tex->Format.MipFilter = GPUMIPFILTER_POINT;
+    return true;
+}
+
+// 'TXHI': [magic | destOffset | byteCount][mip 0 + levels coarser than the split]
+bool StreamPak::ApplyTextureHi(IDirect3DDevice9* device, const BYTE* payload,
+                               unsigned int size, StreamTexture& tex)
+{
+    if (tex.tex == NULL || tex.vidMem == NULL) { Log("TXHI with no base texture"); return false; }
+    if (payload == NULL || size < spak::kTexHiPrefixBytes)
+    { Log("TXHI payload too small"); return false; }
+    const DWORD* p = (const DWORD*)payload;
+    if (p[0] != spak::kTypeTexHi) { Log("bad TXHI magic"); return false; }
+    const DWORD destOffset = p[1];
+    const DWORD byteCount  = p[2];
+    if (size - spak::kTexHiPrefixBytes < byteCount ||
+        destOffset > tex.vidBytes || byteCount > tex.vidBytes - destOffset)
+    { Log("TXHI slice out of range"); return false; }
+
+    memcpy((BYTE*)tex.vidMem + destOffset, payload + spak::kTexHiPrefixBytes, byteCount);
+
+    // vidmem is write-combined: flush the writes and drop any cached texels before
+    // the clamp comes off and the GPU is allowed to read this region.
+    if (device)
+        device->InvalidateGpuCache(tex.vidMem, tex.vidBytes, 0);
+
+    tex.tex->Format.MinMipLevel = tex.baseMinMip;
+    tex.tex->Format.MaxMipLevel = tex.baseMaxMip;
+    tex.tex->Format.MipFilter   = tex.baseMipFilter;
     return true;
 }
 

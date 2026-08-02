@@ -44,7 +44,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <AdditionalLibraryDirectories>$(XEDK)\lib\win32\vs2010;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>xcompress.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>xcompressd.lib;xgraphicsd.lib;d3d9d.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
@@ -58,7 +58,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <AdditionalLibraryDirectories>$(XEDK)\lib\win32\vs2010;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>xcompress.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>xcompress.lib;xgraphics.lib;d3d9.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
