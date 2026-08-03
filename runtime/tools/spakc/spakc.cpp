@@ -694,7 +694,8 @@ bool AddImage(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     const unsigned int hash = spak::NameHash(imageRel.c_str());
     const unsigned int alpha = ClassifyAlpha(imageAbs);
     const char* format = alpha == spak::kAlphaOpaque ? "D3DFMT_DXT1" : "D3DFMT_DXT5";
-    if (AddTexture(entries, seen, imageAbs, imageRel, hash, false, format) == 0)
+    // Image attributes and gui.* textures load whole, never low-res first.
+    if (AddTexture(entries, seen, imageAbs, imageRel, hash, false, format, false) == 0)
     {
         fprintf(stderr, "spakc: cannot cook image %s\n", imageAbs.c_str());
         return false;

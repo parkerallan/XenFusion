@@ -167,7 +167,8 @@ parses Bundler's big-endian output — the offsets are a pure function of
   (128² DXT5: L3 at 32832, L4 at 32800, L5 at 32784). Taking `offset(K)` would cut
   finer levels off. Over-including is harmless — the high chunk covers the rest.
 - Computed `baseSize + mipSize` must equal the XPR2's `dwDataSize`, else the
-  texture ships unsplit with a warning. SDF font atlases never split.
+  texture ships unsplit with a warning. SDF font atlases, `Image` attributes and
+  `gui.*` textures never split — they load whole, never low-res first.
 - Tile padding puts a ~16 KB floor under every mip level, so the low chunk is a
   fixed ~32 KB whatever the texture size. `kSplitMaxLowFraction` (½) therefore just
   sets the smallest texture worth splitting: 128² for DXT, 64² uncompressed.
