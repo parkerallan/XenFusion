@@ -126,6 +126,29 @@ void StreamCache::Init(IDirect3DDevice9* device, StreamPak* pak, unsigned int bu
     m_wake = CreateEvent(NULL, FALSE, FALSE, NULL); // auto-reset, initially unsignaled
     m_inited = true;
 
+    // Preload EVERY texture's first-visible data before the first frame: the TXLO
+    // half of split textures, and the whole payload of ones too small to split.
+    // No texture may ever fall back to a 1x1 default while it loads, so there is no
+    // size exemption here — a texture without preloaded bytes is exactly the case
+    // that produces a flat-colour flash.
+    //
+    // Registration still waits for first touch: registering is what commits the
+    // full vidmem allocation, so doing it here would make the whole texture set
+    // resident at boot and defeat residency. Holding the bytes is enough.
+    if (m_pak)
+    {
+        for (unsigned int i = 0; i < m_pak->Count(); ++i)
+        {
+            const SpakEntry* e = m_pak->At(i);
+            if (!e || (e->type != spak::kTypeTexLo && e->type != spak::kTypeTex2D))
+                continue;
+            std::vector<BYTE> blob;
+            if (!m_pak->ReadBlob(e, blob) || blob.empty())
+                continue;
+            m_loBlobs[e->nameHash].swap(blob);
+        }
+    }
+
     m_running = 1;
     m_thread = CreateThread(NULL, 0, ThreadProc, this, 0, NULL);
     if (m_thread)
@@ -164,6 +187,7 @@ void StreamCache::Shutdown()
     m_textures.clear();
     m_fonts.clear();
     m_ranges.clear();
+    m_loBlobs.clear();
 
     m_requests.clear();
     m_completions.clear();
@@ -612,7 +636,36 @@ IDirect3DTexture9* StreamCache::GetTextureByHash(unsigned int hash)
             // own hash; resolve it now so the drain can chain straight into it.
             if (e->type == spak::kTypeTexLo && m_pak)
                 ct.hiEntry = m_pak->Find(spak::TexHiHash(hash));
-            ct.state = StLoading; m_textures[hash] = ct; Enqueue(hash, e);
+            ct.state = StLoading;
+            m_textures[hash] = ct;
+            CacheTex& ins = m_textures[hash];
+
+            // Bytes were read at Init, so register right here: the texture is
+            // drawable on this very frame rather than a worker round trip later,
+            // which is what used to leave a 1x1 default on screen. Also covers a
+            // re-request after eviction — the blob is still held.
+            std::map<unsigned int, std::vector<BYTE> >::iterator lo = m_loBlobs.find(hash);
+            bool registered = false;
+            if (lo != m_loBlobs.end() && !lo->second.empty())
+            {
+                const BYTE* p = &lo->second[0];
+                const unsigned int n = (unsigned int)lo->second.size();
+                registered = (e->type == spak::kTypeTexLo)
+                    ? m_pak->RegisterTextureLo(p, n, ins.tex)
+                    : m_pak->RegisterTextureFromBlob(p, n, ins.tex);
+                registered = registered && ins.tex.tex != NULL;
+            }
+            if (registered)
+            {
+                ins.bytes   = e->sysMemSize + e->vidMemSize;
+                ins.lastUse = m_frame;
+                m_residentBytes += ins.bytes;
+                // Split textures still stream their full-resolution half; unsplit
+                // ones are complete already.
+                if (ins.hiEntry) { ins.state = StLo; Enqueue(hash, ins.hiEntry, true); }
+                else               ins.state = StResident;
+            }
+            else Enqueue(hash, e);
         }
         else { ct.state = StMissing; m_textures[hash] = ct; }
         it = m_textures.find(hash);

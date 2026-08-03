@@ -186,13 +186,18 @@ fencing. Peak memory is unchanged and the LRU budget is charged once, on `TXLO`.
 
 States are `StMissing → StLoading → StLo (blurry) → StResident`. The texture object
 is identical in `StLo` and `StResident`, so the sharpen is a header write, not a
-pointer swap. Before anything is drawable `GetTextureByHash` returns NULL and the
-caller's 1×1 default stands in. Eviction frees the whole allocation, so a re-stream
-replays blurry → sharp.
+pointer swap. Eviction frees the whole allocation, so a re-stream replays
+blurry → sharp.
 
-`TXLO` entries are grouped at the head of the pak and outrank `TXHI` on the worker,
-so the blurry pass is one short forward march and never queues behind
-full-resolution data.
+`Init` preloads every texture's first-visible bytes (`TXLO`, or the whole payload if
+unsplit) and `GetTextureByHash` registers from them on first touch — required, not an
+optimisation: texture hashes live in the MESH payload, so a texture can't be requested
+until its mesh lands, and the mesh draws that same frame. Without it every object shows
+a 1×1 default for one worker round trip. No size exemption, or that texture flashes.
+Registration still waits for first touch, since that is what commits the full vidmem
+allocation; holding only the bytes keeps residency intact.
+
+`TXLO` entries are grouped at the head of the pak and outrank `TXHI` on the worker.
 
 ## Constraints
 - C++03, big-endian, no STL threads → Win32 `CreateThread` + `XSetThreadProcessor`,

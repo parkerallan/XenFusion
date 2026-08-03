@@ -149,6 +149,14 @@ private:
     std::map<unsigned int, CacheFont> m_fonts;     // key = font path hash
     std::map<RangeKey, RangePage>     m_ranges;
 
+    // Every TXLO payload, read once at Init. A texture's hashes live inside its
+    // MESH payload, so a texture cannot even be REQUESTED until its mesh lands —
+    // and the mesh is drawable the same frame it lands. Without these bytes already
+    // in hand, every object is therefore visible for a full worker round trip
+    // before any texture exists for it, showing the 1x1 default. They are a few KB
+    // each and contiguous at the head of the pak, so this is one short read.
+    std::map<unsigned int, std::vector<BYTE> > m_loBlobs;
+
     unsigned int m_frame;         // render-frame counter (LRU timestamps)
     size_t       m_budgetBytes;   // resident memory cap
     size_t       m_residentBytes; // current resident total
