@@ -426,6 +426,7 @@ void EngineApplication::RenderUI()
         state_.clean_build_requested = false;
     }
     buildrun::Poll(state_);
+    PollLightingBake();
 }
 
 void EngineApplication::RenderMainMenuBar()
@@ -468,6 +469,9 @@ void EngineApplication::RenderMainMenuBar()
     {
         if (ImGui::MenuItem("Rebuild Engine Shaders", nullptr, false, state_.HasProject()))
             state_.compile_shaders_requested = true;
+        if (ImGui::MenuItem("Bake Lighting", nullptr, false,
+                            state_.SelectedScene() != nullptr && !lighting_bake_thread_.joinable()))
+            StartLightingBake();
         if (ImGui::MenuItem("Build and Run XEX", nullptr, false,
                             state_.HasProject() && !buildrun::Running()))
             state_.build_run_requested = true;
@@ -498,6 +502,51 @@ void EngineApplication::RenderMainMenuBar()
     }
 
     ImGui::EndMenuBar();
+}
+
+void EngineApplication::StartLightingBake()
+{
+    const SceneFile* selected = state_.SelectedScene();
+    if (!selected || lighting_bake_thread_.joinable())
+        return;
+
+    const SceneFile scene = *selected;
+    const fs::path projectRoot = state_.project_root;
+    lighting_bake_scene_ = scene.path;
+    lighting_bake_result_ = {};
+    lighting_bake_error_.clear();
+    lighting_bake_success_ = false;
+    lighting_bake_done_.store(false, std::memory_order_relaxed);
+    state_.AddLog("Baking lighting for " + scene.path.filename().string());
+
+    lighting_bake_thread_ = std::thread([this, projectRoot, scene]()
+    {
+        lightmap::BakeOptions options;
+        lighting_bake_success_ = lightmap::BakeScene(projectRoot, scene, options,
+                                                     lighting_bake_result_, lighting_bake_error_);
+        lighting_bake_done_.store(true, std::memory_order_release);
+    });
+}
+
+void EngineApplication::PollLightingBake()
+{
+    if (!lighting_bake_thread_.joinable() || !lighting_bake_done_.load(std::memory_order_acquire))
+        return;
+    lighting_bake_thread_.join();
+
+    if (!lighting_bake_success_)
+    {
+        state_.AddLog("Lighting bake failed: " + lighting_bake_error_, LogLevel::Error);
+        return;
+    }
+
+    const SceneFile* selected = state_.SelectedScene();
+    const bool sameScene = selected && selected->path == lighting_bake_scene_;
+    state_.AddLog("Lighting bake complete: " +
+                  std::to_string(lighting_bake_result_.staticInstanceCount) + " static instances, " +
+                  std::to_string(lighting_bake_result_.coveredTexels) + " covered texels, " +
+                  std::to_string(lighting_bake_result_.probeCount) + " probes" +
+                  (sameScene ? std::string() : " (selection changed during bake)"));
 }
 
 void EngineApplication::OnDropFiles(void* hDrop)
@@ -895,6 +944,8 @@ void EngineApplication::BuildDefaultDockLayout(ImGuiID dockspace_id)
 
 void EngineApplication::Shutdown()
 {
+    if (lighting_bake_thread_.joinable())
+        lighting_bake_thread_.join();
     settings::Save(state_); // persist settings on exit
 
     viewport_panel_.Shutdown();

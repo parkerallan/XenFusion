@@ -147,10 +147,16 @@ namespace shader
         ID3DBlob* vs = Compile(src.data(), src.size(), name.c_str(), "VSMain", "vs_3_0");
         ID3DBlob* ps = Compile(src.data(), src.size(), name.c_str(), "PSMain", "ps_3_0");
         ID3DBlob* skin_vs = nullptr;
+        ID3DBlob* lightmap_vs = nullptr;
+        ID3DBlob* shadow_ps = nullptr;
         if (hlsl.stem() == "standard")
+        {
             skin_vs = Compile(src.data(), src.size(), name.c_str(), "SkinVSMain", "vs_3_0");
+            lightmap_vs = Compile(src.data(), src.size(), name.c_str(), "LightmapVSMain", "vs_3_0");
+            shadow_ps = Compile(src.data(), src.size(), name.c_str(), "ShadowPSMain", "ps_3_0");
+        }
 
-        bool ok = (vs && ps && (hlsl.stem() != "standard" || skin_vs));
+        bool ok = (vs && ps && (hlsl.stem() != "standard" || (skin_vs && lightmap_vs && shadow_ps)));
         if (ok)
         {
             std::error_code ec;
@@ -160,6 +166,10 @@ namespace shader
                  WriteBlob(out_dir / (stem + "_ps.cso"), ps);
             if (ok && skin_vs)
                 ok = WriteBlob(out_dir / "standard_skin_vs.cso", skin_vs);
+            if (ok && lightmap_vs)
+                ok = WriteBlob(out_dir / "standard_lightmap_vs.cso", lightmap_vs);
+            if (ok && shadow_ps)
+                ok = WriteBlob(out_dir / "standard_shadow_ps.cso", shadow_ps);
             if (!ok) err = "cannot write .cso to " + out_dir.string();
         }
         else
@@ -169,6 +179,8 @@ namespace shader
         if (vs) vs->Release();
         if (ps) ps->Release();
         if (skin_vs) skin_vs->Release();
+        if (lightmap_vs) lightmap_vs->Release();
+        if (shadow_ps) shadow_ps->Release();
         return ok;
     }
 }

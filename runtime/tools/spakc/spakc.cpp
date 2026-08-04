@@ -57,6 +57,13 @@ void PushU32BE(std::vector<unsigned char>& v, unsigned int u)
     v.push_back((unsigned char)((u >> 8)  & 0xFF));
     v.push_back((unsigned char)( u        & 0xFF));
 }
+void PushU32LE(std::vector<unsigned char>& v, unsigned int u)
+{
+    v.push_back((unsigned char)( u        & 0xFF));
+    v.push_back((unsigned char)((u >> 8)  & 0xFF));
+    v.push_back((unsigned char)((u >> 16) & 0xFF));
+    v.push_back((unsigned char)((u >> 24) & 0xFF));
+}
 void PushF32BE(std::vector<unsigned char>& v, float value)
 {
     unsigned int bits = 0;
@@ -905,7 +912,6 @@ bool AddAnimation(std::vector<Entry>& entries, const std::string& source,
 bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool compress)
 {
     if (entries.empty()) { fprintf(stderr, "spakc: nothing to write\n"); return false; }
-
     // Compress payloads; entries sorted by hash for binary search.
     std::sort(entries.begin(), entries.end(), EntryLess);
     const unsigned int count  = (unsigned int)entries.size();
@@ -919,6 +925,8 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
         {
             fprintf(stderr, "spakc: DUPLICATE entry key 0x%08x (types 0x%08x / 0x%08x)\n",
                     entries[i].hash, entries[i - 1].type, entries[i].type);
+                printf("spakc: DUPLICATE entry key 0x%08x (types 0x%08x / 0x%08x)\n",
+                   entries[i].hash, entries[i - 1].type, entries[i].type);
             return false;
         }
 
@@ -930,9 +938,18 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
         if (compress && !entries[i].noCompress)
         {
             if (LzxCompress(&entries[i].payload[0], entries[i].payload.size(), diskPayload[i]) == 0)
+            {
+                printf("spakc: compression failed for entry 0x%08x type 0x%08x bytes=%u\n",
+                       entries[i].hash, entries[i].type, uncompSize[i]);
                 return false;
+            }
             if (!LzxVerify(diskPayload[i], uncompSize[i]))
-            { fprintf(stderr, "spakc: SELF-VERIFY FAILED for entry 0x%08x\n", entries[i].hash); return false; }
+            {
+                fprintf(stderr, "spakc: SELF-VERIFY FAILED for entry 0x%08x\n", entries[i].hash);
+                printf("spakc: SELF-VERIFY FAILED for entry 0x%08x type 0x%08x\n",
+                       entries[i].hash, entries[i].type);
+                return false;
+            }
             codec[i] = spak::kCodecLZX;
         }
         else
@@ -941,6 +958,7 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
             codec[i] = spak::kCodecNone;
         }
         compSize[i] = (unsigned int)diskPayload[i].size();
+        std::vector<unsigned char>().swap(entries[i].payload);
     }
 
     // Assign sector-aligned disk offsets in DISK order, which is by group (all the
@@ -995,7 +1013,11 @@ bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool com
     file.resize(((file.size() + sector - 1) / sector) * sector, 0);
 
     if (!WriteFileBytes(outPath, &file[0], file.size()))
-    { fprintf(stderr, "spakc: cannot write %s\n", outPath.c_str()); return false; }
+    {
+        fprintf(stderr, "spakc: cannot write %s\n", outPath.c_str());
+        printf("spakc: cannot write output %s bytes=%u\n", outPath.c_str(), (unsigned int)file.size());
+        return false;
+    }
 
     unsigned int totalUncomp = 0, totalComp = 0;
     for (unsigned int i = 0; i < count; ++i) { totalUncomp += uncompSize[i]; totalComp += compSize[i]; }
@@ -1012,6 +1034,76 @@ bool ResolveBundler()
     g_bundler = std::string(xedk) + "\\bin\\win32\\Bundler.exe";
     return true;
 }
+
+bool AddLightmapSidecar(std::vector<Entry>& entries, const std::string& rootAbs,
+                        const std::string& rel, unsigned int type)
+{
+    Entry entry;
+    entry.hash = spak::NameHash(rel.c_str());
+    entry.type = type;
+    entry.noCompress = true;
+    if (!ReadFileBytes(AbsFrom(rootAbs, rel), entry.payload) || entry.payload.empty())
+    {
+        fprintf(stderr, "spakc: cannot read lightmap sidecar %s\n", rel.c_str());
+        return false;
+    }
+    entry.sysMemSize = (unsigned int)entry.payload.size();
+    if (type == spak::kTypeLmap)
+    {
+        if (entry.payload.size() < 40 || memcmp(&entry.payload[0], "LMP0", 4) != 0 ||
+            ReadU32LE(&entry.payload[4]) != 3)
+        { fprintf(stderr, "spakc: invalid LMP0 v3 metadata %s\n", rel.c_str()); return false; }
+        const unsigned int instanceCount = ReadU32LE(&entry.payload[16]);
+        const unsigned int probeCount = ReadU32LE(&entry.payload[20]);
+        const size_t probeOffset = 40 + (size_t)instanceCount * 20;
+        if (entry.payload.size() < probeOffset + (size_t)probeCount * 60)
+        { fprintf(stderr, "spakc: truncated probe grid %s\n", rel.c_str()); return false; }
+
+        unsigned int dimensions[3] = {0, 0, 0};
+        float spacing = 0.0f, origin[3] = {0, 0, 0};
+        memcpy(&spacing, &entry.payload[24], 4);
+        memcpy(origin, &entry.payload[28], 12);
+        if (probeCount && spacing <= 0.0f)
+        { fprintf(stderr, "spakc: invalid probe spacing %s\n", rel.c_str()); return false; }
+        for (unsigned int probe = 0; probe < probeCount; ++probe)
+        {
+            float position[3];
+            memcpy(position, &entry.payload[probeOffset + (size_t)probe * 60], 12);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const unsigned int dimension = (unsigned int)floorf((position[axis] - origin[axis]) / spacing + 0.5f) + 1;
+                if (dimension > dimensions[axis]) dimensions[axis] = dimension;
+            }
+        }
+        if (probeCount && (size_t)dimensions[0] * dimensions[1] * dimensions[2] != probeCount)
+        { fprintf(stderr, "spakc: irregular probe grid %s\n", rel.c_str()); return false; }
+
+        Entry probes;
+        std::string probeRel = rel;
+        const size_t dot = probeRel.find_last_of('.');
+        if (dot != std::string::npos) probeRel.erase(dot);
+        probeRel += ".lprb";
+        probes.hash = spak::NameHash(probeRel.c_str());
+        probes.type = spak::kTypeLprb;
+        probes.noCompress = true;
+        probes.payload.insert(probes.payload.end(), "PRB0", "PRB0" + 4);
+        PushU32LE(probes.payload, 1);
+        probes.payload.insert(probes.payload.end(), &entry.payload[24], &entry.payload[40]);
+        for (int axis = 0; axis < 3; ++axis) PushU32LE(probes.payload, dimensions[axis]);
+        PushU32LE(probes.payload, probeCount);
+        for (unsigned int probe = 0; probe < probeCount; ++probe)
+            probes.payload.insert(probes.payload.end(),
+                                  &entry.payload[probeOffset + (size_t)probe * 60 + 12],
+                                  &entry.payload[probeOffset + (size_t)(probe + 1) * 60]);
+        probes.sysMemSize = (unsigned int)probes.payload.size();
+        entries.push_back(probes);
+        printf("       probes %s  count=%u bytes=%u\n", probeRel.c_str(), probeCount,
+               (unsigned int)probes.payload.size());
+    }
+    entries.push_back(entry);
+    printf("       lightmap %s  bytes=%u\n", rel.c_str(), (unsigned int)entry.payload.size());
+    return true;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -1019,7 +1111,7 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::string(argv[1]) == "build")
     {
         if (argc < 5)
-        { fprintf(stderr, "usage: spakc build <out.spak> <contentRoot> <meshRel...> [--image <imageRel>] [--font <fontRel>] [--raw]\n"); return 2; }
+        { fprintf(stderr, "usage: spakc build <out.spak> <contentRoot> <meshRel...> [--image <imageRel>] [--lmap <rel>] [--lmuv <rel>] [--raw]\n"); return 2; }
         const std::string outSpak = argv[2];
         const std::string root    = argv[3];
         bool compress = true;
@@ -1028,6 +1120,8 @@ int main(int argc, char** argv)
         std::vector<std::string> videos; // .mpg args become raw VIDE entries
         std::vector<std::string> audios; // .mp2 args become raw AUDI entries
         std::vector<std::string> fonts;
+        std::vector<std::string> lmaps;
+        std::vector<std::string> lmuvs;
         struct AnimationArg { std::string source, logical; };
         std::vector<AnimationArg> animations;
         for (int i = 4; i < argc; ++i)
@@ -1058,6 +1152,14 @@ int main(int argc, char** argv)
                 fonts.push_back(argv[++i]);
                 continue;
             }
+            if (arg == "--lmap" || arg == "--lmuv")
+            {
+                if (i + 1 >= argc)
+                { fprintf(stderr, "spakc: %s requires <logical-path>\n", arg.c_str()); return 2; }
+                if (arg == "--lmap") lmaps.push_back(argv[++i]);
+                else                 lmuvs.push_back(argv[++i]);
+                continue;
+            }
             std::string ext = arg.size() >= 4 ? arg.substr(arg.size() - 4) : "";
             for (size_t c = 0; c < ext.size(); ++c)
                 if (ext[c] >= 'A' && ext[c] <= 'Z') ext[c] = (char)(ext[c] - 'A' + 'a');
@@ -1065,7 +1167,7 @@ int main(int argc, char** argv)
             else if (ext == ".mp2") audios.push_back(arg);
             else                    meshes.push_back(arg);
         }
-        if (meshes.empty() && images.empty() && videos.empty() && audios.empty() && fonts.empty() && animations.empty())
+        if (meshes.empty() && images.empty() && videos.empty() && audios.empty() && fonts.empty() && animations.empty() && lmaps.empty() && lmuvs.empty())
         { fprintf(stderr, "spakc: no assets given\n"); return 2; }
         if (!ResolveBundler()) return 1;
         g_tmpBase = outSpak;
@@ -1086,6 +1188,10 @@ int main(int argc, char** argv)
             if (AddFont(entries, seenTex, rootAbs, fonts[i])) ++okFonts;
         for (size_t i = 0; i < animations.size(); ++i)
             if (AddAnimation(entries, animations[i].source, animations[i].logical)) ++okAnimations;
+        for (size_t i = 0; i < lmaps.size(); ++i)
+            AddLightmapSidecar(entries, rootAbs, lmaps[i], spak::kTypeLmap);
+        for (size_t i = 0; i < lmuvs.size(); ++i)
+            AddLightmapSidecar(entries, rootAbs, lmuvs[i], spak::kTypeLmuv);
         if (okMeshes == 0 && okImages == 0 && okVideos == 0 && okAudios == 0 && okFonts == 0 && okAnimations == 0)
         { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;

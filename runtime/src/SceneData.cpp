@@ -272,10 +272,12 @@ namespace scenedata
                     const JValue* m = ja.Find("model_path");
                     const JValue* s = ja.Find("shader_path");
                     const JValue* sc = ja.Find("script_path");
+                    const JValue* csh = ja.Find("castShadow");
                     if (t && t->type == JValue::Str) at.type = t->str;
                     if (m && m->type == JValue::Str) at.model_path = m->str;
                     if (s && s->type == JValue::Str) at.shader_path = s->str;
                     if (sc && sc->type == JValue::Str) at.script_path = sc->str;
+                    if (csh && csh->type == JValue::Bool) at.cast_shadow = csh->b;
                     const JValue* fov = ja.Find("fov");
                     const JValue* zn  = ja.Find("near");
                     const JValue* zf  = ja.Find("far");
@@ -320,6 +322,7 @@ namespace scenedata
                         }
                     const JValue* col = ja.Find("color");
                     const JValue* lin = ja.Find("intensity");
+                    const JValue* lmo = ja.Find("lightMode");
                     const JValue* rng = ja.Find("range");
                     const JValue* icn = ja.Find("innerCone");
                     const JValue* ocn = ja.Find("outerCone");
@@ -327,6 +330,7 @@ namespace scenedata
                     at.light_color[1] = NumAt(col, 1, 1.0f);
                     at.light_color[2] = NumAt(col, 2, 1.0f);
                     if (lin && lin->type == JValue::Number) at.light_intensity = (float)lin->num;
+                    if (lmo && lmo->type == JValue::Number) at.light_mode      = (int)lmo->num;
                     if (rng && rng->type == JValue::Number) at.light_range     = (float)rng->num;
                     if (icn && icn->type == JValue::Number) at.light_inner_deg = (float)icn->num;
                     if (ocn && ocn->type == JValue::Number) at.light_outer_deg = (float)ocn->num;

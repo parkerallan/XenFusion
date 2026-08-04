@@ -552,6 +552,17 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
 
     const size_t bufOff = headerBytes + subBytes;
 
+    for (unsigned int vertex = 0; vertex < vcount; ++vertex)
+    {
+        const float* position = reinterpret_cast<const float*>(
+            p + bufOff + (size_t)vertex * spak::kMeshVertexBytes);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (vertex == 0 || position[axis] < cm.mesh.boundsMin[axis]) cm.mesh.boundsMin[axis] = position[axis];
+            if (vertex == 0 || position[axis] > cm.mesh.boundsMax[axis]) cm.mesh.boundsMax[axis] = position[axis];
+        }
+    }
+
     // Payload VB/IB are already native-endian (baked big-endian) — copy straight in.
     if (FAILED(m_device->CreateVertexBuffer((UINT)vbytes, 0, 0, D3DPOOL_MANAGED, &cm.mesh.vb, NULL)))
     {

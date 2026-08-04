@@ -13,6 +13,7 @@ struct RtAttribute
     std::string model_path;  // for "3D Model"
     std::string shader_path; // for "Shader"
     std::string script_path; // for "Script": .lua gameplay script
+    bool        cast_shadow; // for "3D Model": explicit directional-shadow caster toggle
 
     // For "Animator": the source controller path is resolved to a cooked ANIM
     // entry by the runtime animation cache. Instances are created per object.
@@ -51,6 +52,7 @@ struct RtAttribute
     float light_range;     // "Point Light" / "Spot Light"
     float light_inner_deg; // "Spot Light": inner cone half-angle, degrees
     float light_outer_deg; // "Spot Light": outer cone half-angle, degrees
+    int   light_mode;      // 0=Baked, 1=Realtime, 2=Mixed
     bool  light_volumetric;           // "Spot Light": draw the beam cone
     float light_volumetric_intensity; // beam brightness scale
 
@@ -122,6 +124,7 @@ struct RtAttribute
 
     RtAttribute()
     {
+        cast_shadow = false;
         animator_playback_speed = 1.0f;
         animator_auto_play = true;
         cam_fov    = 45.0f;
@@ -139,6 +142,7 @@ struct RtAttribute
         cam_track_rot_offset[0] = cam_track_rot_offset[1] = cam_track_rot_offset[2] = 0.0f;
         light_color[0] = light_color[1] = light_color[2] = 1.0f;
         light_intensity = 1.0f;
+        light_mode = 1;
         light_range     = 15.0f;
         light_inner_deg = 20.0f;
         light_outer_deg = 30.0f;

@@ -94,6 +94,8 @@ if ($fxc -and (Test-Path $fxc)) {
     if (-not (Test-Path (Join-Path $engineShaderDir "standard.hlsl"))) { throw "Built-in material not found in: $engineShaderDir" }
     Get-ChildItem $engineShaderDir -Filter *.hlsl | ForEach-Object { Compile-Xeno $_.FullName $false }
     & $fxc /Tvs_3_0 /ESkinVSMain /Zpc "/Fo$(Join-Path $shaderOut 'standard_skin_vs.cso')" (Join-Path $engineShaderDir "standard.hlsl") 2>&1 | Out-Null
+    & $fxc /Tvs_3_0 /ELightmapVSMain /Zpc "/Fo$(Join-Path $shaderOut 'standard_lightmap_vs.cso')" (Join-Path $engineShaderDir "standard.hlsl") 2>&1 | Out-Null
+    & $fxc /Tps_3_0 /EShadowPSMain /Zpc "/Fo$(Join-Path $shaderOut 'standard_shadow_ps.cso')" (Join-Path $engineShaderDir "standard.hlsl") 2>&1 | Out-Null
     Get-ChildItem (Join-Path $Project "assets") -Filter *.hlsl -Recurse -ErrorAction SilentlyContinue |
         ForEach-Object { Compile-Xeno $_.FullName $true }           # custom shaders (+ //@ sidecar)
     Write-Output "Compiled Xenos shaders (.cso) + baked //@ sidecars"
@@ -195,12 +197,23 @@ if ($animators.Count -gt 0) {
 
 $imageArgs = @()
 foreach ($image in $images) { $imageArgs += @("--image", [string]$image) }
+$lightmapArgs = @()
+$lightmapRel = [System.IO.Path]::ChangeExtension($startup, ".lmap").Replace('\', '/')
+if (Test-Path (Join-Path $Project $lightmapRel)) {
+    $lightmapArgs += @("--lmap", $lightmapRel)
+    $base = $lightmapRel.Substring(0, $lightmapRel.Length - 5)
+    $lightmapArgs += @("--image", ($base + "_lm0.png"), "--image", ($base + "_lm1.png"))
+    foreach ($mesh in $meshes) {
+        $uv = [System.IO.Path]::ChangeExtension([string]$mesh, ".lmuv").Replace('\', '/')
+        if (Test-Path (Join-Path $Project $uv)) { $lightmapArgs += @("--lmuv", $uv) }
+    }
+}
 $fontArgs = @()
 foreach ($font in $fonts) { $fontArgs += @("--font", [string]$font) }
-$cookArgs = @($meshes) + @($imageArgs) + @($fontArgs) + @($videos) + @($audios) + @($animArgs)
+$cookArgs = @($meshes) + @($imageArgs) + @($lightmapArgs) + @($fontArgs) + @($videos) + @($audios) + @($animArgs)
 if ($cookArgs.Count -gt 0) {
     & $spakcExe build (Join-Path $out "game.spak") $Project @cookArgs
-    if ($LASTEXITCODE -ne 0) { throw "spakc cook failed" }
+    if ($LASTEXITCODE -ne 0) { throw "spakc cook failed (exit $LASTEXITCODE)" }
 } else {
     Write-Output "Note: startup scene references no packaged assets; no game.spak written (shader-only scene)"
 }

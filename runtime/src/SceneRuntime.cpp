@@ -8,6 +8,7 @@
 
 #include <xgraphics.h> // GPU_EDRAM_TILE_SIZE (env-capture EDRAM placement)
 
+#include <float.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -24,6 +25,8 @@ SceneRuntime::SceneRuntime()
 namespace
 {
     const float kPi = 3.14159265f;
+    const UINT  kShadowMapSize = 1024;
+    const float kShadowBias = 0.0015f;
 
     // MeshVertex layout: pos(3) normal(3) tangent(3) uv(2) = 11 floats, 44 bytes.
     void PutVertex(unsigned char* p,
@@ -35,6 +38,31 @@ namespace
         float f[11] = { px, py, pz, nx, ny, nz, tx, ty, tz, u, v };
         memcpy(p, f, sizeof(f)); // native-endian, matching the converted mesh buffers
     }
+
+    D3DMATRIX OrthoOffCenterLH(float left, float right, float bottom, float top, float zn, float zf)
+    {
+        D3DMATRIX m;
+        ZeroMemory(&m, sizeof(m));
+        m._11 = 2.0f / (right - left);
+        m._22 = 2.0f / (top - bottom);
+        m._33 = 1.0f / (zf - zn);
+        m._41 = (left + right) / (left - right);
+        m._42 = (top + bottom) / (bottom - top);
+        m._43 = zn / (zn - zf);
+        m._44 = 1.0f;
+        return m;
+    }
+
+    void UploadShadowMatrix(IDirect3DDevice9* device, const D3DMATRIX& matrix)
+    {
+        const float columns[4][4] = {
+            {matrix._11, matrix._21, matrix._31, matrix._41},
+            {matrix._12, matrix._22, matrix._32, matrix._42},
+            {matrix._13, matrix._23, matrix._33, matrix._43},
+            {matrix._14, matrix._24, matrix._34, matrix._44}
+        };
+        device->SetVertexShaderConstantF(225, &columns[0][0], 4);
+    }
 }
 
 bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot)
@@ -42,13 +70,18 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     m_device = device;
     m_root   = contentRoot;
 
-    m_mesh_decl = m_skin_mesh_decl = NULL;
+    m_mesh_decl = m_skin_mesh_decl = m_lightmap_mesh_decl = NULL;
     m_def_white = m_def_normal = m_def_black = NULL;
     m_def_envcube = NULL; m_env = NULL;
+    m_shadowRT = NULL; m_shadowDepth = NULL; m_shadowTexture = NULL;
+    m_shadow_enabled = false; m_shadow_valid = false;
+    m_shadowMatrix = Identity();
     m_envRT = NULL; m_envDepth = NULL; m_envDynCube = NULL; m_envBlurCube = NULL;
     m_envBlurTmp = NULL; m_env_captured = false;
     m_quad_vb = NULL; m_quad_ib = NULL; m_cube_vb = NULL; m_cube_ib = NULL;
     m_beam_vb = NULL; m_spot_beam_count = 0;
+    m_frame_dt = 0.0f;
+    m_frame_prepared = false;
 
     // Fixed camera: the editor's default orbit framing (no input on the console).
     m_yaw = 0.6f; m_pitch = 0.5f; m_distance = 20.0f;
@@ -69,6 +102,7 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     m_spot_dir[0][2] = m_spot_dir[1][2] = 1.0f;
     m_spot_dir[0][3] = m_spot_dir[1][3] = 1.0f;
     m_ambient[0] = 0.22f; m_ambient[1] = 0.22f; m_ambient[2] = 0.25f; m_ambient[3] = 0.0f;
+    memset(m_baked_ambient, 0, sizeof(m_baked_ambient));
 
     m_content.Init(device, contentRoot);
 
@@ -98,6 +132,16 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
         D3DDECL_END()
     };
     if (FAILED(m_device->CreateVertexDeclaration(skinElems, &m_skin_mesh_decl)))
+        return false;
+    const D3DVERTEXELEMENT9 lightmapElems[] = {
+        {0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
+        {0, 24, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT, 0},
+        {0, 36, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+        {0, 44, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
+        D3DDECL_END()
+    };
+    if (FAILED(m_device->CreateVertexDeclaration(lightmapElems, &m_lightmap_mesh_decl)))
         return false;
 
     m_def_white  = SolidTexture(D3DCOLOR_ARGB(255, 255, 255, 255)); // diffuse
@@ -129,6 +173,23 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     // and the cube texture the faces resolve into. Failure just disables the
     // capture; the static/black env fallback still binds.
     {
+        D3DSURFACE_PARAMETERS shadowParams;
+        ZeroMemory(&shadowParams, sizeof(shadowParams));
+        shadowParams.Base = 0;
+        if (SUCCEEDED(m_device->CreateRenderTarget(kShadowMapSize, kShadowMapSize,
+                                                   D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE,
+                                                   0, FALSE, &m_shadowRT, &shadowParams)))
+        {
+            shadowParams.Base = m_shadowRT->Size / GPU_EDRAM_TILE_SIZE;
+            shadowParams.HierarchicalZBase = 0;
+            m_device->CreateDepthStencilSurface(kShadowMapSize, kShadowMapSize,
+                                                D3DFMT_D24S8, D3DMULTISAMPLE_NONE,
+                                                0, FALSE, &m_shadowDepth, &shadowParams);
+        }
+        m_device->CreateTexture(kShadowMapSize, kShadowMapSize, 1, 0,
+                                D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                                &m_shadowTexture, NULL);
+
         D3DSURFACE_PARAMETERS sp;
         ZeroMemory(&sp, sizeof(sp));
         sp.Base = 0;
@@ -158,9 +219,155 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
         OutputDebugStringA("scene: failed to load startup scene\n");
 
     BuildDrawLists();
+    LoadLightmaps(startup);
     BuildPhysics();
     BuildScripts();
     return true;
+}
+
+void SceneRuntime::LoadLightmaps(const std::string& startupScene)
+{
+    std::string metadataPath = startupScene;
+    const size_t sceneDot = metadataPath.find_last_of('.');
+    if (sceneDot != std::string::npos) metadataPath.erase(sceneDot);
+    const std::string atlasBase = metadataPath;
+    metadataPath += ".lmap";
+
+    const std::string probePath = atlasBase + ".lprb";
+    const SpakEntry* probeEntry = m_pak.Find(spak::NameHash(probePath.c_str()));
+    std::vector<BYTE> probeBlob;
+    if (probeEntry && probeEntry->type == spak::kTypeLprb && m_pak.ReadBlob(probeEntry, probeBlob) &&
+        probeBlob.size() >= 40 && memcmp(&probeBlob[0], "PRB0", 4) == 0 &&
+        endian::LoadU32LE(&probeBlob[4]) == 1)
+    {
+        m_probe_grid.spacing = endian::LoadF32LE(&probeBlob[8]);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            m_probe_grid.origin[axis] = endian::LoadF32LE(&probeBlob[12 + axis * 4]);
+            m_probe_grid.dimensions[axis] = endian::LoadU32LE(&probeBlob[24 + axis * 4]);
+        }
+        const unsigned int probeCount = endian::LoadU32LE(&probeBlob[36]);
+        if (probeBlob.size() == 40 + (size_t)probeCount * 48)
+        {
+            m_probe_grid.probes.resize(probeCount);
+            for (unsigned int probe = 0; probe < probeCount; ++probe)
+                for (int coefficient = 0; coefficient < 12; ++coefficient)
+                    m_probe_grid.probes[probe].sh[coefficient] =
+                        endian::LoadF32LE(&probeBlob[40 + (size_t)probe * 48 + coefficient * 4]);
+            if (!m_probe_grid.Valid()) m_probe_grid.Clear();
+        }
+    }
+
+    const SpakEntry* metadataEntry = m_pak.Find(spak::NameHash(metadataPath.c_str()));
+    if (!metadataEntry || metadataEntry->type != spak::kTypeLmap)
+        return;
+    std::vector<BYTE> metadata;
+    if (!m_pak.ReadBlob(metadataEntry, metadata) || metadata.size() < 40 ||
+        memcmp(&metadata[0], "LMP0", 4) != 0 || endian::LoadU32LE(&metadata[4]) != 3)
+        return;
+
+    const unsigned int instanceCount = endian::LoadU32LE(&metadata[16]);
+    if (instanceCount > m_scene.objects.size() || metadata.size() < 40 + instanceCount * 20)
+        return;
+
+    for (unsigned int bindingIndex = 0; bindingIndex < instanceCount; ++bindingIndex)
+    {
+        const unsigned char* binding = &metadata[40 + bindingIndex * 20];
+        const unsigned int objectIndex = endian::LoadU32LE(binding);
+        if (objectIndex >= m_scene.objects.size())
+            continue;
+        float scaleOffset[4];
+        for (int component = 0; component < 4; ++component)
+            scaleOffset[component] = endian::LoadF32LE(binding + 4 + component * 4);
+
+        std::string modelPath;
+        const RtObject& object = m_scene.objects[objectIndex];
+        for (size_t attributeIndex = 0; attributeIndex < object.attributes.size(); ++attributeIndex)
+            if (object.attributes[attributeIndex].type == "3D Model" &&
+                !object.attributes[attributeIndex].model_path.empty())
+            { modelPath = object.attributes[attributeIndex].model_path; break; }
+        if (modelPath.empty()) continue;
+
+        std::string uvPath = modelPath;
+        const size_t modelDot = uvPath.find_last_of('.');
+        if (modelDot != std::string::npos) uvPath.erase(modelDot);
+        uvPath += ".lmuv";
+        const SpakEntry* uvEntry = m_pak.Find(spak::NameHash(uvPath.c_str()));
+        const SpakEntry* meshEntry = m_pak.Find(spak::NameHash(modelPath.c_str()));
+        if (!uvEntry || uvEntry->type != spak::kTypeLmuv ||
+            !meshEntry || meshEntry->type != spak::kTypeMesh)
+            continue;
+
+        std::vector<BYTE> uvBlob, meshBlob;
+        if (!m_pak.ReadBlob(uvEntry, uvBlob) || !m_pak.ReadBlob(meshEntry, meshBlob) ||
+            uvBlob.size() < 28 || memcmp(&uvBlob[0], "LMU0", 4) != 0 ||
+            endian::LoadU32LE(&uvBlob[4]) != 2 || meshBlob.size() < spak::kMeshHeaderBytes)
+            continue;
+
+        const unsigned int meshMagic = endian::LoadU32BE(&meshBlob[0]);
+        if (meshMagic != spak::kMeshMagic)
+            continue;
+        const unsigned int sourceVertexCount = endian::LoadU32BE(&meshBlob[4]);
+        const unsigned int sourceIndexCount = endian::LoadU32BE(&meshBlob[8]);
+        const unsigned int subsetCount = endian::LoadU32BE(&meshBlob[12]);
+        const unsigned int uvSourceCount = endian::LoadU32LE(&uvBlob[8]);
+        const unsigned int uvVertexCount = endian::LoadU32LE(&uvBlob[20]);
+        const unsigned int uvIndexCount = endian::LoadU32LE(&uvBlob[24]);
+        const size_t sourceVertexOffset = spak::kMeshHeaderBytes + subsetCount * spak::kMeshSubsetBytes;
+        const size_t sourceIndexOffset = sourceVertexOffset + sourceVertexCount * spak::kMeshVertexBytes;
+        if (sourceVertexCount != uvSourceCount || sourceIndexCount != uvIndexCount ||
+            sourceIndexOffset + sourceIndexCount * 4 > meshBlob.size() ||
+            28 + uvVertexCount * 12 + uvIndexCount * 4 > uvBlob.size())
+            continue;
+
+        const unsigned int vertexStride = 52;
+        std::vector<BYTE> vertices(uvVertexCount * vertexStride);
+        bool valid = true;
+        for (unsigned int vertexIndex = 0; vertexIndex < uvVertexCount; ++vertexIndex)
+        {
+            const unsigned char* uvVertex = &uvBlob[28 + vertexIndex * 12];
+            const unsigned int sourceIndex = endian::LoadU32LE(uvVertex);
+            if (sourceIndex >= sourceVertexCount) { valid = false; break; }
+            unsigned char* destination = &vertices[vertexIndex * vertexStride];
+            memcpy(destination, &meshBlob[sourceVertexOffset + sourceIndex * spak::kMeshVertexBytes],
+                   spak::kMeshVertexBytes);
+            const float u = endian::LoadF32LE(uvVertex + 4) * scaleOffset[0] + scaleOffset[2];
+            const float v = endian::LoadF32LE(uvVertex + 8) * scaleOffset[1] + scaleOffset[3];
+            memcpy(destination + 44, &u, sizeof(u));
+            memcpy(destination + 48, &v, sizeof(v));
+        }
+        if (!valid) continue;
+
+        std::vector<unsigned int> indices(uvIndexCount);
+        for (unsigned int index = 0; index < uvIndexCount; ++index)
+        {
+            indices[index] = endian::LoadU32LE(&uvBlob[28 + uvVertexCount * 12 + index * 4]);
+            if (indices[index] >= uvVertexCount) { valid = false; break; }
+        }
+        if (!valid) continue;
+
+        LightmapMesh gpu;
+        if (FAILED(m_device->CreateVertexBuffer((UINT)vertices.size(), 0, 0, D3DPOOL_MANAGED, &gpu.vb, NULL)) ||
+            FAILED(m_device->CreateIndexBuffer((UINT)(indices.size() * sizeof(unsigned int)), 0,
+                                               D3DFMT_INDEX32, D3DPOOL_MANAGED, &gpu.ib, NULL)))
+        { gpu.Release(); continue; }
+        void* destination = NULL;
+        if (FAILED(gpu.vb->Lock(0, 0, &destination, 0))) { gpu.Release(); continue; }
+        memcpy(destination, &vertices[0], vertices.size());
+        gpu.vb->Unlock();
+        if (FAILED(gpu.ib->Lock(0, 0, &destination, 0))) { gpu.Release(); continue; }
+        memcpy(destination, &indices[0], indices.size() * sizeof(unsigned int));
+        gpu.ib->Unlock();
+        gpu.vertexCount = uvVertexCount;
+        m_lightmap_meshes[(int)objectIndex] = gpu;
+    }
+
+    if (!m_lightmap_meshes.empty())
+    {
+        m_lightmap0_path = atlasBase + "_lm0.png";
+        m_lightmap1_path = atlasBase + "_lm1.png";
+        OutputDebugStringA("lightmap: loaded directional mesh bindings\n");
+    }
 }
 
 // --- script::ScriptHost (runtime) ---
@@ -619,11 +826,6 @@ void SceneRuntime::DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int s
     m_device->SetPixelShaderConstantF(1, cam, 1);
     m_device->SetPixelShaderConstantF(2, m_ambient, 1);
     m_device->SetPixelShaderConstantF(6, m_light_col, 1);
-    m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
-    m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
-    m_device->SetPixelShaderConstantF(16, &m_spot_pos[0][0], 2);
-    m_device->SetPixelShaderConstantF(18, &m_spot_dir[0][0], 2);
-    m_device->SetPixelShaderConstantF(20, &m_spot_col[0][0], 2);
 
     // Pass 1 — opaque + cutout; pass 2 — blended (same order as Render).
     m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -863,9 +1065,16 @@ void SceneRuntime::Shutdown()
     if (m_envDynCube)  { m_envDynCube->Release();  m_envDynCube = NULL; }
     if (m_envDepth)    { m_envDepth->Release();    m_envDepth = NULL; }
     if (m_envRT)       { m_envRT->Release();       m_envRT = NULL; }
+    if (m_shadowTexture){ m_shadowTexture->Release(); m_shadowTexture = NULL; }
+    if (m_shadowDepth)  { m_shadowDepth->Release();   m_shadowDepth = NULL; }
+    if (m_shadowRT)     { m_shadowRT->Release();      m_shadowRT = NULL; }
     if (m_env)         { m_env->Release();         m_env = NULL; }
     if (m_def_envcube) { m_def_envcube->Release(); m_def_envcube = NULL; }
     if (m_def_white) { m_def_white->Release(); m_def_white = NULL; }
+        for (std::map<int, LightmapMesh>::iterator it = m_lightmap_meshes.begin();
+            it != m_lightmap_meshes.end(); ++it) it->second.Release();
+        m_lightmap_meshes.clear();
+        if (m_lightmap_mesh_decl) { m_lightmap_mesh_decl->Release(); m_lightmap_mesh_decl = NULL; }
     if (m_skin_mesh_decl) { m_skin_mesh_decl->Release(); m_skin_mesh_decl = NULL; }
     if (m_mesh_decl) { m_mesh_decl->Release(); m_mesh_decl = NULL; }
     m_content.Shutdown();
@@ -981,11 +1190,13 @@ void SceneRuntime::BuildDrawLists()
     m_video_items.clear();
     m_audio_items.clear();
     m_has_cam = false;
+    m_shadow_enabled = false;
 
     bool have_dir = false;
+    bool have_authored_direct = false;
     bool have_env = false;
-    int  point_count = 0;
-    int  spot_count = 0;
+    m_point_lights.clear();
+    m_spot_lights.clear();
     memset(m_light_dir, 0, sizeof(m_light_dir));
     memset(m_light_col, 0, sizeof(m_light_col));
     memset(m_point_pos, 0, sizeof(m_point_pos));
@@ -998,6 +1209,7 @@ void SceneRuntime::BuildDrawLists()
     m_spot_dir[0][2] = m_spot_dir[1][2] = 1.0f;
     m_spot_dir[0][3] = m_spot_dir[1][3] = 1.0f;
     m_ambient[0] = m_ambient[1] = m_ambient[2] = m_ambient[3] = 0.0f;
+    m_baked_ambient[0] = m_baked_ambient[1] = m_baked_ambient[2] = m_baked_ambient[3] = 0.0f;
     m_spot_beam_count = 0;
     int overlay_sequence = 0;
 
@@ -1009,13 +1221,28 @@ void SceneRuntime::BuildDrawLists()
 
         std::string model_path, shader_path;
         const RtAttribute* animator_attribute = NULL;
+        bool dynamic_lighting = false;
+        bool cast_shadow = false;
         for (size_t a = 0; a < o.attributes.size(); ++a)
         {
             const RtAttribute& at = o.attributes[a];
             if (at.type == "3D Model" && !at.model_path.empty() && model_path.empty())
+            {
                 model_path = at.model_path;
-            else if (at.type == "Animator" && !at.animator_controller_path.empty() && !animator_attribute)
-                animator_attribute = &at;
+                cast_shadow = at.cast_shadow;
+            }
+            else if (at.type == "Animator")
+            {
+                dynamic_lighting = true;
+                if (!at.animator_controller_path.empty() && !animator_attribute) animator_attribute = &at;
+            }
+            else if (at.type == "Rigid Body")
+            {
+                if (at.phys_kind != 0)
+                {
+                    dynamic_lighting = true;
+                }
+            }
             else if (at.type == "Shader" && !at.shader_path.empty() && shader_path.empty())
                 shader_path = at.shader_path;
             else if (at.type == "Camera" && at.cam_active && !m_has_cam)
@@ -1035,14 +1262,17 @@ void SceneRuntime::BuildDrawLists()
             }
             else if (at.type == "Directional Light" && !have_dir)
             {
+                have_authored_direct = true;
+                have_dir = true;
+                m_shadow_enabled = true;
                 // Direction = the object's forward (+Z through its rotation).
                 const float d2r = kPi / 180.0f;
                 const D3DMATRIX r = Multiply(Multiply(RotationX(o.rotation[0] * d2r),
                                                       RotationY(o.rotation[1] * d2r)),
                                              RotationZ(o.rotation[2] * d2r));
                 m_light_dir[0] = r._31; m_light_dir[1] = r._32; m_light_dir[2] = r._33;
-                for (int k = 0; k < 3; ++k) m_light_col[k] = at.light_color[k] * at.light_intensity;
-                have_dir = true;
+                if (lsel::IsRealtime(at.light_mode))
+                    for (int k = 0; k < 3; ++k) m_light_col[k] = at.light_color[k] * at.light_intensity;
             }
             else if (at.type == "Audio" && !at.audio_path.empty())
             {
@@ -1117,19 +1347,25 @@ void SceneRuntime::BuildDrawLists()
                 vi.muted     = at.video_muted;
                 m_video_items.push_back(vi);
             }
-            else if (at.type == "Point Light" && point_count < 4)
+            else if (at.type == "Point Light")
             {
+                have_authored_direct = true;
+                if (!lsel::IsRealtime(at.light_mode))
+                    continue;
                 const float range = at.light_range > 0.1f ? at.light_range : 0.1f;
+                lsel::PointLight light;
+                memset(&light, 0, sizeof(light));
                 for (int k = 0; k < 3; ++k)
                 {
-                    m_point_pos[point_count][k] = o.position[k];
-                    m_point_col[point_count][k] = at.light_color[k] * at.light_intensity;
+                    light.position[k] = o.position[k];
+                    light.color[k] = at.light_color[k] * at.light_intensity;
                 }
-                m_point_pos[point_count][3] = 1.0f / (range * range);
-                ++point_count;
+                light.invRangeSq = 1.0f / (range * range);
+                m_point_lights.push_back(light);
             }
-            else if (at.type == "Spot Light" && spot_count < 2)
+            else if (at.type == "Spot Light")
             {
+                have_authored_direct = true;
                 // Position + beam direction (+Z forward) from the transform.
                 const float d2r = kPi / 180.0f;
                 const D3DMATRIX r = Multiply(Multiply(RotationX(o.rotation[0] * d2r),
@@ -1142,18 +1378,25 @@ void SceneRuntime::BuildDrawLists()
                 if (inner > 89.0f) inner = 89.0f;
                 float outer = at.light_outer_deg;
                 if (outer < inner + 0.1f) outer = inner + 0.1f;
-                m_spot_pos[spot_count][0] = o.position[0];
-                m_spot_pos[spot_count][1] = o.position[1];
-                m_spot_pos[spot_count][2] = o.position[2];
-                m_spot_pos[spot_count][3] = 1.0f / range;
-                m_spot_dir[spot_count][0] = r._31;
-                m_spot_dir[spot_count][1] = r._32;
-                m_spot_dir[spot_count][2] = r._33;
-                m_spot_dir[spot_count][3] = cosf(inner * d2r);
-                for (int k = 0; k < 3; ++k) m_spot_col[spot_count][k] = at.light_color[k] * at.light_intensity;
-                m_spot_col[spot_count][3] = cosf(outer * d2r);
-                ++spot_count;
-                if (at.light_volumetric && at.light_volumetric_intensity > 0.0f)
+                if (lsel::IsRealtime(at.light_mode))
+                {
+                    lsel::SpotLight light;
+                    memset(&light, 0, sizeof(light));
+                    light.position[0] = o.position[0];
+                    light.position[1] = o.position[1];
+                    light.position[2] = o.position[2];
+                    light.direction[0] = r._31;
+                    light.direction[1] = r._32;
+                    light.direction[2] = r._33;
+                    light.invRange = 1.0f / range;
+                    light.innerCos = cosf(inner * d2r);
+                    light.outerCos = cosf(outer * d2r);
+                    for (int k = 0; k < 3; ++k)
+                        light.color[k] = at.light_color[k] * at.light_intensity;
+                    m_spot_lights.push_back(light);
+                }
+                if (at.light_volumetric && at.light_volumetric_intensity > 0.0f &&
+                    m_spot_beam_count < 2)
                 {
                     // Beam brightness: additive and double-sided, so a small
                     // gain reads as haze rather than a solid (tune by eye;
@@ -1176,9 +1419,13 @@ void SceneRuntime::BuildDrawLists()
             }
             else if (at.type == "Environment Light")
             {
-                // Every instance sums into the one ambient term (c2).
-                for (int k = 0; k < 3; ++k) m_ambient[k] += at.light_color[k] * at.light_intensity;
                 have_env = true;
+                if (lsel::IsRealtime(at.light_mode))
+                    for (int k = 0; k < 3; ++k)
+                        m_ambient[k] += at.light_color[k] * at.light_intensity;
+                if (at.light_mode != lsel::Realtime)
+                    for (int k = 0; k < 3; ++k)
+                        m_baked_ambient[k] += at.light_color[k] * at.light_intensity;
             }
         }
 
@@ -1201,6 +1448,8 @@ void SceneRuntime::BuildDrawLists()
             di.model_path = model_path;
             di.world = ComposeWorld(o.position, o.rotation, o.scale);
             di.object_index = (int)i;
+            di.dynamic_lighting = dynamic_lighting;
+            di.cast_shadow = cast_shadow;
             for (int k = 0; k < 3; ++k) di.scale[k] = o.scale[k];
             if (animator_attribute)
                 di.animator.Load(&m_pak, &m_cache, animator_attribute->animator_controller_path,
@@ -1220,7 +1469,7 @@ void SceneRuntime::BuildDrawLists()
         Vec3 lraw = { -0.4f, -1.0f, -0.5f };
         Vec3 ln = Normalize(lraw);
         m_light_dir[0] = ln.x; m_light_dir[1] = ln.y; m_light_dir[2] = ln.z;
-        const float w = (point_count == 0 && spot_count == 0) ? 1.0f : 0.0f;
+        const float w = have_authored_direct ? 0.0f : 1.0f;
         m_light_col[0] = m_light_col[1] = m_light_col[2] = w;
     }
     // No Environment Light authored: keep the legacy fixed ambient, so every
@@ -1233,11 +1482,228 @@ void SceneRuntime::BuildDrawLists()
     }
 }
 
-void SceneRuntime::Render(float dt)
+bool SceneRuntime::BuildDirectionalShadowMatrix(D3DMATRIX& outMatrix)
+{
+    if (!m_shadow_enabled || m_lightmap_meshes.empty())
+        return false;
+
+    lsel::Aabb bounds;
+    lsel::Aabb casterBounds;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        bounds.min[axis] = casterBounds.min[axis] = FLT_MAX;
+        bounds.max[axis] = casterBounds.max[axis] = -FLT_MAX;
+    }
+    bool haveBounds = false;
+    bool haveCasterBounds = false;
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+    {
+        const DrawItem& item = m_draw_items[index];
+        RtMesh* mesh = ResolveMesh(item.model_path);
+        if (!mesh)
+            continue;
+        lsel::Aabb transformed;
+        lsel::TransformAabb(mesh->boundsMin, mesh->boundsMax, &item.world.m[0][0], transformed);
+        if (m_lightmap_meshes.find(item.object_index) != m_lightmap_meshes.end())
+        {
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                if (transformed.min[axis] < bounds.min[axis]) bounds.min[axis] = transformed.min[axis];
+                if (transformed.max[axis] > bounds.max[axis]) bounds.max[axis] = transformed.max[axis];
+            }
+            haveBounds = true;
+        }
+        if (item.cast_shadow)
+        {
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                if (transformed.min[axis] < casterBounds.min[axis]) casterBounds.min[axis] = transformed.min[axis];
+                if (transformed.max[axis] > casterBounds.max[axis]) casterBounds.max[axis] = transformed.max[axis];
+            }
+            haveCasterBounds = true;
+        }
+    }
+    if (!haveBounds || !haveCasterBounds)
+        return false;
+
+    const Vec3 center = { (bounds.min[0] + bounds.max[0]) * 0.5f,
+                          (bounds.min[1] + bounds.max[1]) * 0.5f,
+                          (bounds.min[2] + bounds.max[2]) * 0.5f };
+    Vec3 lightDirRaw = { m_light_dir[0], m_light_dir[1], m_light_dir[2] };
+    const Vec3 lightDirection = Normalize(lightDirRaw);
+    if (Dot(lightDirection, lightDirection) < 1.0e-6f)
+        return false;
+
+    const float dx = bounds.max[0] - bounds.min[0];
+    const float dy = bounds.max[1] - bounds.min[1];
+    const float dz = bounds.max[2] - bounds.min[2];
+    const float radius = dx * dx + dy * dy + dz * dz;
+    const float extent = radius > 1.0f ? sqrtf(radius) * 0.5f : 1.0f;
+    const Vec3 eye = { center.x - lightDirection.x * (extent * 2.0f + 10.0f),
+                       center.y - lightDirection.y * (extent * 2.0f + 10.0f),
+                       center.z - lightDirection.z * (extent * 2.0f + 10.0f) };
+    Vec3 up;
+    if (fabsf(lightDirection.y) > 0.95f)
+    {
+        up.x = 1.0f; up.y = 0.0f; up.z = 0.0f;
+    }
+    else
+    {
+        up.x = 0.0f; up.y = 1.0f; up.z = 0.0f;
+    }
+    const D3DMATRIX view = LookAtLH(eye, center, up);
+
+    Vec3 lightMin = { FLT_MAX, FLT_MAX, FLT_MAX };
+    Vec3 lightMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        const Vec3 world = { (corner & 1) ? bounds.max[0] : bounds.min[0],
+                             (corner & 2) ? bounds.max[1] : bounds.min[1],
+                             (corner & 4) ? bounds.max[2] : bounds.min[2] };
+        const Vec3 light = TransformPoint(world, view);
+        if (light.x < lightMin.x) lightMin.x = light.x;
+        if (light.y < lightMin.y) lightMin.y = light.y;
+        if (light.z < lightMin.z) lightMin.z = light.z;
+        if (light.x > lightMax.x) lightMax.x = light.x;
+        if (light.y > lightMax.y) lightMax.y = light.y;
+        if (light.z > lightMax.z) lightMax.z = light.z;
+    }
+
+    Vec3 casterLightMin = { FLT_MAX, FLT_MAX, FLT_MAX };
+    Vec3 casterLightMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        const Vec3 world = { (corner & 1) ? casterBounds.max[0] : casterBounds.min[0],
+                             (corner & 2) ? casterBounds.max[1] : casterBounds.min[1],
+                             (corner & 4) ? casterBounds.max[2] : casterBounds.min[2] };
+        const Vec3 light = TransformPoint(world, view);
+        if (light.x < casterLightMin.x) casterLightMin.x = light.x;
+        if (light.y < casterLightMin.y) casterLightMin.y = light.y;
+        if (light.z < casterLightMin.z) casterLightMin.z = light.z;
+        if (light.x > casterLightMax.x) casterLightMax.x = light.x;
+        if (light.y > casterLightMax.y) casterLightMax.y = light.y;
+        if (light.z > casterLightMax.z) casterLightMax.z = light.z;
+    }
+    if (casterLightMin.z < lightMin.z) lightMin.z = casterLightMin.z;
+    if (casterLightMax.z > lightMax.z) lightMax.z = casterLightMax.z;
+    const float casterWidth = casterLightMax.x - casterLightMin.x;
+    const float casterHeight = casterLightMax.y - casterLightMin.y;
+    const float casterExtent = casterWidth > casterHeight ? casterWidth : casterHeight;
+    const float padding = casterExtent * 0.05f > 0.25f ? casterExtent * 0.05f : 0.25f;
+    const D3DMATRIX projection = OrthoOffCenterLH(casterLightMin.x - padding, casterLightMax.x + padding,
+                                                   casterLightMin.y - padding, casterLightMax.y + padding,
+                                                   (lightMin.z - 5.0f > 0.1f) ? (lightMin.z - 5.0f) : 0.1f,
+                                                   lightMax.z + 5.0f);
+    outMatrix = Multiply(view, projection);
+    return true;
+}
+
+void SceneRuntime::RenderDirectionalShadow()
+{
+    m_shadow_valid = false;
+    if (!m_device || !m_shadow_enabled || !m_shadowRT || !m_shadowDepth || !m_shadowTexture)
+        return;
+
+    RtShader* mat = m_content.Standard();
+    if (!mat || !mat->vs || !mat->shadowPs)
+        return;
+
+    if (!BuildDirectionalShadowMatrix(m_shadowMatrix))
+        return;
+
+    const D3DVIEWPORT9 viewport = { 0, 0, kShadowMapSize, kShadowMapSize, 0.0f, 1.0f };
+    const D3DRECT shadowRect = { 0, 0, (LONG)kShadowMapSize, (LONG)kShadowMapSize };
+
+    m_device->SetRenderTarget(0, m_shadowRT);
+    m_device->SetDepthStencilSurface(m_shadowDepth);
+    m_device->SetViewport(&viewport);
+    m_device->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFF, 1.0f, 0);
+
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    m_device->SetPixelShader(mat->shadowPs);
+    UploadShadowMatrix(m_device, m_shadowMatrix);
+
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+    {
+        const DrawItem& item = m_draw_items[index];
+        RtMesh* gm = ResolveMesh(item.model_path);
+        if (!gm)
+            continue;
+        if (!item.cast_shadow)
+            continue;
+
+        const bool useSkin = gm->IsSkinned() && m_skin_mesh_decl && mat->skinVs;
+        const D3DMATRIX wvp = Multiply(item.world, m_shadowMatrix);
+        LPD3DXCONSTANTTABLE constants = useSkin ? mat->skinVsConstants : mat->vsConstants;
+        if (constants)
+        {
+            D3DXHANDLE hWVP = useSkin ? mat->hSkinWVP : mat->hWVP;
+            D3DXHANDLE hWorld = useSkin ? mat->hSkinWorld : mat->hWorld;
+            if (hWVP) constants->SetMatrix(m_device, hWVP, (const D3DXMATRIX*)&wvp);
+            if (hWorld) constants->SetMatrix(m_device, hWorld, (const D3DXMATRIX*)&item.world);
+        }
+
+        m_device->SetVertexDeclaration(useSkin ? m_skin_mesh_decl : m_mesh_decl);
+        m_device->SetVertexShader(useSkin ? mat->skinVs : mat->vs);
+        m_device->SetStreamSource(0, gm->vb, 0, 44);
+        m_device->SetStreamSource(1, useSkin ? gm->skinVb : NULL, 0,
+                                  useSkin ? spak::kSkinInfluenceBytes : 0);
+        m_device->SetIndices(gm->ib);
+        if (useSkin)
+        {
+            float palette[spak::kMaxSkinJoints * 12];
+            const float* source = NULL;
+            if (item.skin_palette.size() == gm->joints.size() * 12)
+                source = &item.skin_palette[0];
+            else
+            {
+                memset(palette, 0, sizeof(palette));
+                for (size_t joint = 0; joint < gm->joints.size(); ++joint)
+                {
+                    float* columns = palette + joint * 12;
+                    columns[0] = 1.0f;
+                    columns[5] = 1.0f;
+                    columns[10] = 1.0f;
+                }
+                source = palette;
+            }
+            m_device->SetVertexShaderConstantF(8, source, (UINT)gm->joints.size() * 3);
+        }
+
+        for (size_t subsetIndex = 0; subsetIndex < gm->subsets.size(); ++subsetIndex)
+        {
+            const RtSubset& subset = gm->subsets[subsetIndex];
+            if (subset.alpha == RtBlend)
+                continue;
+            m_device->SetTexture(0, subset.diffuse ? subset.diffuse : m_def_white);
+            m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gm->vertexCount,
+                                           subset.indexStart, subset.indexCount / 3);
+        }
+    }
+
+    m_device->Resolve(D3DRESOLVE_RENDERTARGET0, &shadowRect, m_shadowTexture,
+                      NULL, 0, 0, NULL, 0.0f, 0, NULL);
+    m_device->SetTexture(0, NULL);
+    m_shadow_valid = true;
+}
+
+void SceneRuntime::PrepareFrame(float dt)
 {
     if (!m_device)
         return;
 
+    m_frame_dt = dt;
+    m_frame_prepared = true;
     m_time += dt;
 
     // Register a budgeted batch of finished streaming loads into live resources
@@ -1332,6 +1798,16 @@ void SceneRuntime::Render(float dt)
                                       &colliderWorld.m[0][0]);
         }
     }
+}
+
+void SceneRuntime::Render(float dt)
+{
+    if (!m_device)
+        return;
+
+    if (!m_frame_prepared)
+        PrepareFrame(dt);
+    const float frameDt = m_frame_dt;
 
     // View through the scene's active "Camera" attribute when it has one, else
     // the fixed orbit framing baked at Init (no input on the console either way).
@@ -1374,7 +1850,7 @@ void SceneRuntime::Render(float dt)
             camr::ResolveFollow(co.position, co.rotation, tpos,
                                 ca.cam_follow_offset, ca.cam_follow_orbit,
                                 ca.cam_follow_rot_offset, ca.cam_follow_lock, v);
-            camr::SmoothFollow(v, m_follow_smooth, ca.cam_follow_smoothing, dt);
+            camr::SmoothFollow(v, m_follow_smooth, ca.cam_follow_smoothing, frameDt);
         }
         else if (ca.cam_type == camr::CamTrack && ca.cam_track_points.size() >= 6)
         {
@@ -1382,7 +1858,7 @@ void SceneRuntime::Render(float dt)
             const int    n   = (int)(ca.cam_track_points.size() / 3);
             const float total = camr::TrackTotalLength(pts, n);
             camr::AdvanceTrack(m_track_dist, m_track_speed, ca.cam_track_speed,
-                               ca.cam_track_accel, dt, total);
+                               ca.cam_track_accel, frameDt, total);
             camr::ResolveTrack(pts, n, m_track_dist, ca.cam_track_rot_offset, v);
         }
 
@@ -1455,24 +1931,36 @@ void SceneRuntime::Render(float dt)
             m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
             m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
         }
+        for (DWORD s = 8; s <= 9; ++s)
+        {
+            m_device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            m_device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            m_device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        }
+        m_device->SetSamplerState(10, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        m_device->SetSamplerState(10, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        m_device->SetSamplerState(10, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        m_device->SetSamplerState(10, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        m_device->SetSamplerState(10, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         // Only the blurred chain has levels to read; the painted cube and the
         // black default are single-level, so roughness gets max mip 0 there.
         const bool envBlurred = m_env_captured && m_envBlurCube && m_env_blur.Valid();
+        const bool shadowReady = m_shadow_enabled && m_shadow_valid && m_shadowTexture;
+        m_device->SetTexture(10, shadowReady ? (IDirect3DBaseTexture9*)m_shadowTexture
+                                             : (IDirect3DBaseTexture9*)m_def_white);
+        UploadShadowMatrix(m_device, m_shadowMatrix);
         m_device->SetTexture(5, envBlurred      ? (IDirect3DBaseTexture9*)m_envBlurCube
                               : m_env_captured  ? (IDirect3DBaseTexture9*)m_envDynCube
                               : m_env           ? (IDirect3DBaseTexture9*)m_env
                                                 : (IDirect3DBaseTexture9*)m_def_envcube);
-        const float roughCfg[4] = { envBlurred ? envcube::kMaxMip : 0.0f, 0.0f, 0.0f, 0.0f };
+        const float roughCfg[4] = { envBlurred ? envcube::kMaxMip : 0.0f,
+                        m_baked_ambient[0], m_baked_ambient[1], m_baked_ambient[2] };
         m_device->SetPixelShaderConstantF(22, roughCfg, 1);
         m_device->SetPixelShaderConstantF(0, lightDir, 1);
         m_device->SetPixelShaderConstantF(1, camPos, 1);
         m_device->SetPixelShaderConstantF(2, m_ambient, 1);
         m_device->SetPixelShaderConstantF(6, m_light_col, 1);
-        m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
-        m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
-        m_device->SetPixelShaderConstantF(16, &m_spot_pos[0][0], 2);
-        m_device->SetPixelShaderConstantF(18, &m_spot_dir[0][0], 2);
-        m_device->SetPixelShaderConstantF(20, &m_spot_col[0][0], 2);
 
         // Pass 1 — opaque + cutout subsets (both write depth). Cutout (hair cards,
         // foliage) is a masked alpha: the per-subset states (alpha test + Xenos
@@ -1485,7 +1973,7 @@ void SceneRuntime::Render(float dt)
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (gm)
                 DrawMesh(gm, m_draw_items[i].world, vp, std_mat, false /*opaque+cutout*/,
-                         &m_draw_items[i].skin_palette);
+                         &m_draw_items[i].skin_palette, m_draw_items[i].object_index);
         }
         m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
@@ -1505,7 +1993,7 @@ void SceneRuntime::Render(float dt)
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (gm)
                 DrawMesh(gm, m_draw_items[i].world, vp, std_mat, true /*blend*/,
-                         &m_draw_items[i].skin_palette);
+                         &m_draw_items[i].skin_palette, m_draw_items[i].object_index);
         }
         m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -1567,13 +2055,14 @@ void SceneRuntime::Render(float dt)
 
     // --- Image/video overlays (screen-space, on top of everything) ---
     // Drawn inside the tiled pass — a clip-space quad replays fine per band.
-    RenderOverlay(dt);
+    RenderOverlay(frameDt);
 
     // --- Lua-scriptable GUI (menus), last so it sits over the overlays ---
     RenderGui();
 
     // --- Audio attribute sources (the console always plays) ---
-    UpdateAudio(dt, view);
+    UpdateAudio(frameDt, view);
+    m_frame_prepared = false;
 }
 
 // Draw the GUI tree. Runs inside the tiling bracket, right after the overlay:
@@ -2192,7 +2681,7 @@ void SceneRuntime::RenderOverlay(float dt)
 // its textures, set its cutout states (opaque pass only), and draw its index
 // range. Pass-level states (blend / depth) are set by the caller.
 void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat,
-                            bool blendPass, const std::vector<float>* skinPalette)
+                            bool blendPass, const std::vector<float>* skinPalette, int objectIndex)
 {
     // Skip the transform upload when nothing in this mesh belongs to the pass.
     bool any = false;
@@ -2201,8 +2690,25 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
     if (!any)
         return;
 
+    lsel::Aabb bounds;
+    lsel::TransformAabb(gm->boundsMin, gm->boundsMax, &world.m[0][0], bounds);
+    lsel::PackPoints(m_point_lights.empty() ? NULL : &m_point_lights[0],
+                     m_point_lights.size(), bounds, m_point_pos, m_point_col);
+    lsel::PackSpots(m_spot_lights.empty() ? NULL : &m_spot_lights[0],
+                    m_spot_lights.size(), bounds, m_spot_pos, m_spot_dir, m_spot_col);
+    m_device->SetPixelShaderConstantF(7, &m_point_pos[0][0], 4);
+    m_device->SetPixelShaderConstantF(11, &m_point_col[0][0], 4);
+    m_device->SetPixelShaderConstantF(16, &m_spot_pos[0][0], 2);
+    m_device->SetPixelShaderConstantF(18, &m_spot_dir[0][0], 2);
+    m_device->SetPixelShaderConstantF(20, &m_spot_col[0][0], 2);
+
     const D3DMATRIX wvp = Multiply(world, vp);
-    const bool useSkin = gm->IsSkinned() && m_skin_mesh_decl && mat->skinVs;
+    IDirect3DTexture9* lightmap0 = m_lightmap0_path.empty() ? NULL : m_cache.GetTexture(m_lightmap0_path);
+    IDirect3DTexture9* lightmap1 = m_lightmap1_path.empty() ? NULL : m_cache.GetTexture(m_lightmap1_path);
+    std::map<int, LightmapMesh>::iterator lightmap = m_lightmap_meshes.find(objectIndex);
+    const bool useLightmap = lightmap != m_lightmap_meshes.end() && lightmap0 && lightmap1 &&
+                             m_lightmap_mesh_decl && mat->lightmapVs;
+    const bool useSkin = !useLightmap && gm->IsSkinned() && m_skin_mesh_decl && mat->skinVs;
     LPD3DXCONSTANTTABLE constants = useSkin ? mat->skinVsConstants : mat->vsConstants;
     if (constants)
     {
@@ -2211,12 +2717,38 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
         if (hWVP)   constants->SetMatrix(m_device, hWVP,   (const D3DXMATRIX*)&wvp);
         if (hWorld) constants->SetMatrix(m_device, hWorld, (const D3DXMATRIX*)&world);
     }
-    m_device->SetVertexDeclaration(useSkin ? m_skin_mesh_decl : m_mesh_decl);
-    m_device->SetVertexShader(useSkin ? mat->skinVs : mat->vs);
-    m_device->SetStreamSource(0, gm->vb, 0, 44);
+    m_device->SetVertexDeclaration(useLightmap ? m_lightmap_mesh_decl :
+                                   useSkin ? m_skin_mesh_decl : m_mesh_decl);
+    m_device->SetVertexShader(useLightmap ? mat->lightmapVs : useSkin ? mat->skinVs : mat->vs);
+    m_device->SetStreamSource(0, useLightmap ? lightmap->second.vb : gm->vb, 0,
+                              useLightmap ? 52 : 44);
     m_device->SetStreamSource(1, useSkin ? gm->skinVb : NULL, 0,
                               useSkin ? spak::kSkinInfluenceBytes : 0);
-    m_device->SetIndices(gm->ib);
+    m_device->SetIndices(useLightmap ? lightmap->second.ib : gm->ib);
+    float probeColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float probeDirection[4] = {0.5f, 0.5f, 1.0f, 0.0f};
+    bool dynamicLighting = gm->IsSkinned();
+    for (size_t itemIndex = 0; itemIndex < m_draw_items.size(); ++itemIndex)
+        if (m_draw_items[itemIndex].object_index == objectIndex)
+        { dynamicLighting = dynamicLighting || m_draw_items[itemIndex].dynamic_lighting; break; }
+    if (dynamicLighting)
+    {
+        const float position[3] = {world._41, world._42, world._43};
+        lprobe::Sample(m_probe_grid, position, probeColor, probeDirection);
+    }
+    const bool shadowReceiver = useLightmap && !dynamicLighting &&
+                                m_shadow_enabled && m_shadow_valid && m_shadowTexture;
+    const float shadowParams[4] = {
+        1.0f / (float)kShadowMapSize,
+        1.0f / (float)kShadowMapSize,
+        kShadowBias,
+        shadowReceiver ? 1.0f : 0.0f
+    };
+    m_device->SetPixelShaderConstantF(24, probeColor, 1);
+    m_device->SetPixelShaderConstantF(25, probeDirection, 1);
+    m_device->SetPixelShaderConstantF(23, shadowParams, 1);
+    m_device->SetTexture(8, useLightmap ? lightmap0 : m_def_black);
+    m_device->SetTexture(9, useLightmap ? lightmap1 : m_def_normal);
     if (useSkin)
     {
         float palette[spak::kMaxSkinJoints * 12];
@@ -2284,7 +2816,8 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
         m_device->SetTexture(4, s.metallic ? s.metallic : m_def_black);
         m_device->SetTexture(6, s.clearcoat ? s.clearcoat : m_def_black);
         m_device->SetTexture(7, s.roughness ? s.roughness : m_def_black);
-        m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gm->vertexCount,
+        m_device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+                           useLightmap ? lightmap->second.vertexCount : gm->vertexCount,
                                        s.indexStart, s.indexCount / 3);
     }
 }

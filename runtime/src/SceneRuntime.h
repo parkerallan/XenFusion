@@ -4,9 +4,11 @@
 #include "SceneData.h"
 #include "StreamCache.h"
 #include "RuntimeAnimator.h"
+#include "light/LightProbeGrid.h"
 #include "video/VideoPlayer.h"
 #include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
+#include "light/LightSelect.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
@@ -77,6 +79,8 @@ public:
     // blurred chain roughness samples. MUST run OUTSIDE the tiling bracket —
     // call before XboxRenderer::BeginFrame(). Skips silently when the scene has
     // nothing metallic, rough or clearcoated.
+    void PrepareFrame(float dt);
+    void RenderDirectionalShadow();
     void RenderEnvCapture();
 
     // Draw the whole scene for one frame (device scene already begun by the
@@ -89,6 +93,8 @@ private:
         std::string model_path;
         D3DMATRIX   world;
         int         object_index; // for physics pose override
+        bool        dynamic_lighting;
+        bool        cast_shadow;
         float       scale[3];     // authored scale (collider is sized separately)
         RuntimeAnimator animator;
         std::vector<float> skin_palette;
@@ -105,6 +111,7 @@ private:
     };
 
     void BuildDrawLists();
+    void LoadLightmaps(const std::string& startupScene);
     void BuildPhysics(); // create the Bullet world from Rigid Body / Trigger attributes
     void BuildScripts(); // load each object's .lua and run on_start
     // Extract CPU collision geometry (positions, + indices for exact) for a mesh
@@ -113,7 +120,8 @@ private:
     bool LoadPakMeshGeometry(const std::string& relPath, std::vector<float>& pos,
                              std::vector<unsigned int>& idx, bool wantIndices);
     void DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat,
-                  bool blendPass, const std::vector<float>* skinPalette = NULL);
+                  bool blendPass, const std::vector<float>* skinPalette = NULL,
+                  int objectIndex = -1);
     void DrawShaderItem(const ShaderItem& item, RtShader& shader, const D3DMATRIX& viewProj);
     IDirect3DTexture9* SolidTexture(D3DCOLOR argb);
     bool BuildGeometry();
@@ -126,6 +134,24 @@ private:
     std::string                  m_root;
     Content                      m_content;
     RtScene                      m_scene;
+
+    struct LightmapMesh
+    {
+        IDirect3DVertexBuffer9* vb;
+        IDirect3DIndexBuffer9* ib;
+        unsigned int vertexCount;
+        LightmapMesh() : vb(NULL), ib(NULL), vertexCount(0) {}
+        void Release()
+        {
+            if (ib) { ib->Release(); ib = NULL; }
+            if (vb) { vb->Release(); vb = NULL; }
+            vertexCount = 0;
+        }
+    };
+    IDirect3DVertexDeclaration9* m_lightmap_mesh_decl;
+    std::map<int, LightmapMesh>  m_lightmap_meshes;
+    std::string                  m_lightmap0_path;
+    std::string                  m_lightmap1_path;
 
     // Bloom post shaders (owned here, used by XboxRenderer's glow chain).
     RtShader                     m_bloom_bright;
@@ -156,6 +182,16 @@ private:
     IDirect3DCubeTexture9*       m_def_envcube; // black cube: env fallback
     IDirect3DCubeTexture9*       m_env;         // static env map (assets/env), fallback
 
+    // Directional shadow map: dynamic casters only into a 1024^2 orthographic
+    // map, rendered before BeginTiling into an EDRAM RT at Base 0 and resolved
+    // to a texture sampled by standard.hlsl (s10/c23/c225-c228).
+    IDirect3DSurface9*           m_shadowRT;
+    IDirect3DSurface9*           m_shadowDepth;
+    IDirect3DTexture9*           m_shadowTexture;
+    D3DMATRIX                    m_shadowMatrix;
+    bool                         m_shadow_enabled;
+    bool                         m_shadow_valid;
+
     // Dynamic environment capture: EDRAM working target + depth (Base 0 —
     // aliases the tile targets, legal because the capture runs before
     // BeginTiling) resolved face-by-face into the cube texture.
@@ -175,6 +211,7 @@ private:
     void DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int skipItem);
     // Cone-filter the capture into m_envBlurCube's levels (env_blur.hlsl).
     void BuildEnvBlurChain();
+    bool BuildDirectionalShadowMatrix(D3DMATRIX& outMatrix);
 
     // Unit quad + unit cube (mesh vertex layout) for standalone shaders.
     IDirect3DVertexBuffer9*      m_quad_vb;
@@ -213,14 +250,20 @@ private:
     // no light attributes at all.
     float m_light_dir[4];
     float m_light_col[4];
+    std::vector<lsel::PointLight> m_point_lights;
+    std::vector<lsel::SpotLight>  m_spot_lights;
     float m_point_pos[4][4]; // xyz + w = 1/range^2
     float m_point_col[4][4]; // rgb * intensity; zero = unused slot
     float m_spot_pos[2][4];  // xyz + w = 1/range
     float m_spot_dir[2][4];  // xyz = beam dir (+Z fwd), w = cos(inner half-angle)
     float m_spot_col[2][4];  // rgb * intensity (zero = unused), w = cos(outer)
     float m_ambient[4];      // environment-light sum or the legacy default
+    float m_baked_ambient[4]; // baked env is global and never directionally modulated
+    lprobe::Grid m_probe_grid;
 
     float m_time;
+    float m_frame_dt;
+    bool  m_frame_prepared;
 
     std::vector<DrawItem>   m_draw_items;
     std::vector<ShaderItem> m_shader_items;

@@ -91,6 +91,8 @@ void RtShader::Release()
     if (skinVsConstants) { skinVsConstants->Release(); skinVsConstants = NULL; }
     if (vsConstants) { vsConstants->Release(); vsConstants = NULL; }
     if (ps) { ps->Release(); ps = NULL; }
+    if (shadowPs) { shadowPs->Release(); shadowPs = NULL; }
+    if (lightmapVs) { lightmapVs->Release(); lightmapVs = NULL; }
     if (skinVs) { skinVs->Release(); skinVs = NULL; }
     if (vs) { vs->Release(); vs = NULL; }
 }
@@ -247,6 +249,17 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         Log("mesh: truncated ", relPath);
         m_meshes[relPath] = mesh;
         return NULL;
+    }
+
+    for (unsigned int vertex = 0; vertex < vcount; ++vertex)
+    {
+        const unsigned char* source = p + off + (size_t)vertex * kVertexBytes;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const float value = endian::LoadF32LE(source + axis * sizeof(float));
+            if (vertex == 0 || value < mesh.boundsMin[axis]) mesh.boundsMin[axis] = value;
+            if (vertex == 0 || value > mesh.boundsMax[axis]) mesh.boundsMax[axis] = value;
+        }
     }
 
     // Vertex + index buffers. Xenia fetches buffer data in native (big-endian)
@@ -546,6 +559,13 @@ namespace
         return true;
     }
 
+    bool LoadLightmapVertexCso(IDirect3DDevice9* dev, const std::string& path, RtShader& out)
+    {
+        std::vector<unsigned char> code;
+        return ReadWholeFileBin(path, code) &&
+               SUCCEEDED(dev->CreateVertexShader((const DWORD*)&code[0], &out.lightmapVs));
+    }
+
     bool CompileSkinVertexFile(IDirect3DDevice9* dev, const std::string& path, RtShader& out)
     {
         LPD3DXBUFFER code = CompileEntry(path, "SkinVSMain", "vs_3_0", &out.skinVsConstants);
@@ -561,6 +581,33 @@ namespace
             out.hSkinWorld = out.skinVsConstants->GetConstantByName(NULL, "gWorld");
         }
         return true;
+    }
+
+    bool CompileLightmapVertexFile(IDirect3DDevice9* dev, const std::string& path, RtShader& out)
+    {
+        LPD3DXCONSTANTTABLE constants = NULL;
+        LPD3DXBUFFER code = CompileEntry(path, "LightmapVSMain", "vs_3_0", &constants);
+        if (constants) constants->Release();
+        if (!code) return false;
+        const HRESULT hr = dev->CreateVertexShader((const DWORD*)code->GetBufferPointer(), &out.lightmapVs);
+        code->Release();
+        return SUCCEEDED(hr) && out.lightmapVs;
+    }
+
+    bool LoadShadowPixelCso(IDirect3DDevice9* dev, const std::string& path, RtShader& out)
+    {
+        std::vector<unsigned char> code;
+        return ReadWholeFileBin(path, code) && !code.empty() &&
+               SUCCEEDED(dev->CreatePixelShader((const DWORD*)&code[0], &out.shadowPs));
+    }
+
+    bool CompileShadowPixelFile(IDirect3DDevice9* dev, const std::string& path, RtShader& out)
+    {
+        LPD3DXBUFFER code = CompileEntry(path, "ShadowPSMain", "ps_3_0", NULL);
+        if (!code) return false;
+        const HRESULT hr = dev->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &out.shadowPs);
+        code->Release();
+        return SUCCEEDED(hr) && out.shadowPs;
     }
 }
 
@@ -606,6 +653,12 @@ bool Content::LoadStandard()
     if (!LoadSkinVertexCso(m_device, Resolve("shaders/standard_skin_vs.cso"), m_standard) &&
         !CompileSkinVertexFile(m_device, Resolve("shaders/standard.hlsl"), m_standard))
         Log("shader: standard skin vertex shader failed", "");
+    if (!LoadLightmapVertexCso(m_device, Resolve("shaders/standard_lightmap_vs.cso"), m_standard) &&
+        !CompileLightmapVertexFile(m_device, Resolve("shaders/standard.hlsl"), m_standard))
+        Log("shader: standard lightmap vertex shader failed", "");
+    if (!LoadShadowPixelCso(m_device, Resolve("shaders/standard_shadow_ps.cso"), m_standard) &&
+        !CompileShadowPixelFile(m_device, Resolve("shaders/standard.hlsl"), m_standard))
+        Log("shader: standard shadow pixel shader failed", "");
     return true;
 }
 

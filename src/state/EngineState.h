@@ -19,6 +19,7 @@ struct ObjectAttribute
     std::string model_path;  // for "3D Model": path to the model asset
     std::string shader_path; // for "Shader": path to a custom .hlsl asset
     std::string script_path; // for "Script": path to a .lua gameplay script
+    bool        cast_shadow = false; // for "3D Model": explicit directional-shadow caster toggle
 
     // For "Animator": a project-relative .anim controller assigned to the
     // object's skinned 3D Model. Runtime instances remain transient.
@@ -63,6 +64,7 @@ struct ObjectAttribute
     float light_range     = 15.0f; // "Point Light" / "Spot Light"
     float light_inner_deg = 20.0f; // "Spot Light": inner cone half-angle, degrees
     float light_outer_deg = 30.0f; // "Spot Light": outer cone half-angle, degrees
+    int   light_mode      = 1;     // 0=Baked, 1=Realtime, 2=Mixed
     bool  light_volumetric = false;          // "Spot Light": draw the beam cone
     float light_volumetric_intensity = 1.0f; // beam brightness scale
 

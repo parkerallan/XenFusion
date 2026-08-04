@@ -32,6 +32,7 @@ namespace project
                 ja["model_path"]  = a.model_path;
                 ja["shader_path"] = a.shader_path;
                 ja["script_path"] = a.script_path;
+                if (a.type == "3D Model") ja["castShadow"] = a.cast_shadow;
                 if (a.type == "Camera")
                 {
                     ja["fov"]    = a.cam_fov;
@@ -71,6 +72,7 @@ namespace project
                 {
                     ja["color"]     = {a.light_color[0], a.light_color[1], a.light_color[2]};
                     ja["intensity"] = a.light_intensity;
+                    ja["lightMode"] = a.light_mode;
                     if (a.type == "Point Light" || a.type == "Spot Light")
                         ja["range"] = a.light_range;
                     if (a.type == "Spot Light")
@@ -210,6 +212,7 @@ namespace project
                         a.model_path  = ja.value("model_path", std::string());
                         a.shader_path = ja.value("shader_path", std::string());
                         a.script_path = ja.value("script_path", std::string());
+                        a.cast_shadow = ja.value("castShadow", false);
                         a.cam_fov     = ja.value("fov", 45.0f);
                         a.cam_near    = ja.value("near", 0.5f);
                         a.cam_far     = ja.value("far", 100.0f);
@@ -241,6 +244,7 @@ namespace project
                             a.light_color[2] = ja["color"][2].get<float>();
                         }
                         a.light_intensity = ja.value("intensity", 1.0f);
+                        a.light_mode      = ja.value("lightMode", 1);
                         a.light_range     = ja.value("range", 15.0f);
                         a.light_inner_deg = ja.value("innerCone", 20.0f);
                         a.light_outer_deg = ja.value("outerCone", 30.0f);

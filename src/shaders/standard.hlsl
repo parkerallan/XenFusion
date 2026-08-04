@@ -27,13 +27,30 @@
 //             alpha is the diffuse's (cutout / blend passes need it)
 //       c22.x = max env mip (3 when the blurred capture chain is bound, 0 when
 //             s5 is the painted/black fallback, which has no mip chain)
+//       c22.yzw = global baked environment
+//       c23 = shadow texel size, depth bias, receiver strength
+//       c24 = probe color + probe mix, c25 = probe direction + directionality
+//       VS c225-c228 = four explicit light-space transform columns
+//       s8 = lm0 RGBM illumination (16x range)
+//       s9 = lm1 dominant direction + strength
 // (PS c3/c4 stay free: the custom-shader convention claims them for gTime/gCamObj.)
 
 float4x4 gWVP   : register(c0);
 float4x4 gWorld : register(c4);
 
 struct VSIn  { float3 pos:POSITION; float3 nrm:NORMAL; float3 tan:TANGENT; float2 uv:TEXCOORD0; };
-struct VSOut { float4 pos:POSITION; float2 uv:TEXCOORD0; float3 wpos:TEXCOORD1; float3 wn:TEXCOORD2; float3 wt:TEXCOORD3; };
+struct LightmapVSIn { float3 pos:POSITION; float3 nrm:NORMAL; float3 tan:TANGENT; float2 uv:TEXCOORD0; float2 uv1:TEXCOORD1; };
+struct VSOut { float4 pos:POSITION; float2 uv:TEXCOORD0; float3 wpos:TEXCOORD1; float3 wn:TEXCOORD2; float3 wt:TEXCOORD3; float2 uv1:TEXCOORD4; float4 shadowPos:TEXCOORD5; };
+float4 gShadowX : register(c225);
+float4 gShadowY : register(c226);
+float4 gShadowZ : register(c227);
+float4 gShadowW : register(c228);
+
+float4 ShadowPosition(float4 worldPosition)
+{
+    return float4(dot(worldPosition, gShadowX), dot(worldPosition, gShadowY),
+                  dot(worldPosition, gShadowZ), dot(worldPosition, gShadowW));
+}
 
 // Skinned meshes add a second 8-byte stream: four byte joint indices and four
 // normalized byte weights. Each joint occupies three float4 constants holding
@@ -63,9 +80,24 @@ VSOut VSMain(VSIn i)
     VSOut o;
     o.pos  = mul(float4(i.pos, 1.0), gWVP);
     o.wpos = mul(float4(i.pos, 1.0), gWorld).xyz;
+    o.shadowPos = ShadowPosition(float4(o.wpos, 1.0));
     o.wn   = mul(i.nrm, (float3x3)gWorld);
     o.wt   = mul(i.tan, (float3x3)gWorld);
     o.uv   = i.uv;
+    o.uv1  = 0;
+    return o;
+}
+
+VSOut LightmapVSMain(LightmapVSIn i)
+{
+    VSOut o;
+    o.pos  = mul(float4(i.pos, 1.0), gWVP);
+    o.wpos = mul(float4(i.pos, 1.0), gWorld).xyz;
+    o.shadowPos = ShadowPosition(float4(o.wpos, 1.0));
+    o.wn   = mul(i.nrm, (float3x3)gWorld);
+    o.wt   = mul(i.tan, (float3x3)gWorld);
+    o.uv   = i.uv;
+    o.uv1  = i.uv1;
     return o;
 }
 
@@ -85,9 +117,11 @@ VSOut SkinVSMain(SkinVSIn i)
     }
     o.pos  = mul(float4(skinned_pos, 1.0), gWVP);
     o.wpos = mul(float4(skinned_pos, 1.0), gWorld).xyz;
+    o.shadowPos = ShadowPosition(float4(o.wpos, 1.0));
     o.wn   = mul(skinned_nrm, (float3x3)gWorld);
     o.wt   = mul(skinned_tan, (float3x3)gWorld);
     o.uv   = i.uv;
+    o.uv1  = 0;
     return o;
 }
 
@@ -110,7 +144,54 @@ sampler2D sMetallic : register(s4);
 samplerCUBE sEnv    : register(s5);
 sampler2D sClearcoat : register(s6);
 sampler2D sRoughness : register(s7); // r: 0 = glossy (legacy), 1 = fully matte
-float4 gRough : register(c22);       // x = max env mip; yzw reserved
+sampler2D sLightmap0 : register(s8);
+sampler2D sLightmap1 : register(s9);
+sampler2D sShadow : register(s10);
+float4 gRough : register(c22);       // x = max env mip; yzw = global baked env
+float4 gShadowParams : register(c23);// xy = texel size, z = bias, w = receiver strength
+float4 gProbeCol : register(c24);     // rgb = probe light, w = mover probe mix
+float4 gProbeDir : register(c25);     // xyz = dir * 0.5 + 0.5, w = directionality
+
+float3 PackShadowDepth(float depth)
+{
+    float3 packed = frac(saturate(depth) * float3(1.0, 255.0, 65025.0));
+    packed -= packed.yzz * float3(1.0 / 255.0, 1.0 / 255.0, 0.0);
+    return packed;
+}
+
+float UnpackShadowDepth(float3 packed)
+{
+    return dot(packed, float3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
+}
+
+float ShadowVisibility(float4 shadowPosition)
+{
+    if (gShadowParams.w <= 0.0 || shadowPosition.w <= 0.0) return 1.0;
+    float3 projected = shadowPosition.xyz / shadowPosition.w;
+    float2 uv = float2(projected.x * 0.5 + 0.5, -projected.y * 0.5 + 0.5);
+    if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 || projected.z <= 0.0 || projected.z >= 1.0)
+        return 1.0;
+    float receiver = projected.z - gShadowParams.z;
+    float2 halfTexel = gShadowParams.xy * 0.5;
+    float visibility = 0.0;
+    visibility += receiver <= UnpackShadowDepth(tex2D(sShadow, uv + float2(-halfTexel.x, -halfTexel.y)).rgb);
+    visibility += receiver <= UnpackShadowDepth(tex2D(sShadow, uv + float2( halfTexel.x, -halfTexel.y)).rgb);
+    visibility += receiver <= UnpackShadowDepth(tex2D(sShadow, uv + float2(-halfTexel.x,  halfTexel.y)).rgb);
+    visibility += receiver <= UnpackShadowDepth(tex2D(sShadow, uv + float2( halfTexel.x,  halfTexel.y)).rgb);
+    return lerp(1.0, visibility * 0.25, gShadowParams.w);
+}
+
+struct ShadowPSIn
+{
+    float2 uv : TEXCOORD0;
+    float4 shadowPos : TEXCOORD5;
+};
+
+float4 ShadowPSMain(ShadowPSIn i) : COLOR
+{
+    clip(tex2D(sDiffuse, i.uv).a - 0.5);
+    return float4(PackShadowDepth(i.shadowPos.z / i.shadowPos.w), 1.0);
+}
 
 float4 PSMain(VSOut i) : COLOR
 {
@@ -146,6 +227,7 @@ float4 PSMain(VSOut i) : COLOR
     float  ndl = saturate(dot(n, L));
     float3 H   = normalize(L + V);
     float  ndh = saturate(dot(n, H));
+    float  shadow = ShadowVisibility(i.shadowPos);
 
     float4 dtex = tex2D(sDiffuse, uv);
     float3 spec = tex2D(sSpecular, uv).rgb;
@@ -165,7 +247,7 @@ float4 PSMain(VSOut i) : COLOR
     // pglint: per-point-light specular, used by the METAL term only (dielectric
     // point lighting stays diffuse-only — the original trade-off). Same falloff
     // as the diffuse so a light's glint dies with its light.
-    float3 diffuse = gLightColor * ndl;
+    float3 diffuse = gLightColor * (ndl * shadow);
     float3 pglint  = 0;
     [unroll] for (int k = 0; k < 4; ++k)
     {
@@ -198,7 +280,16 @@ float4 PSMain(VSOut i) : COLOR
         float3 Hs = normalize(Ls + V);
         pglint += gSpotCol[j].rgb * (pow(saturate(dot(n, Hs)), glintPow) * satt);
     }
-    float3 color = dtex.rgb * (gAmbient + diffuse) + spec * (gLightColor * pow(ndh, specPow));
+    float probeMix = gProbeCol.w;
+    float4 lm1 = lerp(tex2D(sLightmap1, i.uv1), gProbeDir, probeMix);
+    float3 dominant = normalize(lm1.rgb * 2.0 - 1.0);
+    float directional = (1.0 - lm1.a) + lm1.a * 2.0 * saturate(dot(n, dominant)) * shadow;
+    float4 lm0 = tex2D(sLightmap0, i.uv1);
+    float3 bakedColor = lerp(lm0.rgb * (lm0.a * 16.0), gProbeCol.rgb, probeMix);
+    float3 baked = bakedColor * directional;
+    float3 indirect = gAmbient + gRough.yzw * (1.0 - probeMix) + baked;
+    float3 color = dtex.rgb * (indirect + diffuse)
+                 + spec * (gLightColor * (pow(ndh, specPow) * shadow));
 
     // Metal (360-era env-map look): the surface IS its environment — no flat
     // shading terms at all. Three parts, all tinted by the diffuse (the metal's
@@ -221,7 +312,7 @@ float4 PSMain(VSOut i) : COLOR
     // Rough metal is duller as well as blurrier; blur alone keeps the average,
     // which leaves a matte metal reading as bright chrome.
     float3 metal = envc * dtex.rgb * (fres * (1.0 - 0.35 * rough))
-                 + dtex.rgb * (gLightColor * pow(ndh, glintPow) + pglint);
+                 + dtex.rgb * (gLightColor * (pow(ndh, glintPow) * shadow) + pglint);
     color = lerp(color, metal, m);
 
     // Clearcoat: a clear lacquer over the lit surface — an UNTINTED env sheen
@@ -234,7 +325,7 @@ float4 PSMain(VSOut i) : COLOR
     float coat  = tex2D(sClearcoat, uv).r;
     float cfres = 0.05 + 0.95 * pow(1.0 - ndv, 4.0);
     color += envc * (coat * cfres)
-           + (gLightColor * pow(ndh, glintPow) + pglint) * coat;
+            + (gLightColor * (pow(ndh, glintPow) * shadow) + pglint) * coat;
 
     // Matte surfaces still catch the room: a broad, dim, surface-tinted
     // reflection the specular lobe cannot express, since that only knows about

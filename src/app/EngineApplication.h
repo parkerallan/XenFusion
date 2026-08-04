@@ -2,6 +2,7 @@
 
 #include "render/Renderer.h"
 #include "state/EngineState.h"
+#include "light/LightBaker.h"
 
 #include "panels/ViewportPanel.h"
 #include "panels/InspectorPanel.h"
@@ -16,6 +17,9 @@
 #include "panels/AnimatorPanel.h"
 
 #include <windows.h>
+
+#include <atomic>
+#include <thread>
 
 #include "imgui.h"
 
@@ -38,6 +42,8 @@ private:
     void RenderMainMenuBar();
     void RenderImportModal();
     void RenderRecentModal();
+    void StartLightingBake();
+    void PollLightingBake();
     void OnDropFiles(void* hDrop);            // HDROP from WM_DROPFILES
     void ImportStagedFiles(const char* dest); // dest relative to project root
     void LoadFonts();
@@ -50,6 +56,13 @@ private:
     Renderer renderer_;
     bool     running_ = false;
     bool     startup_tabs_selected_ = false;
+
+    std::thread       lighting_bake_thread_;
+    std::atomic<bool> lighting_bake_done_{false};
+    bool              lighting_bake_success_ = false;
+    std::filesystem::path lighting_bake_scene_;
+    lightmap::BakeResult lighting_bake_result_;
+    std::string       lighting_bake_error_;
 
     // High-resolution frame timer (used to drive the scene camera before the
     // ImGui frame — where io.DeltaTime isn't available yet).

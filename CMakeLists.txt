@@ -111,6 +111,10 @@ include(${CMAKE_SOURCE_DIR}/CMakeLists.bullet.cmake)
 # ---------------------------------------------------------------------------
 include(${CMAKE_SOURCE_DIR}/CMakeLists.lua.cmake)
 
+# Editor-only lightmap UV generation. The Xbox runtime consumes cooked LMUV
+# sidecars and never links xatlas.
+include(${CMAKE_SOURCE_DIR}/CMakeLists.xatlas.cmake)
+
 # ---------------------------------------------------------------------------
 # Shaders. The engine ships standard.hlsl next to the exe (below). At runtime it
 # compiles standard.hlsl AND the project's custom shaders into ONE folder that
@@ -138,6 +142,8 @@ add_executable(XenFusion
     src/render/Shader.cpp
     src/render/ShaderCache.cpp
     src/render/ShaderCompiler.cpp
+    src/light/LightmapUnwrap.cpp
+    src/light/LightBaker.cpp
     src/text/TextLayout.cpp
     src/text/CookedFont.cpp
     src/gui/GuiContext.cpp
@@ -172,24 +178,12 @@ add_executable(XenFusion
     src/panels/PerformancePanel.cpp
     src/panels/EditorPanel.cpp
 )
-target_include_directories(XenFusion PRIVATE src third_party runtime/src)
+target_include_directories(XenFusion PRIVATE src third_party third_party/stb runtime/src)
 # Lets the editor's "Build and Run XEX" locate the console runtime project +
 # build_run.ps1 during development (the runtime is a sibling of the editor source).
 target_compile_definitions(XenFusion PRIVATE RUNTIME_SOURCE_DIR="${CMAKE_SOURCE_DIR}/runtime")
 # Ole32: native folder picker (IFileDialog). Shell32: Explorer drag-drop.
-target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp bullet lua Ole32 Shell32 Xinput9_1_0 xaudio2)
-
-# Tests are deliberately absent from normal engine/game builds. Enable them in
-# a dedicated build tree with -DXENFUSION_BUILD_TESTS=ON.
-option(XENFUSION_BUILD_TESTS "Generate XenFusion test executables" OFF)
-if(XENFUSION_BUILD_TESTS)
-    enable_testing()
-    include(CMakeLists.tests.cmake)
-else()
-    # CMake does not remove this generated file when testing is switched off in
-    # an existing build tree, which leaves ctest listing obsolete executables.
-    file(REMOVE "${CMAKE_BINARY_DIR}/CTestTestfile.cmake")
-endif()
+target_link_libraries(XenFusion PRIVATE imgui d3d9 d3dcompiler nlohmann_json::nlohmann_json imguicolortextedit imguizmo assimp bullet lua xatlas Ole32 Shell32 Xinput9_1_0 xaudio2)
 
 add_executable(animc
     tools/animc.cpp
@@ -200,6 +194,15 @@ add_executable(animc
 )
 target_include_directories(animc PRIVATE src runtime/src)
 target_link_libraries(animc PRIVATE assimp nlohmann_json::nlohmann_json)
+
+add_executable(lightc
+    tools/lightc.cpp
+    src/light/LightBaker.cpp
+    src/light/LightmapUnwrap.cpp
+    src/project/SceneJson.cpp
+)
+target_include_directories(lightc PRIVATE src third_party third_party/stb third_party/bullet/src)
+target_link_libraries(lightc PRIVATE assimp bullet xatlas nlohmann_json::nlohmann_json imgui)
 
 # Copy the working directory so imgui.ini (window layout) lands next to the exe.
 # Subsystem per config: Debug keeps the console window (log/stdout), all other

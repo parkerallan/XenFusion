@@ -2,6 +2,23 @@
 # with -DXENFUSION_BUILD_TESTS=ON, so normal builds do not generate these
 # executable targets or add them to ALL_BUILD.
 
+add_executable(light_select_test tests/LightSelectTest.cpp)
+target_include_directories(light_select_test PRIVATE src)
+add_test(NAME light_select COMMAND light_select_test)
+
+add_executable(light_basis_test tests/LightBasisTest.cpp)
+target_include_directories(light_basis_test PRIVATE src)
+add_test(NAME light_basis COMMAND light_basis_test)
+
+add_executable(lightmap_unwrap_test
+    tests/LightmapUnwrapTest.cpp
+    src/light/LightmapUnwrap.cpp
+)
+target_include_directories(lightmap_unwrap_test PRIVATE src)
+target_link_libraries(lightmap_unwrap_test PRIVATE assimp xatlas)
+add_test(NAME lightmap_unwrap COMMAND lightmap_unwrap_test
+    "${CMAKE_SOURCE_DIR}/../360proj/assets/models/brick_wall.obj")
+
 add_executable(mesh_skin_bake_test
     tests/MeshSkinBakeTest.cpp
     src/render/MeshBaker.cpp

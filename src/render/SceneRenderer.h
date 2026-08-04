@@ -9,6 +9,8 @@
 #include "video/VideoPlayer.h"
 #include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
+#include "light/LightSelect.h"
+#include "light/LightProbeGrid.h"
 #include "physics/PhysicsWorld.h"
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
@@ -96,6 +98,9 @@ private:
     // Load the already-compiled standard shader from <project>/shaders (no
     // compile — that only happens on the Reload-shaders action).
     void LoadStandardShader();
+    void EnsureLightmaps(const SceneFile& scene);
+    void ClearLightmaps();
+    void RenderShadowMap();
     // Select the static or skinned vertex path and bind both streams. Until
     // animation sampling lands, skinned meshes receive an identity palette so
     // the authored bind pose remains unchanged in edit mode.
@@ -112,7 +117,22 @@ private:
         std::string animator_initial_state;
         float       animator_playback_speed = 1.0f;
         bool        animator_auto_play = true;
+        bool        dynamic_lighting = false;
+        bool        cast_shadow = false;
         std::vector<float> skin_palette;
+    };
+
+    struct LightmapVertex
+    {
+        MeshVertex base;
+        float u1, v1;
+    };
+
+    struct LightmapGpuMesh
+    {
+        IDirect3DVertexBuffer9* vb = nullptr;
+        IDirect3DIndexBuffer9* ib = nullptr;
+        UINT vertexCount = 0;
     };
 
     struct PickItem
@@ -206,12 +226,15 @@ private:
     // fixed sun/ambient are used when the scene has no light attributes at all.
     float m_light_dir[4]    = {0.0f, 0.0f, 0.0f, 0.0f};
     float m_light_col[4]    = {1.0f, 1.0f, 1.0f, 0.0f};
+    std::vector<lsel::PointLight> m_point_lights;
+    std::vector<lsel::SpotLight>  m_spot_lights;
     float m_point_pos[4][4] = {}; // xyz + w = 1/range^2
     float m_point_col[4][4] = {}; // rgb * intensity; zero = unused slot
     float m_spot_pos[2][4]  = {}; // xyz + w = 1/range
     float m_spot_dir[2][4]  = {}; // xyz = beam dir (+Z fwd), w = cos(inner half-angle)
     float m_spot_col[2][4]  = {}; // rgb * intensity (zero = unused), w = cos(outer)
     float m_ambient[4]      = {0.22f, 0.22f, 0.25f, 0.0f}; // env-light sum or legacy default
+    float m_baked_ambient[4] = {}; // baked env is global and never directionally modulated
 
     // Bloom post chain: bright-extract (rgb * alpha-mask) into a quarter-res
     // target, separable blur, additive combine. Drawn after the scene resolve;
@@ -233,7 +256,10 @@ private:
     IDirect3DSurface9*           m_bloomBSurf = nullptr;
     IDirect3DVertexDeclaration9* m_mesh_decl = nullptr;
     IDirect3DVertexDeclaration9* m_skin_mesh_decl = nullptr;
+    IDirect3DVertexDeclaration9* m_lightmap_mesh_decl = nullptr;
     IDirect3DVertexShader9*      m_skin_vs = nullptr;
+    IDirect3DVertexShader9*      m_lightmap_vs = nullptr;
+        IDirect3DPixelShader9*       m_shadow_ps = nullptr;
     IDirect3DTexture9*           m_def_white  = nullptr; // default diffuse
     IDirect3DTexture9*           m_def_normal = nullptr; // default flat normal
     IDirect3DTexture9*           m_def_black  = nullptr; // default specular / emissive / metallic
@@ -268,6 +294,17 @@ private:
     void BuildEnvBlurChain();
     std::filesystem::path        m_standard_src;         // <exe>/standard.hlsl (engine source)
     std::filesystem::path        m_project_root;         // compiled shaders live in <root>/shaders
+    std::filesystem::path        m_lightmap_scene;
+    std::filesystem::file_time_type m_lightmap_timestamp = {};
+    lprobe::Grid                   m_probe_grid;
+    IDirect3DTexture9*           m_lightmap0 = nullptr;
+    IDirect3DTexture9*           m_lightmap1 = nullptr;
+    std::map<int, LightmapGpuMesh> m_lightmap_meshes;
+    IDirect3DTexture9*           m_shadow_texture = nullptr;
+    IDirect3DSurface9*           m_shadow_surface = nullptr;
+    IDirect3DSurface9*           m_shadow_depth = nullptr;
+    D3DMATRIX                    m_shadow_matrix = {};
+    bool                         m_shadow_enabled = false;
 
     // Focus-key ("F") target: the selected object's position + rough size.
     bool  m_has_focus   = false;

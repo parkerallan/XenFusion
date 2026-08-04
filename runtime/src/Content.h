@@ -64,9 +64,15 @@ struct RtMesh
     unsigned int            skeletonFingerprint;
     unsigned int            vertexCount;
     unsigned int            indexCount;
+    float                   boundsMin[3];
+    float                   boundsMax[3];
 
     RtMesh() : vb(NULL), skinVb(NULL), ib(NULL), skeletonFingerprint(0),
-               vertexCount(0), indexCount(0) {}
+               vertexCount(0), indexCount(0)
+    {
+        memset(boundsMin, 0, sizeof(boundsMin));
+        memset(boundsMax, 0, sizeof(boundsMax));
+    }
     bool IsSkinned() const { return skinVb != NULL && !joints.empty(); }
     void Release(); // frees buffers + subset textures (Content-owned meshes only)
 };
@@ -93,7 +99,9 @@ struct RtShader
 {
     IDirect3DVertexShader9* vs;
     IDirect3DVertexShader9* skinVs;
+    IDirect3DVertexShader9* lightmapVs;
     IDirect3DPixelShader9*  ps;
+    IDirect3DPixelShader9*  shadowPs;
     LPD3DXCONSTANTTABLE     vsConstants; // matrix upload, packing-correct via SetMatrix
     LPD3DXCONSTANTTABLE     skinVsConstants;
     D3DXHANDLE              hWVP;        // resolved handles for the two matrices
@@ -102,7 +110,7 @@ struct RtShader
     D3DXHANDLE              hSkinWorld;
     RtShaderState           state;
 
-    RtShader() : vs(NULL), skinVs(NULL), ps(NULL), vsConstants(NULL),
+    RtShader() : vs(NULL), skinVs(NULL), lightmapVs(NULL), ps(NULL), shadowPs(NULL), vsConstants(NULL),
                  skinVsConstants(NULL), hWVP(0), hWorld(0), hSkinWVP(0), hSkinWorld(0) {}
     bool Valid() const { return vs && ps; }
     void Release();

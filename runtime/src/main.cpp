@@ -41,19 +41,27 @@ void __cdecl main()
     QueryPerformanceCounter(&qpcLast);
     for (;;)
     {
+        QueryPerformanceCounter(&qpcNow);
+        float dt = (float)((double)(qpcNow.QuadPart - qpcLast.QuadPart) /
+                           (double)qpcFreq.QuadPart);
+        qpcLast = qpcNow;
+        if (dt < 0.0f || dt > 0.25f)
+            dt = 1.0f / 60.0f; // first frame / hitch
+
+        // Prepare one shared frame state so shadow/env/main all use the same
+        // animation + physics poses without double-updating.
+        scene.PrepareFrame(dt);
+
+        // Directional shadow map prepass: EDRAM Base 0 render + resolve, before
+        // BeginTiling.
+        scene.RenderDirectionalShadow();
+
         // Metal reflections: capture the scene into the env cube map from the
         // metallic object's position. Outside the tiling bracket by design.
         scene.RenderEnvCapture();
 
         if (renderer.BeginFrame())
         {
-            QueryPerformanceCounter(&qpcNow);
-            float dt = (float)((double)(qpcNow.QuadPart - qpcLast.QuadPart) /
-                               (double)qpcFreq.QuadPart);
-            qpcLast = qpcNow;
-            if (dt < 0.0f || dt > 0.25f)
-                dt = 1.0f / 60.0f; // first frame / hitch
-
             scene.Render(dt);
             renderer.EndFrame();
         }

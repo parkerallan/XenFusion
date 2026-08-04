@@ -8,15 +8,16 @@ namespace fs = std::filesystem;
 
 int main(int argc, char** argv)
 {
-    if (argc != 2)
+    if (argc != 2 && argc != 3)
     {
-        std::cerr << "SkinShaderCompileTest: expected standard.hlsl path\n";
+        std::cerr << "SkinShaderCompileTest: expected standard.hlsl path [output directory]\n";
         return 1;
     }
 
-    const fs::path output = fs::temp_directory_path() / "xenfusion_skin_shader_test";
+    const bool keep_output = argc == 3;
+    const fs::path output = keep_output ? fs::path(argv[2]) : fs::temp_directory_path() / "xenfusion_skin_shader_test";
     std::error_code error_code;
-    fs::remove_all(output, error_code);
+    if (!keep_output) fs::remove_all(output, error_code);
 
     std::string error;
     if (!shader::BakeToCso(argv[1], output, error))
@@ -28,6 +29,8 @@ int main(int argc, char** argv)
     const fs::path expected[] = {
         output / "standard_vs.cso",
         output / "standard_skin_vs.cso",
+        output / "standard_lightmap_vs.cso",
+        output / "standard_shadow_ps.cso",
         output / "standard_ps.cso",
     };
     for (const fs::path& path : expected)
@@ -37,6 +40,6 @@ int main(int argc, char** argv)
             return 1;
         }
 
-    fs::remove_all(output, error_code);
+    if (!keep_output) fs::remove_all(output, error_code);
     return 0;
 }

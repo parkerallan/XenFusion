@@ -213,6 +213,11 @@ void InspectorPanel::Render(EngineState& state)
             ImGui::InputText("##model_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
             ImGui::PopStyleColor();
 
+            if (ImGui::Checkbox("Cast Shadow", &attr.cast_shadow))
+            {
+                save();
+            }
+
             if (video_import_)
                 ImGui::TextDisabled("Importing %s...", video_import_->source_name.c_str());
 
@@ -534,6 +539,8 @@ void InspectorPanel::Render(EngineState& state)
             commit |= ImGui::IsItemDeactivatedAfterEdit();
             edited |= ImGui::DragFloat("Intensity", &attr.light_intensity, 0.05f, 0.0f, 100.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
+            const char* light_modes[] = {"Baked", "Realtime", "Mixed"};
+            if (ImGui::Combo("Mode", &attr.light_mode, light_modes, 3)) { edited = commit = true; }
             if (is_point || is_spot)
             {
                 edited |= ImGui::DragFloat("Range", &attr.light_range, 0.1f, 0.1f, 1000.0f, "%.1f");
