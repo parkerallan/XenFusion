@@ -83,6 +83,11 @@ struct RtAttribute
     float image_alpha;
     int   image_priority;
 
+    // For "Skybox" (the scene background). An equirectangular image, cooked as
+    // an ordinary TX2D entry; rotation is a yaw about world Y, in degrees.
+    std::string sky_path;
+    float sky_rotation;
+
     // For "Text" (screen-space glyph overlay backed by a cooked font atlas).
     std::string text_font_path;
     std::string text_value;
@@ -168,6 +173,7 @@ struct RtAttribute
         image_tint[0] = image_tint[1] = image_tint[2] = 1.0f;
         image_alpha = 1.0f;
         image_priority = 1;
+        sky_rotation = 0.0f;
         text_x = 64.0f; text_y = 36.0f;
         text_w = 400.0f; text_h = 80.0f;
         text_font_size = 32.0f;

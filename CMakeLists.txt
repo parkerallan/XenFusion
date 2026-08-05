@@ -244,6 +244,7 @@ add_custom_command(TARGET XenFusion POST_BUILD
         "${SHADER_SRC_DIR}/bloom_blur.hlsl"
         "${SHADER_SRC_DIR}/bloom_combine.hlsl"
         "${SHADER_SRC_DIR}/env_blur.hlsl"
+        "${SHADER_SRC_DIR}/skybox.hlsl"
         "${SHADER_SRC_DIR}/image.hlsl"
         "${SHADER_SRC_DIR}/text.hlsl"
         "${SHADER_SRC_DIR}/gui.hlsl"

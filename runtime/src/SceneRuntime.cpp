@@ -4,6 +4,7 @@
 #include "SpakFormat.h"
 #include "XboxRenderer.h"
 #include "camera/EnvCubeViews.h"
+#include "camera/SkyView.h"
 #include "input/XInputPoll.h" // XInput is available via xtl.h (included by the header)
 
 #include <xgraphics.h> // GPU_EDRAM_TILE_SIZE (env-capture EDRAM placement)
@@ -103,6 +104,7 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     m_spot_dir[0][3] = m_spot_dir[1][3] = 1.0f;
     m_ambient[0] = 0.22f; m_ambient[1] = 0.22f; m_ambient[2] = 0.25f; m_ambient[3] = 0.0f;
     memset(m_baked_ambient, 0, sizeof(m_baked_ambient));
+    m_sky_rotation = 0.0f;
 
     m_content.Init(device, contentRoot);
 
@@ -803,6 +805,10 @@ void SceneRuntime::InitBloom(XboxRenderer& renderer)
     // sharp (max mip 0), so reflections stay correct, just unblurred.
     m_content.LoadBuiltin("env_blur", m_env_blur);
 
+    // Skybox background. Optional: without it the scene falls back to the flat
+    // clear colour, exactly as before the attribute existed.
+    m_content.LoadBuiltin("skybox", m_skybox);
+
     m_content.LoadBuiltin("beam", m_beam);
     m_content.LoadBuiltin("image", m_image_shader); // Image attribute overlay (optional)
     m_content.LoadBuiltin("text", m_text_shader);   // Text attribute overlay (optional)
@@ -932,6 +938,15 @@ void SceneRuntime::RenderEnvCapture()
         envcube::FaceView(f, pos, vm);
         D3DMATRIX view;
         memcpy(&view, vm, sizeof(vm));
+        // Sky first, with no depth test — the face is empty, and without this a
+        // chrome sphere under a sunset mirrors the flat colour just cleared in.
+        RenderSkybox(view, proj, false);
+        // Put the material back: this loop binds it once outside the loop, and
+        // DrawMesh re-binds only the declaration and vertex shader per mesh —
+        // leaving the sky's PIXEL shader to shade every model in the capture.
+        m_device->SetVertexDeclaration(m_mesh_decl);
+        m_device->SetVertexShader(mat->vs);
+        m_device->SetPixelShader(mat->ps);
         DrawModelsForEnv(Multiply(view, proj), pos, skip);
         m_device->Resolve(D3DRESOLVE_RENDERTARGET0, &faceRect, m_envDynCube,
                           NULL, 0, (UINT)f, NULL, 0.0f, 0, NULL);
@@ -939,6 +954,80 @@ void SceneRuntime::RenderEnvCapture()
     m_env_captured = true;
 
     BuildEnvBlurChain();
+}
+
+// Draw the "Skybox" attribute's image as the background: a screen quad whose
+// pixels each work out the direction they look down, then read that direction
+// out of an equirectangular image (skybox.hlsl). Mirrors
+// SceneRenderer::RenderSkybox.
+//
+// depthTest is on for the main pass — the quad sits at the far plane, so the
+// depth buffer left behind by the opaque pass rejects it wherever geometry
+// already drew and the sky's transcendentals cost nothing there. The reflection
+// capture passes false: it draws the sky first, into an empty face.
+//
+// A clip-space quad replays correctly per tile, so the main-pass call is safe
+// inside the tiling bracket. The texture comes through the stream cache and is
+// NULL until resident: the sky simply pops in over the clear colour, the same
+// way Image attributes do.
+void SceneRuntime::RenderSkybox(const D3DMATRIX& view, const D3DMATRIX& proj, bool depthTest)
+{
+    if (m_sky_path.empty() || !m_skybox.Valid())
+        return;
+    IDirect3DTexture9* tex = m_cache.GetTexture(m_sky_path);
+    if (!tex)
+        return;
+
+    float view16[16], proj16[16];
+    memcpy(view16, &view, sizeof(view16));
+    memcpy(proj16, &proj, sizeof(proj16));
+    float right[3], up[3], fwd[3];
+    sky::Basis(view16, proj16, right, up, fwd);
+
+    struct QuadVtx { float x, y, z, u, v; };
+    static const QuadVtx quad[4] = {
+        { -1.0f,  1.0f, 0.0f, 0.0f, 0.0f },
+        {  1.0f,  1.0f, 0.0f, 1.0f, 0.0f },
+        { -1.0f, -1.0f, 0.0f, 0.0f, 1.0f },
+        {  1.0f, -1.0f, 0.0f, 1.0f, 1.0f },
+    };
+
+    const float vsR[4] = { right[0], right[1], right[2], 0.0f };
+    const float vsU[4] = { up[0],    up[1],    up[2],    0.0f };
+    const float vsF[4] = { fwd[0],   fwd[1],   fwd[2],   0.0f };
+    const float psRot[4] = { m_sky_rotation * sky::kRotToTurns, 0.0f, 0.0f, 0.0f };
+
+    m_device->SetVertexDeclaration(NULL);
+    m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+    m_device->SetVertexShader(m_skybox.vs);
+    m_device->SetPixelShader(m_skybox.ps);
+    m_device->SetVertexShaderConstantF(0, vsR, 1);
+    m_device->SetVertexShaderConstantF(1, vsU, 1);
+    m_device->SetVertexShaderConstantF(2, vsF, 1);
+    m_device->SetPixelShaderConstantF(0, psRot, 1);
+    m_device->SetTexture(0, (IDirect3DBaseTexture9*)tex);
+    // WRAP on u so the seam behind the camera closes; CLAMP on v so the poles do
+    // not bleed into each other. MIPFILTER off because the shader takes level 0
+    // explicitly — the cooked texture has a full mip chain that must be ignored.
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    m_device->SetRenderState(D3DRS_ZENABLE, depthTest ? TRUE : FALSE);
+    m_device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+
+    m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+
+    m_device->SetTexture(0, NULL);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 }
 
 // Fill m_envBlurCube from the sharp capture by running env_blur.hlsl over every
@@ -1189,6 +1278,8 @@ void SceneRuntime::BuildDrawLists()
     m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
+    m_sky_path.clear();
+    m_sky_rotation = 0.0f;
     m_has_cam = false;
     m_shadow_enabled = false;
 
@@ -1295,6 +1386,13 @@ void SceneRuntime::BuildDrawLists()
                 ai.max_dist = at.audio_max_dist;
                 ai.doppler  = at.audio_doppler;
                 m_audio_items.push_back(ai);
+            }
+            else if (at.type == "Skybox" && !at.sky_path.empty() && m_sky_path.empty())
+            {
+                // First one wins, like the directional light — two skies have
+                // no meaningful blend.
+                m_sky_path     = at.sky_path;
+                m_sky_rotation = at.sky_rotation;
             }
             else if (at.type == "Image" && !at.image_path.empty())
             {
@@ -1978,6 +2076,17 @@ void SceneRuntime::Render(float dt)
         m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
         m_device->SetRenderState(D3DRS_ALPHATOMASKENABLE, FALSE);
 
+        // --- Skybox ---
+        // Between the two passes on purpose: the opaque depth buffer is
+        // complete, so early-Z throws the sky away under geometry, and the blend
+        // pass still composites glass and water over it.
+        RenderSkybox(view, proj, true);
+        // DrawMesh re-binds the declaration and vertex shader per mesh but never
+        // the pixel shader, so pass 2 would otherwise shade glass with the sky.
+        m_device->SetVertexDeclaration(m_mesh_decl);
+        m_device->SetVertexShader(std_mat->vs);
+        m_device->SetPixelShader(std_mat->ps);
+
         // Pass 2 — alpha-blended (glass, water), after all opaque depth. Depth TEST
         // ON so opaque geometry in front correctly occludes it; depth WRITE OFF so
         // the transparent surface doesn't populate the depth buffer. Verified in
@@ -1999,6 +2108,12 @@ void SceneRuntime::Render(float dt)
         m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
         m_device->SetRenderState(D3DRS_COLORWRITEENABLE,   // back to RGB-only:
             D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+    }
+    else
+    {
+        // A scene with no meshes never entered the pass above, so the sky would
+        // silently go missing on a shader-only scene.
+        RenderSkybox(view, proj, true);
     }
 
     // --- Standalone custom-shader objects ---

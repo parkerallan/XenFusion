@@ -100,6 +100,13 @@ struct ObjectAttribute
     float image_alpha   = 1.0f;
     int   image_priority = 1;
 
+    // For "Skybox" (the scene background, behind everything). An
+    // equirectangular (lat-long) PNG/JPG, cooked like any other image; rotation
+    // is a yaw about world Y, in degrees. The first Skybox in scene order wins
+    // and the owning object's transform is ignored.
+    std::string sky_path;
+    float       sky_rotation = 0.0f;
+
     // For "Text" (screen-space glyph overlay). Fonts are previewed from the
     // source TTF/OTF in the editor and cooked to an Xbox-native atlas at build.
     // Position/size use the same 1280x720 reference space as Image and Video.

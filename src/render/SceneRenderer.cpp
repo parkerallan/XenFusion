@@ -5,6 +5,7 @@
 #include <assimp/vector3.h>
 
 #include "camera/EnvCubeViews.h"
+#include "camera/SkyView.h"
 #include "core/Log.h"
 #include "light/LightmapUnwrap.h"
 #include "project/ProjectIO.h"
@@ -604,6 +605,7 @@ void SceneRenderer::LoadStandardShader()
     reload("bloom_blur",    m_bloom_blur_vs,    m_bloom_blur_ps);
     reload("bloom_combine", m_bloom_combine_vs, m_bloom_combine_ps);
     reload("env_blur", m_env_blur_vs, m_env_blur_ps); // roughness reflection chain
+    reload("skybox", m_sky_vs, m_sky_ps); // Skybox attribute background (optional)
     reload("beam", m_beam_vs, m_beam_ps); // spot volumetric shaft (optional)
     reload("image", m_image_vs, m_image_ps); // Image attribute overlay (optional)
     reload("text", m_text_vs, m_text_ps); // Text attribute overlay (optional)
@@ -678,6 +680,9 @@ void SceneRenderer::Shutdown()
     if (m_bloom_bright_vs)  { m_bloom_bright_vs->Release();  m_bloom_bright_vs = nullptr; }
     if (m_env_blur_ps)      { m_env_blur_ps->Release();      m_env_blur_ps = nullptr; }
     if (m_env_blur_vs)      { m_env_blur_vs->Release();      m_env_blur_vs = nullptr; }
+    if (m_sky_ps)     { m_sky_ps->Release();     m_sky_ps = nullptr; }
+    if (m_sky_vs)     { m_sky_vs->Release();     m_sky_vs = nullptr; }
+    if (m_sky_tex)    { m_sky_tex->Release();    m_sky_tex = nullptr; m_sky_loaded.clear(); }
     if (m_beam_ps)    { m_beam_ps->Release();    m_beam_ps = nullptr; }
     if (m_beam_vs)    { m_beam_vs->Release();    m_beam_vs = nullptr; }
     if (m_ps)         { m_ps->Release();         m_ps = nullptr; }
@@ -1182,6 +1187,10 @@ void SceneRenderer::RenderUi(EngineState& state)
         // Project environment cube map (metal reflections); optional.
         if (m_env) { m_env->Release(); m_env = nullptr; }
         m_env = mesh::LoadEnvCube(m_device, m_project_root / "assets" / "env");
+        // The sky is cached against a project-relative path, which means a
+        // different project's identically-named sky would keep the old image.
+        if (m_sky_tex) { m_sky_tex->Release(); m_sky_tex = nullptr; }
+        m_sky_loaded.clear();
     }
     m_meshes.SetProjectRoot(state.project_root);  // clears cache on project change
     m_shaders.SetProjectRoot(state.project_root);
@@ -1236,6 +1245,8 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
+    m_sky_path.clear();
+    m_sky_rotation = 0.0f;
     m_phys_debug.clear(); // rebuilt from the scene each frame (authoring wireframes)
     int overlay_sequence = 0;
     if (SceneFile* scene = state.SelectedScene())
@@ -1382,6 +1393,13 @@ void SceneRenderer::RenderUi(EngineState& state)
                     if (a.light_mode != lsel::Realtime)
                         for (int k = 0; k < 3; ++k)
                             m_baked_ambient[k] += a.light_color[k] * a.light_intensity;
+                }
+                else if (a.type == "Skybox" && !a.sky_path.empty() && m_sky_path.empty())
+                {
+                    // First one wins, like the directional light — two skies
+                    // have no meaningful blend.
+                    m_sky_path     = a.sky_path;
+                    m_sky_rotation = a.sky_rotation;
                 }
                 else if (a.type == "Image" && !a.image_path.empty())
                 {
@@ -2230,6 +2248,10 @@ void SceneRenderer::RenderGpu(float dt)
                     envcube::FaceView(f, env_pos, vm);
                     D3DMATRIX view;
                     memcpy(&view, vm, sizeof(vm));
+                    // Sky first, with no depth test — the face is empty, and
+                    // without this a chrome sphere under a sunset mirrors the
+                    // flat clear colour the face was just filled with.
+                    RenderSkybox(view, proj, false);
                     DrawSceneForEnv(view, proj, env_pos, env_obj);
                     face->Release();
                 }
@@ -2285,7 +2307,8 @@ void SceneRenderer::RenderGpu(float dt)
 
         // --- Scene models (shader: diffuse / normal / specular / emissive /
         //     metallic + environment cube) ---
-        if (!m_draw_items.empty() && m_vs && m_ps && m_mesh_decl)
+        const bool mesh_pass = !m_draw_items.empty() && m_vs && m_ps && m_mesh_decl;
+        if (mesh_pass)
         {
             m_device->SetVertexDeclaration(m_mesh_decl);
             m_device->SetVertexShader(m_vs);
@@ -2469,6 +2492,18 @@ void SceneRenderer::RenderGpu(float dt)
             }
             m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
 
+            // --- Skybox ---
+            // Between the two passes on purpose: the opaque depth buffer is
+            // complete, so early-Z throws the sky away under geometry, and the
+            // blend pass still composites glass and water over it.
+            RenderSkybox(m_view, m_proj, true);
+            // BindMeshForDraw re-binds the declaration and vertex shader per
+            // mesh but never the pixel shader, so pass 2 would otherwise shade
+            // glass with the sky.
+            m_device->SetVertexDeclaration(m_mesh_decl);
+            m_device->SetVertexShader(m_vs);
+            m_device->SetPixelShader(m_ps);
+
             // Pass 2 - alpha-blended (glass etc.), no depth write.
             m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
             m_device->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
@@ -2520,6 +2555,12 @@ void SceneRenderer::RenderGpu(float dt)
             }
             m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
             m_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+        }
+        else
+        {
+            // A scene with no meshes never entered the pass above, so the sky
+            // would silently go missing on an empty or shader-only scene.
+            RenderSkybox(m_view, m_proj, true);
         }
 
         // --- Standalone shader objects: each is drawn by DrawShaderItem. ---
@@ -2758,6 +2799,86 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
     }
     m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
     m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+}
+
+// Draw the "Skybox" attribute's image as the background: a screen quad whose
+// pixels each work out the direction they look down, then read that direction
+// out of an equirectangular image (skybox.hlsl).
+//
+// depth_test is on for the main pass — the quad sits at the far plane, so the
+// depth buffer left behind by the opaque pass rejects it wherever geometry
+// already drew and the sky costs nothing there. The reflection capture passes
+// false: it draws the sky first, into a face that has nothing in it yet.
+//
+// Called inside the caller's BeginScene. Only the states it changes are put
+// back, matching how every other pass here behaves.
+void SceneRenderer::RenderSkybox(const D3DMATRIX& view, const D3DMATRIX& proj, bool depth_test)
+{
+    if (m_sky_path.empty() || !m_sky_vs || !m_sky_ps)
+        return;
+
+    // Load on first use and whenever the attribute points somewhere else.
+    if (m_sky_loaded != m_sky_path)
+    {
+        if (m_sky_tex) { m_sky_tex->Release(); m_sky_tex = nullptr; }
+        const std::filesystem::path abs = m_project_root / m_sky_path;
+        m_sky_tex = mesh::LoadTexture(m_device, abs.string(), nullptr, nullptr);
+        m_sky_loaded = m_sky_path;
+        if (!m_sky_tex)
+            applog::Warn("Skybox image failed to load: " + m_sky_path);
+    }
+    if (!m_sky_tex)
+        return;
+
+    float view16[16], proj16[16];
+    std::memcpy(view16, &view, sizeof(view16));
+    std::memcpy(proj16, &proj, sizeof(proj16));
+    float right[3], up[3], fwd[3];
+    sky::Basis(view16, proj16, right, up, fwd);
+
+    struct QuadVtx { float x, y, z, u, v; };
+    static const QuadVtx quad[4] = {
+        { -1.0f,  1.0f, 0.0f, 0.0f, 0.0f },
+        {  1.0f,  1.0f, 0.0f, 1.0f, 0.0f },
+        { -1.0f, -1.0f, 0.0f, 0.0f, 1.0f },
+        {  1.0f, -1.0f, 0.0f, 1.0f, 1.0f },
+    };
+
+    const float vsR[4] = { right[0], right[1], right[2], 0.0f };
+    const float vsU[4] = { up[0],    up[1],    up[2],    0.0f };
+    const float vsF[4] = { fwd[0],   fwd[1],   fwd[2],   0.0f };
+    const float psRot[4] = { m_sky_rotation * sky::kRotToTurns, 0.0f, 0.0f, 0.0f };
+
+    m_device->SetVertexShader(m_sky_vs);
+    m_device->SetPixelShader(m_sky_ps);
+    m_device->SetVertexShaderConstantF(0, vsR, 1);
+    m_device->SetVertexShaderConstantF(1, vsU, 1);
+    m_device->SetVertexShaderConstantF(2, vsF, 1);
+    m_device->SetPixelShaderConstantF(0, psRot, 1);
+    m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+    m_device->SetTexture(0, m_sky_tex);
+    // WRAP on u so the seam behind the camera closes; CLAMP on v so the top and
+    // bottom rows do not bleed into each other at the poles. MIPFILTER off is
+    // belt-and-braces — the shader takes level 0 explicitly.
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    m_device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    m_device->SetRenderState(D3DRS_ZENABLE, depth_test ? TRUE : FALSE);
+    m_device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+
+    m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+
+    m_device->SetTexture(0, nullptr);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
     m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 }
 

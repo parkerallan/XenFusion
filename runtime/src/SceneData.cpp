@@ -438,6 +438,13 @@ namespace scenedata
                         if (ial && ial->type == JValue::Number) at.image_alpha = (float)ial->num;
                         if (ipr && ipr->type == JValue::Number) at.image_priority = (int)ipr->num;
                     }
+                    else if (at.type == "Skybox")
+                    {
+                        const JValue* skp = ja.Find("skyboxPath");
+                        const JValue* skr = ja.Find("skyboxRotation");
+                        if (skp && skp->type == JValue::Str)    at.sky_path = skp->str;
+                        if (skr && skr->type == JValue::Number) at.sky_rotation = (float)skr->num;
+                    }
                     else if (at.type == "Text")
                     {
                         const JValue* tfp = ja.Find("fontPath");

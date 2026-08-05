@@ -564,6 +564,50 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
+        else if (attr.type == "Skybox")
+        {
+            char buf[260];
+            const std::string shown = attr.sky_path.empty()
+                ? "(drag an equirectangular PNG or JPG from Assets)" : attr.sky_path;
+            std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::InputText("##sky_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
+
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
+                {
+                    std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
+                    std::string ext = std::filesystem::path(dropped).extension().string();
+                    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+                    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
+                    {
+                        attr.sky_path = dropped;
+                        save();
+                    }
+                    else
+                    {
+                        // The frame buffer is LDR and the console's texture
+                        // bundler takes neither format, so an .hdr/.exr sky has
+                        // to be tone-mapped to PNG first.
+                        state.AddLog("Skybox attributes support PNG and JPG files", LogLevel::Error);
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            bool edited = false, commit = false;
+            edited |= ImGui::DragFloat("Rotation", &attr.sky_rotation, 0.25f, -3600.0f, 3600.0f, "%.1f deg");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TextDisabled("Equirectangular (2:1) image. Yaw only; the object transform is unused.");
+            ImGui::TextDisabled("First Skybox in the scene wins.");
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
         else if (attr.type == "Rigid Body")
         {
             bool edited = false, commit = false;
@@ -1094,6 +1138,13 @@ void InspectorPanel::Render(EngineState& state)
             ObjectAttribute attr;
             attr.type = "Environment Light";
             attr.light_intensity = 0.2f; // an ambient boost, not a blowout
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Skybox"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Skybox";
             obj->attributes.push_back(attr);
             save();
         }

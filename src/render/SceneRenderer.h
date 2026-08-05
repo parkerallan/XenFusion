@@ -292,6 +292,23 @@ private:
     // direction-space cone filters (env_blur.hlsl). Call inside the capture's
     // BeginScene, after the six faces are drawn.
     void BuildEnvBlurChain();
+
+    // --- Skybox ("Skybox" attribute) ---
+    // An equirectangular image drawn as the scene background: a screen quad at
+    // the far plane, so geometry occludes it through the depth test rather than
+    // through any sorting. Also drawn into each face of the capture above, so
+    // reflections show the sky instead of the clear colour. First Skybox in
+    // scene order wins; captured in RenderUi, consumed in RenderGpu.
+    std::string                  m_sky_path;             // project-relative, empty = no sky
+    float                        m_sky_rotation  = 0.0f; // degrees, yaw
+    std::string                  m_sky_loaded;           // path m_sky_tex was built from
+    IDirect3DTexture9*           m_sky_tex       = nullptr;
+    IDirect3DVertexShader9*      m_sky_vs        = nullptr;
+    IDirect3DPixelShader9*       m_sky_ps        = nullptr;
+    // Draws the sky for the given camera. Leaves depth state as it found it;
+    // the caller owns BeginScene.
+    void RenderSkybox(const D3DMATRIX& view, const D3DMATRIX& proj, bool depth_test);
+
     std::filesystem::path        m_standard_src;         // <exe>/standard.hlsl (engine source)
     std::filesystem::path        m_project_root;         // compiled shaders live in <root>/shaders
     std::filesystem::path        m_lightmap_scene;

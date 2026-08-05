@@ -213,6 +213,17 @@ private:
     void BuildEnvBlurChain();
     bool BuildDirectionalShadowMatrix(D3DMATRIX& outMatrix);
 
+    // --- Skybox ("Skybox" attribute) ---
+    // An equirectangular image drawn as the scene background: a screen quad at
+    // the far plane, so geometry occludes it through the depth test. Also drawn
+    // into each face of the capture above, so reflections show the sky rather
+    // than the flat colour the face was cleared to. First Skybox in scene order
+    // wins; captured in BuildDrawLists, consumed in Render.
+    std::string                  m_sky_path;     // pak-relative, empty = no sky
+    float                        m_sky_rotation; // degrees, yaw
+    RtShader                     m_skybox;       // skybox.hlsl (optional)
+    void RenderSkybox(const D3DMATRIX& view, const D3DMATRIX& proj, bool depthTest);
+
     // Unit quad + unit cube (mesh vertex layout) for standalone shaders.
     IDirect3DVertexBuffer9*      m_quad_vb;
     IDirect3DIndexBuffer9*       m_quad_ib;

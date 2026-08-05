@@ -83,6 +83,14 @@ namespace project
                         ja["volumetricIntensity"] = a.light_volumetric_intensity;
                     }
                 }
+                else if (a.type == "Skybox")
+                {
+                    // skyboxPath is also what deploy.ps1 scans for to cook the
+                    // image into game.spak — renaming the key drops the sky
+                    // from the console build.
+                    ja["skyboxPath"]     = a.sky_path;
+                    ja["skyboxRotation"] = a.sky_rotation;
+                }
                 else if (a.type == "Rigid Body")
                 {
                     ja["kind"]        = a.phys_kind;
@@ -352,6 +360,11 @@ namespace project
                             a.video_play_mode   = ja.value("playMode", 2);
                             a.video_volume      = ja.value("volume", 1.0f);
                             a.video_muted       = ja.value("muted", false);
+                        }
+                        else if (a.type == "Skybox")
+                        {
+                            a.sky_path     = ja.value("skyboxPath", std::string());
+                            a.sky_rotation = ja.value("skyboxRotation", 0.0f);
                         }
                         o.attributes.push_back(a);
                     }

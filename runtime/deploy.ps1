@@ -136,6 +136,7 @@ if (Test-Path $sceneFile) {
         foreach ($a in $o.attributes) {
             if ($a.model_path) { $meshes += $a.model_path }
             if ($a.imagePath)  { $images += $a.imagePath }
+            if ($a.skyboxPath) { $images += $a.skyboxPath } # "Skybox" attribute -> TX2D, like any image
             if ($a.videoPath)  { $videos += $a.videoPath }  # "Video" attribute -> raw VIDE entry
             if ($a.audioPath)  { $audios += $a.audioPath }  # "Audio" attribute -> raw AUDI entry
             if ($a.fontPath)   { $fonts += $a.fontPath }   # "Text" attribute -> FONT + TX2D atlas
