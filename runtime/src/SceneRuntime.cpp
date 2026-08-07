@@ -15,6 +15,10 @@
 
 using namespace rmath;
 
+// Safety valve on a scene load: if an asset never becomes resident (missing from
+// the pak, say) the hand-over happens anyway rather than hanging the title.
+const float SceneRuntime::kSceneLoadTimeout = 15.0f;
+
 SceneRuntime::SceneRuntime()
     : m_audio(&m_pak)
 {
@@ -83,6 +87,13 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     m_beam_vb = NULL; m_spot_beam_count = 0;
     m_frame_dt = 0.0f;
     m_frame_prepared = false;
+    m_scene_dirty = false;
+    m_load_state = LoadIdle;
+    m_load_frames = 0;
+    m_load_elapsed = 0.0f;
+    m_load_min_time = 0.0f;
+    m_load_progress = 1.0f;
+    m_load_mesh_total = 0;
 
     // Fixed camera: the editor's default orbit framing (no input on the console).
     m_yaw = 0.6f; m_pitch = 0.5f; m_distance = 20.0f;
@@ -220,6 +231,7 @@ bool SceneRuntime::Init(IDirect3DDevice9* device, const std::string& contentRoot
     if (!scenedata::LoadScene(m_content.Resolve(startup), m_scene))
         OutputDebugStringA("scene: failed to load startup scene\n");
 
+    ResetObjectSlots();
     BuildDrawLists();
     LoadLightmaps(startup);
     BuildPhysics();
@@ -375,9 +387,20 @@ void SceneRuntime::LoadLightmaps(const std::string& startupScene)
 // --- script::ScriptHost (runtime) ---
 bool  SceneRuntime::InputButton(const char* name) { return m_input.Button(name); }
 float SceneRuntime::InputAxis(const char* name)   { return m_input.Axis(name); }
+bool  SceneRuntime::InputButtonPressed(const char* name)  { return m_input.Pressed(name); }
+bool  SceneRuntime::InputButtonReleased(const char* name) { return m_input.Released(name); }
 void  SceneRuntime::Log(const char* msg)
 {
     OutputDebugStringA("[script] ");
+    OutputDebugStringA(msg);
+    OutputDebugStringA("\n");
+}
+// Without this override a Lua parse/runtime error would come out through Log
+// and read exactly like a script's own log() line — the editor shows those as
+// [ERROR], and the console has to be just as obvious in the Xenia log.
+void  SceneRuntime::LogError(const char* msg)
+{
+    OutputDebugStringA("[script][ERROR] ");
     OutputDebugStringA(msg);
     OutputDebugStringA("\n");
 }
@@ -393,6 +416,478 @@ const char* SceneRuntime::ObjectName(int index)
     if (index >= 0 && index < (int)m_scene.objects.size())
         return m_scene.objects[index].name.c_str();
     return "";
+}
+int SceneRuntime::ObjectCount()
+{
+    return (int)m_scene.objects.size();
+}
+
+// --- Live scene state --------------------------------------------------------
+// The runtime OWNS m_scene (unlike the editor, which is handed the authored
+// project every frame), so these write straight into it and just flag the draw
+// state stale. There is no authored copy to protect.
+
+bool SceneRuntime::GetObjectTransform(int objectIndex, float pos[3], float rot[3], float scale[3])
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return false;
+    const RtObject& o = m_scene.objects[objectIndex];
+    for (int k = 0; k < 3; ++k)
+    { pos[k] = o.position[k]; rot[k] = o.rotation[k]; scale[k] = o.scale[k]; }
+    return true;
+}
+
+void SceneRuntime::SetObjectTransform(int objectIndex, const float pos[3], const float rot[3],
+                                      const float scale[3], int mask)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return;
+    RtObject& o = m_scene.objects[objectIndex];
+    if (mask & script::ScriptHost::XformPos)
+        for (int k = 0; k < 3; ++k) o.position[k] = pos[k];
+    if (mask & script::ScriptHost::XformRot)
+        for (int k = 0; k < 3; ++k) o.rotation[k] = rot[k];
+    if (mask & script::ScriptHost::XformScale)
+        for (int k = 0; k < 3; ++k) o.scale[k] = scale[k];
+    m_scene_dirty = true;
+}
+
+bool SceneRuntime::GetObjectVisible(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return false;
+    return m_scene.objects[objectIndex].visible;
+}
+
+void SceneRuntime::SetObjectVisible(int objectIndex, bool visible)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return;
+    if (m_scene.objects[objectIndex].visible == visible) return;
+    m_scene.objects[objectIndex].visible = visible;
+    m_scene_dirty = true;
+}
+
+bool SceneRuntime::SetActiveCamera(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return false;
+    // Only one camera may be active, so clear every other one first — otherwise
+    // "first active in scene order wins" could keep the old one.
+    bool found = false;
+    for (size_t i = 0; i < m_scene.objects.size(); ++i)
+        for (size_t a = 0; a < m_scene.objects[i].attributes.size(); ++a)
+        {
+            RtAttribute& at = m_scene.objects[i].attributes[a];
+            if (at.type != "Camera") continue;
+            const bool want = ((int)i == objectIndex);
+            at.cam_active = want;
+            if (want) found = true;
+        }
+    if (!found) return false;
+    m_has_cam = false;      // let the refresh re-latch which camera drives the view
+    m_scene_dirty = true;
+    return true;
+}
+
+int SceneRuntime::GetActiveCamera()
+{
+    return m_has_cam ? m_cam_object : -1;
+}
+
+int SceneRuntime::ObjectTagCount(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return 0;
+    return (int)m_scene.objects[objectIndex].tags.size();
+}
+
+const char* SceneRuntime::ObjectTag(int objectIndex, int tagIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return "";
+    const std::vector<std::string>& tags = m_scene.objects[objectIndex].tags;
+    if (tagIndex < 0 || tagIndex >= (int)tags.size()) return "";
+    return tags[tagIndex].c_str();
+}
+
+bool SceneRuntime::AddObjectTag(int objectIndex, const char* tag)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size() || !tag || !tag[0])
+        return false;
+    std::vector<std::string>& tags = m_scene.objects[objectIndex].tags;
+    for (size_t i = 0; i < tags.size(); ++i)
+        if (tags[i] == tag) return false; // already tagged
+    tags.push_back(tag);
+    return true;
+}
+
+// --- Object lifetime ---------------------------------------------------------
+// Slots are append-only with a free list: objectIndex is a stable key in the
+// physics bodies, the draw items and the script registry, so nothing may ever
+// shift. A freed slot is reused with a bumped generation, which is what makes a
+// handle to a destroyed object fail instead of aliasing its replacement.
+
+void SceneRuntime::ResetObjectSlots()
+{
+    m_obj_gen.assign(m_scene.objects.size(), 1u);
+    m_obj_alive.assign(m_scene.objects.size(), 1);
+    m_pending_spawn.clear();
+    m_pending_destroy.clear();
+}
+
+unsigned SceneRuntime::ObjectGeneration(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_obj_gen.size()) return 0;
+    return m_obj_gen[objectIndex];
+}
+
+bool SceneRuntime::ObjectAlive(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_obj_alive.size()) return false;
+    return m_obj_alive[objectIndex] != 0;
+}
+
+int SceneRuntime::SpawnObject(int sourceObjectIndex, const char* name, const float pos[3])
+{
+    if (sourceObjectIndex < 0 || sourceObjectIndex >= (int)m_scene.objects.size())
+        return -1;
+
+    // Reuse a freed slot if there is one, else append.
+    int slot = -1;
+    for (size_t i = 0; i < m_obj_alive.size(); ++i)
+        if (!m_obj_alive[i]) { slot = (int)i; break; }
+    if (slot < 0)
+    {
+        m_scene.objects.push_back(RtObject());
+        m_obj_gen.push_back(0u);
+        m_obj_alive.push_back(0);
+        slot = (int)m_scene.objects.size() - 1;
+    }
+
+    // Copy by value first: the source reference would dangle if push_back above
+    // reallocated the vector.
+    const RtObject source = m_scene.objects[sourceObjectIndex];
+    RtObject& clone = m_scene.objects[slot];
+    clone = source;
+    if (name && name[0]) clone.name = name;
+    for (int k = 0; k < 3; ++k) clone.position[k] = pos[k];
+    clone.visible = true; // templates are usually authored hidden
+
+    ++m_obj_gen[slot];
+    m_obj_alive[slot] = 1;
+    m_pending_spawn.push_back(slot);
+    m_scene_dirty = true;
+    return slot;
+}
+
+bool SceneRuntime::DestroyObject(int objectIndex)
+{
+    if (!ObjectAlive(objectIndex)) return false;
+    // Dead immediately, so obj:alive() is false the instant destroy returns and
+    // every existing handle stops resolving. The physics body and the script
+    // environment are torn down at the end of the frame instead — tearing them
+    // down here would mean editing the very lists the update loop is walking.
+    m_obj_alive[objectIndex] = 0;
+    ++m_obj_gen[objectIndex];
+    m_pending_destroy.push_back(objectIndex);
+    m_scene_dirty = true;
+    return true;
+}
+
+// Runs once per frame, after every script has had its turn.
+void SceneRuntime::ApplyPendingObjects()
+{
+    for (size_t i = 0; i < m_pending_destroy.size(); ++i)
+    {
+        const int slot = m_pending_destroy[i];
+        if (slot < 0 || slot >= (int)m_scene.objects.size()) continue;
+        m_phys.RemoveBody(slot);
+        m_script.UnloadScript(slot);
+        // Clear the object's data so the refresh drops its draw item and it
+        // contributes no light or overlay. The slot itself stays for reuse.
+        m_scene.objects[slot] = RtObject();
+    }
+    m_pending_destroy.clear();
+
+    if (m_pending_spawn.empty()) return;
+
+    std::vector<std::vector<float>*>        geomPos;
+    std::vector<std::vector<unsigned int>*> geomIdx;
+    for (size_t i = 0; i < m_pending_spawn.size(); ++i)
+    {
+        const int slot = m_pending_spawn[i];
+        if (!ObjectAlive(slot)) continue;
+
+        std::vector<phys::BodyDesc> descs;
+        AppendBodyDescs(slot, descs, geomPos, geomIdx);
+        for (size_t d = 0; d < descs.size(); ++d)
+            m_phys.AddBody(descs[d]);
+
+        // A cloned Script attribute gets its own environment and its own
+        // on_start, so spawned objects behave like authored ones.
+        const RtObject& o = m_scene.objects[slot];
+        for (size_t a = 0; a < o.attributes.size(); ++a)
+        {
+            const RtAttribute& at = o.attributes[a];
+            if (at.type != "Script" || at.script_path.empty()) continue;
+            const std::string full = m_content.Resolve(at.script_path);
+            FILE* f = fopen(full.c_str(), "rb");
+            if (!f) continue;
+            fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+            std::string src;
+            if (n > 0) { src.resize((size_t)n); size_t got = fread(&src[0], 1, (size_t)n, f); src.resize(got); }
+            fclose(f);
+            m_script.LoadScript(slot, src, at.script_path);
+            m_script.StartOne(slot);
+        }
+    }
+    m_pending_spawn.clear();
+    for (size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
+    for (size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
+}
+
+// --- Scene switching ---------------------------------------------------------
+
+bool SceneRuntime::LoadScene(const char* name, float minSeconds)
+{
+    if (!name || !name[0]) return false;
+    if (m_load_state != LoadIdle) return false; // one load at a time
+
+    std::string path = name;
+    if (path.find('/') == std::string::npos && path.find('\\') == std::string::npos)
+        path = "scenes/" + path;
+    if (path.size() < 6 || path.compare(path.size() - 6, 6, ".scene") != 0)
+        path += ".scene";
+
+    // Parse now — it is cheap, it validates the name up front, and it tells us
+    // which meshes to start streaming. The CURRENT scene stays live and rendering
+    // throughout: that is what keeps a gui.* loading panel (and the script that
+    // owns it) alive while the next scene warms up.
+    if (!scenedata::LoadScene(m_content.Resolve(path), m_next_scene))
+    {
+        LogError(("scene: failed to load " + path).c_str());
+        return false;
+    }
+
+    // Stage 1's denominator: the bytes each mesh reads off disc. Weighting by
+    // size rather than counting assets is what stops a 24-vertex cube and a
+    // 15,000-vertex character being the same slice of the bar.
+    m_load_meshes.clear();
+    m_load_mesh_bytes.clear();
+    m_load_mesh_total = 0;
+    for (size_t i = 0; i < m_next_scene.objects.size(); ++i)
+    {
+        const RtObject& o = m_next_scene.objects[i];
+        for (size_t a = 0; a < o.attributes.size(); ++a)
+        {
+            const RtAttribute& at = o.attributes[a];
+            if (at.type != "3D Model" || at.model_path.empty()) continue;
+            bool seen = false;
+            for (size_t k = 0; k < m_load_meshes.size() && !seen; ++k)
+                seen = (m_load_meshes[k] == at.model_path);
+            if (seen) continue;
+
+            const unsigned int bytes = PakEntryBytes(spak::NameHash(at.model_path.c_str()));
+            m_load_meshes.push_back(at.model_path);
+            m_load_mesh_bytes.push_back(bytes);
+            m_load_mesh_total += bytes;
+        }
+    }
+
+    m_pending_scene  = path;
+    m_load_state     = LoadPrefetch;
+    m_load_frames    = 0;
+    m_load_elapsed   = 0.0f;
+    m_load_min_time  = minSeconds > 0.0f ? minSeconds : 0.0f;
+    m_load_progress  = 0.0f;
+    return true;
+}
+
+// Bytes an entry reads off disc, or 0 when it isn't in the pak (nothing to wait
+// for, so it weighs nothing).
+unsigned int SceneRuntime::PakEntryBytes(unsigned int hash) const
+{
+    const SpakEntry* e = m_pak.Find(hash);
+    return e ? e->compressedSize : 0u;
+}
+
+
+bool  SceneRuntime::SceneIsLoading() { return m_load_state != LoadIdle; }
+float SceneRuntime::SceneProgress()  { return m_load_progress; }
+const char* SceneRuntime::SceneName() { return m_scene.name.c_str(); }
+
+// Drive the incoming scene's streaming, one frame at a time, and hand over when
+// it is ready. Requesting a mesh IS asking GetMesh for it, so this loop both
+// starts the loads and measures them.
+void SceneRuntime::UpdateSceneLoad(float dt)
+{
+    if (m_load_state != LoadPrefetch) return;
+    m_load_elapsed += dt;
+    ++m_load_frames;
+
+    // Asking for a mesh is what queues it, so this loop both starts the streaming
+    // and measures it. Progress is the fraction of the BYTES this load has to
+    // read that have arrived — weighted by each mesh's size on disc, so a
+    // 24-vertex cube and a 15,000-vertex character are not the same slice.
+    bool allMeshes = true;
+    unsigned int residentBytes = 0;
+    for (size_t i = 0; i < m_load_meshes.size(); ++i)
+    {
+        bool inPak = false;
+        // Not in the pak means there is nothing to wait for — it will use the raw
+        // fallback or simply not draw; either way it must not stall the load.
+        if (m_cache.GetMesh(m_load_meshes[i], &inPak) != NULL || !inPak)
+            residentBytes += m_load_mesh_bytes[i];
+        else
+            allMeshes = false;
+    }
+    m_load_progress = m_load_mesh_total
+                          ? (float)residentBytes / (float)m_load_mesh_total : 1.0f;
+
+    // Hand over once the geometry is in AND every texture it uses is drawable —
+    // small mips are enough, which is the whole point of the progressive cook.
+    // The full-resolution halves keep streaming into the new scene and sharpen
+    // there. A mesh's texture hashes only exist once the mesh itself has landed,
+    // so this can only be asked after allMeshes.
+    bool allTextures = true;
+    if (allMeshes)
+    {
+        std::vector<unsigned int> hashes;
+        for (size_t i = 0; i < m_load_meshes.size() && allTextures; ++i)
+        {
+            if (!m_cache.MeshTextureHashes(m_load_meshes[i], hashes)) continue;
+            for (size_t h = 0; h < hashes.size(); ++h)
+                if (!m_cache.TextureDrawable(hashes[h])) { allTextures = false; break; }
+        }
+    }
+
+    // The timeout is the safety valve: one asset missing from the pak must cost
+    // a few seconds, not hang the title forever.
+    const bool ready = (allMeshes && allTextures) || (m_load_elapsed >= kSceneLoadTimeout);
+
+    // The load must survive at least one RENDERED frame before handing over.
+    // This runs inside PrepareFrame, after the script that just built the loading
+    // screen — so handing over on this same call would clear that GUI (with the
+    // rest of the old scene) before Render ever draws it, and the loading screen
+    // would never appear at all. This is not padding: it is the one frame the
+    // screen needs to exist on the display.
+    const bool shown = (m_load_frames >= 2);
+
+    if (ready && shown && m_load_elapsed >= m_load_min_time)
+        ApplyPendingScene();
+}
+
+void SceneRuntime::ApplyPendingScene()
+{
+    if (m_pending_scene.empty()) return;
+    const std::string path = m_pending_scene;
+    m_pending_scene.clear();
+    m_load_state    = LoadIdle;
+    m_load_progress = 1.0f;
+    m_load_meshes.clear();
+    m_load_mesh_bytes.clear();
+    m_load_mesh_total = 0;
+
+    // Already parsed when the load began (LoadScene), so this is the only frame
+    // that pays the heavy cost: lightmap blobs and mesh-collider geometry are
+    // synchronous pak reads. That single long frame is exactly what the loading
+    // screen is covering.
+    RtScene loaded;
+    loaded.objects.swap(m_next_scene.objects);
+    loaded.name = m_next_scene.name;
+    m_next_scene = RtScene();
+
+    // Tear the old scene down. The stream cache and the pak survive: they are
+    // the asset layer, not the scene, and re-opening them would stall.
+    m_script.Clear();
+    m_gui.Clear();
+    m_phys.Clear();
+    m_phys_poses.clear();
+    m_draw_items.clear();
+    m_shader_items.clear();
+    m_image_items.clear();
+    m_text_items.clear();
+    m_video_items.clear();
+    m_audio_items.clear();
+    m_text_overrides.clear();
+    m_video_overrides.clear();
+    m_audio_overrides.clear();
+    // The video and audio players are reconciled from these item lists every
+    // frame, so emptying them is what closes their streams — no separate stop.
+    for (size_t i = 0; i < m_video_tex.size(); ++i)
+    {
+        for (int b = 0; b < 2; ++b)
+        {
+            if (m_video_tex[i].y[b])  { m_video_tex[i].y[b]->Release();  m_video_tex[i].y[b]  = NULL; }
+            if (m_video_tex[i].cb[b]) { m_video_tex[i].cb[b]->Release(); m_video_tex[i].cb[b] = NULL; }
+            if (m_video_tex[i].cr[b]) { m_video_tex[i].cr[b]->Release(); m_video_tex[i].cr[b] = NULL; }
+        }
+    }
+    m_video_tex.clear();
+    for (std::map<int, LightmapMesh>::iterator it = m_lightmap_meshes.begin();
+         it != m_lightmap_meshes.end(); ++it)
+        it->second.Release();
+    m_lightmap_meshes.clear();
+    m_lightmap0_path.clear();
+    m_lightmap1_path.clear();
+
+    m_scene = loaded;
+    ResetObjectSlots();
+    BuildDrawLists();
+    LoadLightmaps(path);
+    BuildPhysics();
+    BuildScripts();
+    m_scene_dirty = false;
+}
+
+// --- Attribute fields (obj:get / obj:set) ------------------------------------
+// attrIndex < 0 means "the first attribute that actually has this field", which
+// is what makes obj:set("light_intensity", 4) work without the script knowing
+// where the light sits in the attribute list.
+
+int SceneRuntime::AttrCount(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return 0;
+    return (int)m_scene.objects[objectIndex].attributes.size();
+}
+
+const char* SceneRuntime::AttrType(int objectIndex, int attrIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return "";
+    const std::vector<RtAttribute>& attrs = m_scene.objects[objectIndex].attributes;
+    if (attrIndex < 0 || attrIndex >= (int)attrs.size()) return "";
+    return attrs[attrIndex].type.c_str();
+}
+
+bool SceneRuntime::AttrGet(int objectIndex, int attrIndex, const char* field,
+                           attrfields::Value& out)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return false;
+    const attrfields::FieldDesc* desc = attrfields::Find(field);
+    if (!desc) return false;
+    const std::vector<RtAttribute>& attrs = m_scene.objects[objectIndex].attributes;
+    const int a = attrfields::ResolveIndex(attrs, attrIndex, *desc);
+    if (a < 0) return false;
+    return attrfields::Get(&attrs[a], *desc, out);
+}
+
+bool SceneRuntime::AttrSet(int objectIndex, int attrIndex, const char* field,
+                           const attrfields::Value& in)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return false;
+    const attrfields::FieldDesc* desc = attrfields::Find(field);
+    if (!desc) return false;
+    std::vector<RtAttribute>& attrs = m_scene.objects[objectIndex].attributes;
+    const int a = attrfields::ResolveIndex(attrs, attrIndex, *desc);
+    if (a < 0) return false;
+    if (!attrfields::Set(&attrs[a], *desc, in)) return false;
+    // Lights, camera params, overlay rects: all of it is re-derived from the
+    // scene, so one flag covers every field in the table.
+    m_scene_dirty = true;
+    return true;
+}
+
+bool SceneRuntime::RemoveObjectTag(int objectIndex, const char* tag)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size() || !tag) return false;
+    std::vector<std::string>& tags = m_scene.objects[objectIndex].tags;
+    for (size_t i = 0; i < tags.size(); ++i)
+        if (tags[i] == tag) { tags.erase(tags.begin() + i); return true; }
+    return false;
 }
 
 void SceneRuntime::AnimatorSetFloat(int objectIndex, const char* name, float value)
@@ -461,13 +956,15 @@ void SceneRuntime::AudioSetVolume(int objectIndex, float volume)
 {
     const char* name = ObjectName(objectIndex);
     if (name && *name)
-        m_audio_overrides[name].volume = volume < 0.0f ? 0.0f : volume;
+        // Clamped to the same 0..20 the attribute editor allows, so a stray
+        // audio.set_volume(500) can't blow the mix out.
+        m_audio_overrides[name].volume = volume < 0.0f ? 0.0f : (volume > 20.0f ? 20.0f : volume);
 }
 void SceneRuntime::AudioSetPitch(int objectIndex, float pitch)
 {
     const char* name = ObjectName(objectIndex);
     if (name && *name)
-        m_audio_overrides[name].pitch = pitch < 0.1f ? 0.1f : pitch;
+        m_audio_overrides[name].pitch = pitch < 0.1f ? 0.1f : (pitch > 4.0f ? 4.0f : pitch);
 }
 void SceneRuntime::AudioSetLoop(int objectIndex, bool loop)
 {
@@ -688,6 +1185,23 @@ void SceneRuntime::BuildPhysics()
     std::vector<std::vector<unsigned int>*> geomIdx;
 
     for (size_t i = 0; i < m_scene.objects.size(); ++i)
+        AppendBodyDescs((int)i, descs, geomPos, geomIdx);
+
+    m_phys.Build(descs);
+
+    for (size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
+    for (size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
+}
+
+// One object's Rigid Body / Trigger Volume attributes as neutral descriptors.
+// Split out of BuildPhysics so a spawned object can join the live world through
+// PhysicsWorld::AddBody with exactly the same setup.
+void SceneRuntime::AppendBodyDescs(int objectIndex, std::vector<phys::BodyDesc>& descs,
+                                   std::vector<std::vector<float>*>& geomPos,
+                                   std::vector<std::vector<unsigned int>*>& geomIdx)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_scene.objects.size()) return;
+    const size_t i = (size_t)objectIndex;
     {
         const RtObject& o = m_scene.objects[i];
 
@@ -767,11 +1281,6 @@ void SceneRuntime::BuildPhysics()
             descs.push_back(d);
         }
     }
-
-    m_phys.Build(descs);
-
-    for (size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
-    for (size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
 }
 
 // Streamed mesh first (game.spak via the async residency cache); fall back to the
@@ -839,7 +1348,7 @@ void SceneRuntime::DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int s
     m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
     for (size_t i = 0; i < m_draw_items.size(); ++i)
     {
-        if ((int)i == skipItem) continue;
+        if ((int)i == skipItem || !m_draw_items[i].visible) continue;
         RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
         if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, false, &m_draw_items[i].skin_palette);
     }
@@ -851,7 +1360,7 @@ void SceneRuntime::DrawModelsForEnv(const D3DMATRIX& vp, const float* eye, int s
     m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
     for (size_t i = 0; i < m_draw_items.size(); ++i)
     {
-        if ((int)i == skipItem) continue;
+        if ((int)i == skipItem || !m_draw_items[i].visible) continue;
         RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
         if (gm) DrawMesh(gm, m_draw_items[i].world, vp, mat, true, &m_draw_items[i].skin_palette);
     }
@@ -879,6 +1388,7 @@ void SceneRuntime::RenderEnvCapture()
     for (int pass = 0; pass < 2 && skip < 0; ++pass)
         for (size_t i = 0; i < m_draw_items.size(); ++i)
         {
+            if (!m_draw_items[i].visible) continue;
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (!gm) continue;
             bool reflective = false;
@@ -1268,12 +1778,31 @@ bool SceneRuntime::BuildGeometry()
     return true;
 }
 
-// Capture the models + standalone shaders to draw from the loaded scene. Static
-// on the console (no editing), so this runs once at Init.
-void SceneRuntime::BuildDrawLists()
+// Capture the models + standalone shaders to draw from the loaded scene.
+//
+// Runs in two modes. At Init (createItems = true) it builds everything,
+// including the DrawItems that OWN per-object resources — the RuntimeAnimator
+// instance, its skin palette and its bone-collider handles. When a script later
+// mutates the scene (createItems = false, via RefreshSceneDerived) those items
+// are updated IN PLACE by object_index instead: recreating them would restart
+// every animation and re-register every bone collider. Everything else here is
+// plain values, so it is cheapest to just rebuild it.
+void SceneRuntime::RebuildSceneLists(bool createItems)
 {
-    m_draw_items.clear();
-    m_shader_items.clear();
+    if (createItems)
+    {
+        m_draw_items.clear();
+        m_shader_items.clear();
+    }
+    else
+    {
+        // Nothing is drawn until the loop below re-marks it: an object that lost
+        // its 3D Model attribute must stop drawing, not keep its stale item.
+        for (size_t i = 0; i < m_draw_items.size(); ++i)
+            m_draw_items[i].visible = false;
+        for (size_t i = 0; i < m_shader_items.size(); ++i)
+            m_shader_items[i].visible = false;
+    }
     m_image_items.clear();
     m_text_items.clear();
     m_video_items.clear();
@@ -1307,8 +1836,11 @@ void SceneRuntime::BuildDrawLists()
     for (size_t i = 0; i < m_scene.objects.size(); ++i)
     {
         const RtObject& o = m_scene.objects[i];
-        if (!o.visible)
-            continue;
+        // A hidden object still gets its DrawItem (marked invisible) so a later
+        // obj:show() costs nothing but flipping a flag — no re-stream, and its
+        // animation keeps running meanwhile. It contributes no light, camera or
+        // overlay though, exactly as when it was skipped outright.
+        const bool visible = o.visible;
 
         std::string model_path, shader_path;
         const RtAttribute* animator_attribute = NULL;
@@ -1336,6 +1868,9 @@ void SceneRuntime::BuildDrawLists()
             }
             else if (at.type == "Shader" && !at.shader_path.empty() && shader_path.empty())
                 shader_path = at.shader_path;
+            // Everything past this point is scene contribution rather than the
+            // object's own geometry, and a hidden object contributes none of it.
+            else if (!visible) continue;
             else if (at.type == "Camera" && at.cam_active && !m_has_cam)
             {
                 // Record which camera; the view itself is resolved per frame in
@@ -1533,28 +2068,65 @@ void SceneRuntime::BuildDrawLists()
             RtShader* cs = m_content.GetShader(shader_path);
             shader_owns_mesh = cs && cs->state.geometry == RtShaderState::Model;
 
-            ShaderItem si;
-            si.shader_path = shader_path;
-            si.model_path  = model_path;
-            for (int k = 0; k < 3; ++k) { si.pos[k] = o.position[k]; si.rot[k] = o.rotation[k]; si.scale[k] = o.scale[k]; }
-            m_shader_items.push_back(si);
+            ShaderItem* si = NULL;
+            if (createItems)
+            {
+                m_shader_items.push_back(ShaderItem());
+                si = &m_shader_items.back();
+                si->shader_path  = shader_path;
+                si->model_path   = model_path;
+                si->object_index = (int)i;
+            }
+            else
+            {
+                for (size_t k = 0; k < m_shader_items.size(); ++k)
+                    if (m_shader_items[k].object_index == (int)i) { si = &m_shader_items[k]; break; }
+            }
+            if (si)
+            {
+                // Paths can change under obj:set; the editor rebuilds its lists
+                // every frame, so the console has to follow or the two targets
+                // would disagree about what a script just did.
+                si->shader_path = shader_path;
+                si->model_path  = model_path;
+                for (int k = 0; k < 3; ++k)
+                { si->pos[k] = o.position[k]; si->rot[k] = o.rotation[k]; si->scale[k] = o.scale[k]; }
+                si->visible = visible;
+            }
         }
 
         if (!model_path.empty() && !shader_owns_mesh)
         {
-            DrawItem di;
-            di.model_path = model_path;
-            di.world = ComposeWorld(o.position, o.rotation, o.scale);
-            di.object_index = (int)i;
-            di.dynamic_lighting = dynamic_lighting;
-            di.cast_shadow = cast_shadow;
-            for (int k = 0; k < 3; ++k) di.scale[k] = o.scale[k];
-            if (animator_attribute)
-                di.animator.Load(&m_pak, &m_cache, animator_attribute->animator_controller_path,
-                                 animator_attribute->animator_initial_state,
-                                 animator_attribute->animator_playback_speed,
-                                 animator_attribute->animator_auto_play);
-            m_draw_items.push_back(di);
+            DrawItem* di = NULL;
+            if (createItems)
+            {
+                m_draw_items.push_back(DrawItem());
+                di = &m_draw_items.back();
+                di->model_path   = model_path;
+                di->object_index = (int)i;
+                if (animator_attribute)
+                    di->animator.Load(&m_pak, &m_cache, animator_attribute->animator_controller_path,
+                                      animator_attribute->animator_initial_state,
+                                      animator_attribute->animator_playback_speed,
+                                      animator_attribute->animator_auto_play);
+            }
+            else
+            {
+                for (size_t k = 0; k < m_draw_items.size(); ++k)
+                    if (m_draw_items[k].object_index == (int)i) { di = &m_draw_items[k]; break; }
+            }
+            if (di)
+            {
+                // A changed model_path re-resolves through the stream cache on the
+                // next draw (the mesh may pop in a frame or two late, as any
+                // streamed asset does). The animator instance is deliberately kept.
+                di->model_path = model_path;
+                di->world = ComposeWorld(o.position, o.rotation, o.scale);
+                di->dynamic_lighting = dynamic_lighting;
+                di->cast_shadow = cast_shadow;
+                for (int k = 0; k < 3; ++k) di->scale[k] = o.scale[k];
+                di->visible = visible;
+            }
         }
     }
 
@@ -1597,6 +2169,7 @@ bool SceneRuntime::BuildDirectionalShadowMatrix(D3DMATRIX& outMatrix)
     for (size_t index = 0; index < m_draw_items.size(); ++index)
     {
         const DrawItem& item = m_draw_items[index];
+        if (!item.visible) continue;
         RtMesh* mesh = ResolveMesh(item.model_path);
         if (!mesh)
             continue;
@@ -1734,6 +2307,7 @@ void SceneRuntime::RenderDirectionalShadow()
     for (size_t index = 0; index < m_draw_items.size(); ++index)
     {
         const DrawItem& item = m_draw_items[index];
+        if (!item.visible) continue;
         RtMesh* gm = ResolveMesh(item.model_path);
         if (!gm)
             continue;
@@ -1822,8 +2396,32 @@ void SceneRuntime::PrepareFrame(float dt)
     // The GUI reads the same snapshot first, turning it into focus/confirm
     // events that ScriptVM::Update drains before any on_update runs.
     input::PollXInput(m_input);
+    // A button already held when the title boots was not pressed during it.
+    if (!m_input.primed) m_input.Prime();
     m_gui.Update(dt, m_input);
     m_script.Update(dt);
+
+    // Now that every script has run, apply the object changes they asked for
+    // (spawn/destroy) and any queued scene swap. Deferred to here so a script
+    // can never tear down the world it is executing inside.
+    ApplyPendingObjects();
+
+    // A scene change in flight: keep streaming the incoming scene while THIS one
+    // carries on drawing. Only the hand-over frame short-circuits the rest.
+    const bool wasLoading = (m_load_state != LoadIdle);
+    UpdateSceneLoad(dt);
+    if (wasLoading && m_load_state == LoadIdle)
+        return; // handed over — the new scene starts cleanly next frame
+
+    // A script changed the scene (a transform, visibility, a light, the active
+    // camera): re-derive the draw state from it. Runs BEFORE the physics pose
+    // override below, so a simulated object's pose still wins for this frame.
+    // Costs nothing at all in a scene no script mutates.
+    if (m_scene_dirty)
+    {
+        RefreshSceneDerived();
+        m_scene_dirty = false;
+    }
 
     // Physics: step Bullet, then override the draw items whose objects are
     // simulated (world = Scale * pose). Same code path as the editor preview.
@@ -1849,25 +2447,35 @@ void SceneRuntime::PrepareFrame(float dt)
             }
         }
 
-        // Dispatch trigger enter events to scripts (no automatic engine logging).
+        // Dispatch trigger enter/stay/exit events to scripts (no automatic logging).
         std::vector<phys::TriggerEvent> events;
         m_phys.DrainTriggerEvents(events);
         for (size_t ei = 0; ei < events.size(); ++ei)
-            if (events[ei].entered)
-            {
-                const char* boneName = NULL;
-                if (events[ei].boneHash)
-                    for (size_t drawIndex = 0; drawIndex < m_draw_items.size() && !boneName; ++drawIndex)
-                        if (m_draw_items[drawIndex].object_index == events[ei].triggerObjectIndex)
-                            boneName = m_draw_items[drawIndex].animator.BoneName(events[ei].boneHash);
-                m_script.FireTrigger(events[ei].triggerObjectIndex,
-                                     events[ei].otherObjectIndex, boneName);
-            }
+        {
+            const char* boneName = NULL;
+            if (events[ei].boneHash)
+                for (size_t drawIndex = 0; drawIndex < m_draw_items.size() && !boneName; ++drawIndex)
+                    if (m_draw_items[drawIndex].object_index == events[ei].triggerObjectIndex)
+                        boneName = m_draw_items[drawIndex].animator.BoneName(events[ei].boneHash);
+            m_script.FireTrigger(events[ei].triggerObjectIndex,
+                                 events[ei].otherObjectIndex, boneName, events[ei].phase);
+        }
+
+        // ...and contacts between ordinary bodies (on_collision).
+        std::vector<phys::CollisionEvent> contacts;
+        m_phys.DrainCollisionEvents(contacts);
+        for (size_t ci = 0; ci < contacts.size(); ++ci)
+            m_script.FireCollision(contacts[ci].aObjectIndex, contacts[ci].bObjectIndex,
+                                   contacts[ci].phase);
     }
 
     for (size_t index = 0; index < m_draw_items.size(); ++index)
     {
         DrawItem& item = m_draw_items[index];
+        // The animator itself keeps ticking while hidden (so showing an object
+        // resumes mid-animation rather than snapping); only the palette and the
+        // bone colliders, which exist purely to be drawn/collided with, are skipped.
+        if (!item.visible) continue;
         if (!item.animator.IsValid()) continue;
         RtMesh* mesh = ResolveMesh(item.model_path);
         if (!mesh || !mesh->IsSkinned()) continue;
@@ -2068,6 +2676,7 @@ void SceneRuntime::Render(float dt)
         m_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
         for (size_t i = 0; i < m_draw_items.size(); ++i)
         {
+            if (!m_draw_items[i].visible) continue;
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (gm)
                 DrawMesh(gm, m_draw_items[i].world, vp, std_mat, false /*opaque+cutout*/,
@@ -2099,6 +2708,7 @@ void SceneRuntime::Render(float dt)
         m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
         for (size_t i = 0; i < m_draw_items.size(); ++i)
         {
+            if (!m_draw_items[i].visible) continue;
             RtMesh* gm = ResolveMesh(m_draw_items[i].model_path);
             if (gm)
                 DrawMesh(gm, m_draw_items[i].world, vp, std_mat, true /*blend*/,
@@ -2122,6 +2732,7 @@ void SceneRuntime::Render(float dt)
         m_device->SetVertexDeclaration(m_mesh_decl);
         for (size_t i = 0; i < m_shader_items.size(); ++i)
         {
+            if (!m_shader_items[i].visible) continue;
             RtShader* cs = m_content.GetShader(m_shader_items[i].shader_path);
             if (cs && cs->Valid())
                 DrawShaderItem(m_shader_items[i], *cs, vp);

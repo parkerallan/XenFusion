@@ -7,16 +7,23 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 ## Contents
 
 1. [Overview](#1-overview)
-2. [Lifecycle](#2-lifecycle) — `on_start`, `on_update`, `on_trigger`
-3. [Objects](#3-objects) — `self`, `find`, `:id`
-4. [Physics](#4-physics) — `apply_impulse`, `set_velocity`, `set_transform`, `position`, `velocity`
-5. [Input](#5-input) — `input.button`, `input.axis`, name reference
-6. [Video](#6-video) — `video.play`, `video.stop`, `video.is_playing`
-7. [Audio](#7-audio) — `audio.play`, `audio.stop`, `audio.is_playing`, `audio.set_volume`, `audio.set_pitch`, `audio.set_loop`
-8. [Animator](#8-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`
-9. [Utility](#9-utility) — `log`
-10. [Text](#10-text) — `text.set`
-11. [GUI](#11-gui) — `gui.panel`, `gui.label`, `gui.image`, `gui.button`, `gui.set_focus`, `gui.set_paused`, `gui.clear`
+2. [Lifecycle](#2-lifecycle) — `on_start`, `on_update`, `on_trigger`, `on_trigger_stay`, `on_trigger_exit`, `on_collision`, `on_destroy`
+3. [Objects](#3-objects) — `self`, `find`, `find_all`, `find_by_prefix`, `find_by_tag`, `:id`, `:alive`
+4. [Physics](#4-physics) — `apply_impulse`, `apply_force`, `apply_torque`, `set_velocity`, `set_angular_velocity`, `physics.raycast`
+5. [Transform & visibility](#5-transform--visibility) — `:position`, `:set_position`, `:rotation`, `:set_rotation`, `:scale`, `:set_scale`, `:show`, `:hide`
+6. [Attributes](#6-attributes) — `:get`, `:set`, `:attr_count`, `:attr_type`, field reference
+7. [Tags](#7-tags) — `:tags`, `:has_tag`, `:add_tag`, `:remove_tag`
+8. [Time & timers](#8-time--timers) — `time.delta`, `time.total`, `time.after`, `time.every`, `time.cancel`
+9. [Events](#9-events) — `event.on`, `event.emit`
+10. [Spawning](#10-spawning) — `spawn`, `:destroy`
+11. [Scenes & camera](#11-scenes--camera) — `scene.load`, `scene.is_loading`, `scene.progress`, `scene.name`, `camera.set_active`, `camera.active`
+12. [Input](#12-input) — `input.button`, `input.pressed`, `input.released`, `input.axis`, name reference
+13. [Video](#13-video) — `video.play`, `video.stop`, `video.is_playing`
+14. [Audio](#14-audio) — `audio.play`, `audio.stop`, `audio.is_playing`, `audio.set_volume`, `audio.set_pitch`, `audio.set_loop`
+15. [Animator](#15-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`
+16. [Utility](#16-utility) — `log`
+17. [Text](#17-text) — `text.set`
+18. [GUI](#18-gui) — `gui.panel`, `gui.label`, `gui.image`, `gui.button`, `gui.root`, `gui.set_focus`, `gui.focus`, `gui.set_paused`, `gui.is_paused`, `gui.clear`
 
 ---
 
@@ -35,6 +42,19 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
   velocity, or transform you set there takes effect that same frame.
 - Scripts are sandboxed: `math`, `string`, `table`, `coroutine`, `utf8` are
   available; `io`, `os`, and `require` are **not** (no file/OS access on console).
+
+**The frame, in order**
+
+1. [Timers](#8-time--timers) that came due fire.
+2. GUI events (confirm/cancel/focus) reach their callbacks.
+3. Every `on_update(dt)`.
+4. Objects [spawned or destroyed](#10-spawning) this frame are applied, and a
+   running [`scene.load`](#11-scenes--camera) advances (handing over when ready).
+5. Physics steps; trigger and collision callbacks fire.
+6. The frame is drawn.
+
+Anything a script changed — a transform, a light, an overlay, visibility — is
+re-derived before drawing, so it shows up on the same frame you changed it.
 
 ---
 
@@ -100,6 +120,50 @@ end
 > overlaps the volume — filter by `:name()` (or `:id()`) if you only care about
 > some.
 
+### `on_trigger_stay(entrant, bone_name)` · `on_trigger_exit(entrant, bone_name)`
+Same arguments as `on_trigger`, for the rest of the overlap. `on_trigger_stay`
+runs **every frame** the object remains inside; `on_trigger_exit` runs once when
+it leaves. `on_trigger` itself is still entry-only, so existing scripts are
+unaffected.
+
+```lua
+-- Damage over time while standing in the fire, and stop when they leave.
+function on_trigger_stay(entrant, _)
+    if entrant:name() == "player" then event.emit("damage", 5 * time.delta) end
+end
+function on_trigger_exit(entrant)
+    log(entrant:name() .. " got out")
+end
+```
+
+### `on_collision(other, phase)`
+Runs on **both** objects when two ordinary (non-trigger) rigid bodies touch.
+`other` is the far object's handle; `phase` is `"enter"`, `"stay"` or `"exit"`.
+Unlike a Trigger Volume this is a real contact, so it only fires for objects that
+actually collide.
+
+```lua
+function on_collision(other, phase)
+    if phase == "enter" then
+        audio.play("ImpactSfx")
+        log("hit " .. other:name())
+    end
+end
+```
+
+### `on_destroy()`
+Runs just before the object is removed by [`:destroy()`](#10-spawning). `self` is
+still valid, so the handler can still read the object and notify others.
+
+```lua
+function on_destroy()
+    event.emit("enemy_died", self:name())
+end
+```
+
+> Handlers you don't define cost nothing — the engine checks before calling, so
+> a script that only wants `on_update` pays for nothing else.
+
 ---
 
 ## 3. Objects
@@ -109,8 +173,20 @@ Scripts act on **object handles**. You get a handle two ways:
 - **`self`** — the object this script is attached to.
 - **`find(name)`** — look up another scene object by name; returns a handle, or
   `nil` if there's no object with that name.
+- **`find_all()`** — every live object in the scene, as an array.
+- **`find_by_prefix(p)`** — every object whose name starts with `p`.
+- **`find_by_tag(t)`** — every object carrying [tag](#7-tags) `t`.
+- **`spawn(...)`** — a freshly cloned object (see [Spawning](#10-spawning)).
 
-Every handle has the [Physics](#4-physics) methods plus:
+The search functions skip destroyed objects and return an array you can iterate:
+
+```lua
+for _, e in ipairs(find_by_prefix("Enemy")) do e:hide() end
+```
+
+Every handle has the [Physics](#4-physics),
+[Transform](#5-transform--visibility), [Attribute](#6-attributes) and
+[Tag](#7-tags) methods, plus:
 
 ### `handle:name()` → `string`
 The object's name (as shown in the editor). The usual way to identify who entered
@@ -123,12 +199,17 @@ end
 ```
 
 ### `handle:id()` → `number`
-The object's index in the scene. A cheaper identity check than the name if you've
-cached it.
+The object's slot in the scene. A cheaper identity check than the name if you've
+cached it. Reported even for a destroyed object, so it stays usable as a table key.
 
 ```lua
 log("my id is " .. self:id())
 ```
+
+### `handle:alive()` → `boolean`
+Whether the handle still refers to the object it was made for. Only meaningful
+once you [destroy](#10-spawning) things — check it before using a handle you
+stored earlier.
 
 ```lua
 -- find() example: chase another object.
@@ -148,16 +229,48 @@ end
 ## 4. Physics
 
 Methods called on an [object handle](#3-objects) (`self`, or a `find` result).
-They require a **Rigid Body** attribute on that object — otherwise they do
-nothing. Coordinates are world-space; rotations are in **degrees**.
+These require a **Rigid Body** attribute on that object — otherwise they do
+nothing. (Position, rotation and scale work on *any* object; those live in
+[Transform & visibility](#5-transform--visibility).) Coordinates are world-space;
+rotations are in **degrees**.
 
 | Method | Effect |
 |---|---|
 | `handle:apply_impulse(x, y, z)` | instantaneous kick (jump/knockback) |
+| `handle:apply_force(x, y, z)` | continuous force for this step (scale by `dt` yourself) |
+| `handle:apply_torque(x, y, z)` | continuous twist for this step |
 | `handle:set_velocity(x, y, z)` | set linear velocity (movement) |
+| `handle:velocity()` → `x, y, z` | current linear velocity |
+| `handle:set_angular_velocity(x, y, z)` | set spin, radians/second per world axis |
+| `handle:angular_velocity()` → `x, y, z` | current spin |
 | `handle:set_transform(x, y, z [, rx, ry, rz])` | teleport / drive position (+rotation) |
 | `handle:position()` → `x, y, z` | current world position |
-| `handle:velocity()` → `x, y, z` | current linear velocity |
+
+### `physics.raycast(ox, oy, oz, dx, dy, dz [, maxDistance])`
+Fires a ray from `(ox, oy, oz)` along `(dx, dy, dz)` — which need not be
+normalized — and returns the **closest solid hit**, or `nil`. `maxDistance`
+defaults to 1000. Trigger volumes and animated bone colliders are ignored: a
+raycast asks what solid geometry is in the way, not which triggers you are
+standing in.
+
+The hit table:
+
+| Field | Meaning |
+|---|---|
+| `object` | handle of what was hit |
+| `distance` | distance from the ray origin |
+| `x`, `y`, `z` | world-space hit point |
+| `nx`, `ny`, `nz` | surface normal, pointing back toward the origin |
+
+```lua
+-- Ground check: is there floor within half a unit below us?
+function on_update(dt)
+    local x, y, z = self:position()
+    local hit = physics.raycast(x, y, z, 0, -1, 0, 0.5)
+    grounded = hit ~= nil
+    if hit then log("standing on " .. hit.object:name()) end
+end
+```
 
 ### `apply_impulse(x, y, z)`
 An instantaneous force. Best on a **Dynamic** body. This is how you jump. Wakes a
@@ -190,6 +303,10 @@ Move (and optionally rotate) the object. It's a **teleport** for a Dynamic body
 (clears its velocity), and the way to drive a **Kinematic** body each frame (a
 Kinematic body pushes Dynamic objects it hits). Rotation args are optional.
 
+On an object with **no** Rigid Body this now moves the object in the scene
+instead of doing nothing — but prefer `:set_position()` there, since it leaves
+rotation alone rather than resetting it to zero.
+
 ```lua
 function on_update(dt)
     local x, y, z = self:position()
@@ -200,7 +317,7 @@ end
 
 ### `position()` → `x, y, z`  ·  `velocity()` → `x, y, z`
 Query the object's current world position / linear velocity (three return values
-each).
+each). `position()` works on any object; `velocity()` needs a Rigid Body.
 
 ```lua
 local x, y, z    = self:position()
@@ -214,7 +331,357 @@ local speed = math.sqrt(vx*vx + vz*vz)
 
 ---
 
-## 5. Input
+## 5. Transform & visibility
+
+Every handle carries its transform, whether or not the object is simulated:
+
+| Method | Effect |
+|---|---|
+| `handle:position()` → `x, y, z` | current world position |
+| `handle:set_position(x, y, z)` | move it (rotation and scale unchanged) |
+| `handle:rotation()` → `rx, ry, rz` | current rotation, degrees |
+| `handle:set_rotation(rx, ry, rz)` | re-aim it in place |
+| `handle:scale()` → `sx, sy, sz` | current scale |
+| `handle:set_scale(s)` / `(sx, sy, sz)` | one argument scales uniformly |
+| `handle:visible()` → `boolean` | is it being drawn |
+| `handle:set_visible(b)` · `:show()` · `:hide()` | show/hide without destroying |
+
+**Where the transform lives.** If the object has a **Rigid Body**, the simulation
+owns its position and rotation — writes go to the body (a teleport for Dynamic, a
+drive for Kinematic) exactly as `set_transform` always did. If it does *not*, the
+write goes to the scene, so ordinary props, lights and cameras can be moved too.
+This is the one thing that silently did nothing before. Scale is never simulated,
+so it always belongs to the scene.
+
+```lua
+-- Open a door: slide it, no Rigid Body needed.
+function on_update(dt)
+    local door = find("Door")
+    local x, y, z = door:position()
+    if opening and y < 4 then door:set_position(x, y + dt * 2, z) end
+end
+```
+
+Hiding an object keeps it loaded — its mesh stays streamed in and its animation
+keeps running — so `:show()` is instant and resumes mid-animation. A hidden
+object contributes no light and no overlay, exactly as if its **Visible**
+checkbox were off.
+
+---
+
+## 6. Attributes
+
+Two methods reach **every** field of every attribute. Field names are listed in
+full below — note they are **not** the keys you see inside a `.scene` file
+(the JSON stores a light's brightness as `intensity`; the script name is
+`light_intensity`, prefixed so every attribute's fields stay distinct):
+
+### `handle:get(field [, attrIndex])`
+Returns the field's value, or `nil` if the object has no such field. Vector
+fields return three values.
+
+### `handle:set(field, value [, v2, v3] [, attrIndex])` → `boolean`
+Writes it, returning `false` for an unknown field. A vector field accepts three
+components, or one applied to all three.
+
+```lua
+local lamp = find("Lamp")
+lamp:set("light_intensity", lamp:get("light_intensity") * 0.5)  -- dim it
+lamp:set("light_color", 1, 0.4, 0.1)                            -- warm it
+find("Fader"):set("image_alpha", 0.0)                           -- fade an overlay
+```
+
+**Which attribute?** Objects can hold several. With no `attrIndex`, the engine
+picks the first attribute whose value for that field is not the default — which
+is almost always the one you configured. Pass a 1-based `attrIndex` to be exact:
+
+```lua
+log(obj:attr_count())        -- how many attributes
+log(obj:attr_type(2))        -- e.g. "Point Light"
+obj:set("cam_fov", 70, 3)    -- the Camera is attribute 3
+```
+
+Writes are **live only**: in the editor they vanish on Stop and never dirty the
+project; on the console they last for the session.
+
+### Field reference
+
+| Attribute | Fields |
+|---|---|
+| 3D Model | `model_path`, `cast_shadow` |
+| Shader | `shader_path` |
+| Animator | `animator_controller_path`, `animator_initial_state`, `animator_playback_speed`, `animator_auto_play` |
+| Camera | `cam_fov`, `cam_near`, `cam_far`, `cam_active`, `cam_type`, `cam_follow_target`, `cam_follow_offset`, `cam_follow_orbit`, `cam_follow_rot_offset`, `cam_follow_lock`, `cam_follow_smoothing`, `cam_track_speed`, `cam_track_accel`, `cam_track_rot_offset` |
+| Lights (all four) | `light_color`, `light_intensity`, `light_range`, `light_inner_deg`, `light_outer_deg`, `light_mode`, `light_volumetric`, `light_volumetric_intensity` |
+| Rigid Body | `phys_kind`, `phys_shape`, `phys_size`, `phys_mass`, `phys_lin_damping`, `phys_ang_damping`, `phys_restitution`, `phys_friction`, `phys_gravity`, `phys_gravity_scale`, `phys_lock_rotation` |
+| Trigger Volume | `trig_shape`, `trig_size` |
+| Image | `image_path`, `image_x`, `image_y`, `image_w`, `image_h`, `image_stretch`, `image_lock_aspect`, `image_tint`, `image_alpha`, `image_priority` |
+| Skybox | `sky_path`, `sky_rotation` |
+| Text | `text_font_path`, `text_value`, `text_x`, `text_y`, `text_w`, `text_h`, `text_font_size`, `text_color`, `text_alpha`, `text_lock_aspect`, `text_priority` |
+| Video | `video_path`, `video_x`, `video_y`, `video_w`, `video_h`, `video_stretch`, `video_lock_aspect`, `video_tint`, `video_alpha`, `video_priority`, `video_play_mode`, `video_volume`, `video_muted` |
+| Audio | `audio_path`, `audio_play`, `audio_volume`, `audio_pitch`, `audio_loop`, `audio_class`, `audio_priority`, `audio_load_mode`, `audio_spatial`, `audio_min_dist`, `audio_max_dist`, `audio_doppler` |
+
+Changing `phys_*` or `trig_*` updates the stored value but **not** an existing
+collider — the body is created when the scene loads. Rebuild by destroying and
+re-spawning the object instead.
+
+---
+
+## 7. Tags
+
+Short labels for finding objects by role instead of by name. Set them in the
+Inspector (comma-separated, under the object's name) or from script. Matching is
+exact and case-sensitive.
+
+| Call | Result |
+|---|---|
+| `handle:tags()` → `table` | array of the object's tags |
+| `handle:has_tag(t)` → `boolean` | |
+| `handle:add_tag(t)` → `boolean` | `false` if it already had it |
+| `handle:remove_tag(t)` → `boolean` | `false` if it didn't have it |
+| `find_by_tag(t)` → `table` | every live object with that tag |
+
+```lua
+for _, pickup in ipairs(find_by_tag("pickup")) do
+    pickup:set_visible(true)
+end
+```
+
+Script-side tag changes are live only; they never rewrite the scene file.
+
+---
+
+## 8. Time & timers
+
+| Call | Result |
+|---|---|
+| `time.delta` | seconds since the last frame (same value `on_update` receives) |
+| `time.total` | seconds since the session started |
+| `time.after(seconds, fn)` → `id` | run `fn` once, later |
+| `time.every(seconds, fn)` → `id` | run `fn` repeatedly |
+| `time.cancel(id)` → `boolean` | stop a timer; `false` if it was already done |
+
+Timers fire at the start of a frame, before any `on_update`, so what they change
+is visible that same frame. A repeating timer re-arms from its deadline rather
+than from when it fired, so it doesn't drift — but a long frame never queues up a
+burst of catch-up calls.
+
+```lua
+function on_start()
+    time.after(3, function() find("Intro"):hide() end)
+
+    local id
+    id = time.every(0.5, function()
+        blink = not blink
+        find("Warning"):set_visible(blink)
+        if time.total > 10 then time.cancel(id) end
+    end)
+end
+```
+
+---
+
+## 9. Events
+
+A named message bus, so scripts can talk without holding handles to each other.
+
+| Call | Result |
+|---|---|
+| `event.on(name, fn)` | subscribe; `fn` receives the payload |
+| `event.emit(name [, payload])` | call every subscriber, in subscription order |
+
+Delivery is synchronous. A handler that errors is reported and skipped — the rest
+still run. Subscribing during an `emit` takes effect from the *next* emit.
+
+```lua
+-- pickup.lua
+function on_trigger(entrant)
+    event.emit("score", 10)
+    self:destroy()
+end
+
+-- hud.lua
+function on_start()
+    score = 0
+    event.on("score", function(points)
+        score = score + points
+        text.set("ScoreLabel", "Score: " .. score)
+    end)
+end
+```
+
+---
+
+## 10. Spawning
+
+### `spawn(source, name [, x, y, z])` → handle | `nil`
+Clones a **template object** already in the scene. The clone inherits its
+attributes, rotation, scale and tags, and starts visible. `source` is a handle or
+a name; the position defaults to the template's own.
+
+Cloning — rather than naming a model file — is what makes this work on the
+console: the template is in the scene, so its mesh, textures and scripts are
+already cooked into `game.spak` and stream in normally. Author templates hidden
+(uncheck **Visible**) and spawn from them.
+
+### `handle:destroy()` → `boolean`
+Removes the object: it stops drawing, leaves the simulation, and disappears from
+`find_all` / `find_by_tag`. Its `on_destroy()` runs if it defines one.
+
+### `handle:alive()` → `boolean`
+Whether the handle still refers to the object it was made for.
+
+```lua
+-- Fire a bullet, and clean it up after two seconds.
+function on_update(dt)
+    if input.button("A") and not firing then
+        firing = true
+        local x, y, z = self:position()
+        local b = spawn("BulletTemplate", "Bullet", x, y + 1, z)
+        b:set_velocity(0, 0, 20)
+        time.after(2, function() if b:alive() then b:destroy() end end)
+    end
+end
+```
+
+**Handles and destroyed objects.** A destroyed object's slot is reused by a later
+spawn, so a handle you kept could otherwise end up pointing at a *different*
+object. It cannot: every handle remembers which occupant of the slot it was made
+for, and once that object is gone the handle simply stops working — `:alive()`
+returns `false`, `:name()` returns `""`, and every setter does nothing. Always
+guard a stored handle with `:alive()` rather than assuming it is still valid.
+
+Destruction is applied at the end of the frame (the object is already "dead" to
+scripts the moment `destroy()` returns), so removing an object mid-update is safe.
+
+---
+
+## 11. Scenes & camera
+
+### `scene.load(name [, minSeconds])` → `boolean`
+Switches scenes. `name` is a scene name (`"Level2"`) or a scene-relative path.
+Returns `false` if the scene can't be found, or if a load is already running.
+
+**The swap is not immediate — and that's what makes a loading screen possible.**
+The current scene keeps running and rendering while the new one's meshes stream
+in. So whatever you put on screen stays up, *and the script that put it there
+stays alive to update it*. The hand-over happens as soon as the new scene's
+meshes are in and their textures are drawable — no padding.
+
+A loading screen you build is **guaranteed at least one drawn frame**, however
+fast the load turns out to be. The swap is deliberately held off until the frame
+that started it has been rendered; otherwise the hand-over — which clears the GUI
+along with the old scene — could tear your screen down before it ever reached the
+display.
+
+`minSeconds` (default `0`) is opt-in: it holds the screen for at least that long
+even when the load finishes sooner. Leave it alone unless you specifically want a
+screen to linger. A scene whose meshes are already cached (a return trip —
+the stream cache survives a swap) has little to read and finishes almost at once,
+and a small scene loads in a frame or two. In both cases a fast bar means a fast
+load. Use `minSeconds` if you want the screen held regardless.
+
+### `scene.is_loading()` → `boolean` · `scene.progress()` → `0..1`
+Whether a load is running, and **the fraction of the bytes it has to read that
+have arrived** — weighted by each mesh's size on disc, taken from the pak. It is
+real read progress: not a count of assets, and not a timer. Time passing does not
+move it. `progress()` is `1` when nothing is loading.
+
+**What the load waits for:** every mesh resident, and every texture those meshes
+use *drawable* — small mips registered, which is what the progressive cook exists
+for. Full-resolution texture data is **not** waited on; it keeps streaming into
+the new scene and sharpens there, exactly as it does during normal play.
+
+In the editor `progress()` is always `1`. There is no streaming system there —
+meshes load synchronously the first time they are drawn — so there is no partial
+state to report.
+
+### `scene.name()` → `string`
+The current scene's name — still the *old* scene until the hand-over completes.
+
+### Worked example: a loading screen
+
+This is `assets/scripts/sceneswap.lua` from the test project, verbatim. It is
+attached to an object in **both** scenes, so the one script drives either
+direction — it works out where to go from `scene.name()`.
+
+```lua
+-- Scene-switch demo: holds a GUI loading screen up while the next scene streams
+-- in, driving the bar from scene.progress(). Attached to an object in BOTH
+-- scenes (Main -> Scene -> Main), so the same script drives either direction.
+--
+-- Set AUTO_AFTER to a number of seconds to make the switch happen on its own
+-- (handy for capturing it, or on a build with no controller); leave it nil and
+-- the switch only happens when A is pressed.
+local AUTO_AFTER = nil
+
+local FONT = "assets/Typo_Round_Bold_Demo.otf"
+
+local target      -- the scene we switch TO, decided from the one we're in
+local screen, bar -- loading-screen widgets
+local switching = false
+
+local function begin_switch()
+    if switching or scene.is_loading() then return end
+    switching = true
+
+    -- Opaque, so it hides the CURRENT scene — which keeps rendering behind it
+    -- for the whole load. That is also what keeps this script alive to run the
+    -- progress bar below.
+    screen = gui.panel{ x = 0, y = 0, w = 1280, h = 720, color = { 0, 0, 0, 1 } }
+    -- No punctuation: this font's cooked atlas has no '.' glyph, so an ellipsis
+    -- comes out as three missing-glyph boxes on the console.
+    gui.label{ parent = screen, x = 0, y = 300, w = 1280, h = 50, align = "center",
+               text = "Loading " .. target, font = FONT, size = 40,
+               color = { 1, 1, 1 } }
+    -- Track behind the bar, so an empty bar still reads as a bar.
+    gui.panel{ parent = screen, x = 440, y = 380, w = 400, h = 18,
+               color = { 0.14, 0.14, 0.16, 1 } }
+    bar = gui.panel{ parent = screen, x = 440, y = 380, w = 0, h = 18,
+                     color = { 1, 0.55, 0.1, 1 } }
+
+    gui.set_paused(true)   -- freeze gameplay while the screen is up
+    scene.load(target)
+    log("sceneswap: loading " .. target)
+end
+
+function on_start()
+    target = (scene.name() == "Main") and "Scene" or "Main"
+    log("sceneswap: in '" .. scene.name() .. "', A switches to '" .. target .. "'")
+    if AUTO_AFTER then time.after(AUTO_AFTER, begin_switch) end
+end
+
+function on_update(dt)
+    if not switching and input.pressed("A") then
+        begin_switch()
+    end
+
+    if switching and scene.is_loading() and bar then
+        -- 0..1 of the incoming scene's meshes that have streamed in.
+        bar:set_size(400 * scene.progress(), 18)
+    end
+end
+```
+
+### `camera.set_active(handle)` → `boolean`
+Makes that object's **Camera** attribute the one driving the view, deactivating
+any other. Returns `false` if the object has no Camera attribute.
+
+### `camera.active()` → handle | `nil`
+The object whose camera is currently driving the view.
+
+```lua
+function on_trigger(entrant)
+    if entrant:name() == "player" then
+        camera.set_active(find("CutsceneCam"))
+        time.after(4, function() camera.set_active(find("PlayerCam")) end)
+    end
+end
+```
+
+---
+
+## 12. Input
 
 Scripts always poll **Xbox controls** (`"A"`, `"LX"`, …). On the console these read
 a real gamepad. In the editor's Play preview they read a gamepad too, **plus** any
@@ -224,11 +691,42 @@ editor testing convenience only; it changes nothing about the script or the
 console build.
 
 ### `input.button(name)` → `boolean`
-True while the named button is held.
+True **while** the named button is held — every frame of the press. Use it for
+things that should keep happening for as long as you hold the button: moving,
+sprinting, crouching, holding a trigger down.
 
 ```lua
-if input.button("A") then self:apply_impulse(0, 7, 0) end
+-- Walk right for as long as DPadRight is held.
+function on_update(dt)
+    if input.button("DPadRight") then
+        local x, y, z = self:position()
+        self:set_position(x + 4 * dt, y, z)   -- 4 units/second
+    end
+end
 ```
+
+### `input.pressed(name)` → `boolean` · `input.released(name)` → `boolean`
+True only on the **one frame** the button goes down, or comes up. A press lasts
+several frames, so anything that should happen once per press — opening a menu,
+firing a shot, changing scene — belongs here rather than in `input.button`.
+
+```lua
+-- Jump once per press. With input.button this would push every frame A is
+-- held, which is a rocket rather than a jump.
+function on_update(dt)
+    if input.pressed("A") then self:apply_impulse(0, 7, 0) end
+end
+```
+
+The engine stores last frame's button state and compares it with this frame's, so
+two cases come out right that a script cannot easily get right on its own:
+
+- If a button is **already down when the game starts** — the title boots, or you
+  click Play while holding the key — that is not counted as a press.
+- If a button is **still down while [`scene.load`](#11-scenes--camera) runs**, it
+  is not counted as a press in the new scene. Loading a scene deletes the running
+  script and starts a new copy, so a script cannot remember anything from before
+  the change; the engine can.
 
 ### `input.axis(name)` → `number`
 Analog value: sticks `-1..1`, triggers `0..1`. Stick deadzone is applied.
@@ -254,7 +752,7 @@ project (`input_mappings.ini`); the console ignores them.
 
 ---
 
-## 6. Video
+## 13. Video
 
 Control an object's **Video** attribute (the screen-space video overlay — see
 `runtime/VIDEO.md` for the format and attribute reference). These are globals
@@ -336,7 +834,7 @@ end
 
 ---
 
-## 7. Audio
+## 14. Audio
 
 Control an object's **Audio** attribute (a 2D or 3D-positional sound source —
 see `runtime/AUDIO.md` for the format and attribute reference). Globals taking
@@ -354,8 +852,8 @@ what plays.
 | `audio.play(name)` | start the clip **from the beginning** (restarts a stopped/finished one) |
 | `audio.stop(name)` | silence it (releases the voice) |
 | `audio.is_playing(name)` → `boolean` | true while it's audible (a non-looping clip reports false after it ends) |
-| `audio.set_volume(name, v)` | linear gain, `0`–`20` |
-| `audio.set_pitch(name, v)` | playback rate, `0.1`–`4` (also speeds/slows the clip) |
+| `audio.set_volume(name, v)` | linear gain, clamped to `0`–`20` |
+| `audio.set_pitch(name, v)` | playback rate, clamped to `0.1`–`4` (also speeds/slows the clip) |
 | `audio.set_loop(name, b)` | toggle looping (applies live) |
 
 ```lua
@@ -384,7 +882,7 @@ end
 
 ---
 
-## 8. Animator
+## 15. Animator
 
 Control an object's **Animator** attribute and its authored controller. Animator
 functions are globals taking the target object **name**, followed by a parameter
@@ -513,7 +1011,7 @@ or scene.
 
 ---
 
-## 9. Utility
+## 16. Utility
 
 ### `log(msg)`
 Print to the editor **Log** panel as a `[LOG]` entry (or the console's debug
@@ -526,7 +1024,7 @@ log("health = " .. 100)
 
 ---
 
-## 10. Text
+## 17. Text
 
 ### `text.set(name, value)`
 
@@ -547,7 +1045,7 @@ UTF-8 bytes and 2,048 rendered glyphs.
 
 ---
 
-## 11. GUI
+## 18. GUI
 
 Retained mode GUI to build menus from lua scripts. `gui.panel`, `gui.label`, `gui.image` and `gui.button`
 each create a widget and return a **handle**; keep the handle to change or
@@ -651,7 +1149,7 @@ wrapping.
 Call `gui.set_focus` when a menu opens so the player sees a highlight straight
 away. In the editor these read a gamepad plus whatever you bound in the
 **Mapping** panel — a control with nothing bound never reports pressed. See
-[Input](#5-input).
+[Input](#12-input).
 
 ### Worked example: a pause menu
 
@@ -712,17 +1210,14 @@ function on_start()
 end
 ```
 
-To open it from a button instead of at startup, edge-detect the press —
-`input.button` reports a button as **held**, not as newly pressed:
+To open it from a button instead of at startup, use
+[`input.pressed`](#12-input) — `input.button` reports a button as **held**, so it
+would toggle the menu every frame the button is down:
 
 ```lua
-local was_down = false
-
 function on_update(dt)
-    local down = input.button("Start")
-    if down and not was_down then
+    if input.pressed("Start") then
         if menu then close_menu() else open_menu() end
     end
-    was_down = down
 end
 ```

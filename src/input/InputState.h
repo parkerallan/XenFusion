@@ -16,13 +16,44 @@ namespace input
         enum Ax  { LX = 0, LY, RX, RY, LT, RT, AxisCount };
 
         bool  buttons[ButtonCount];
-        float axes[AxisCount]; // sticks [-1,1], triggers [0,1]
+        bool  prev[ButtonCount];  // last frame's buttons, for the press/release edges
+        bool  primed;             // false until the first poll has seeded `prev`
+        float axes[AxisCount];    // sticks [-1,1], triggers [0,1]
 
-        InputState() { Clear(); }
+        InputState() { Reset(); }
+
+        // Per-poll wipe of the CURRENT frame only. `prev` deliberately survives —
+        // it is the previous frame, and clearing it would make every edge query
+        // report nothing.
         void Clear()
         {
             for (int i = 0; i < ButtonCount; ++i) buttons[i] = false;
             for (int i = 0; i < AxisCount;   ++i) axes[i] = 0.0f;
+        }
+
+        // Full wipe including the edge history. For starting a fresh session, so
+        // a button left held when the last one ended can't fire an edge here.
+        void Reset()
+        {
+            Clear();
+            for (int i = 0; i < ButtonCount; ++i) prev[i] = false;
+            primed = false;
+        }
+
+        // Seed `prev` from the current frame so nothing reads as an edge. Called
+        // once after the first poll of a session: a button ALREADY held when a
+        // session starts has not been pressed during it, and must not look like it.
+        void Prime()
+        {
+            for (int i = 0; i < ButtonCount; ++i) prev[i] = buttons[i];
+            primed = true;
+        }
+
+        // Roll the current frame into the previous one. Call once per frame,
+        // BEFORE refilling `buttons` (PollXInput does this for you).
+        void BeginFrame()
+        {
+            for (int i = 0; i < ButtonCount; ++i) prev[i] = buttons[i];
         }
 
         static int ButtonIndex(const char* n)
@@ -50,5 +81,13 @@ namespace input
 
         bool  Button(const char* n) const { int i = ButtonIndex(n); return i >= 0 && buttons[i]; }
         float Axis(const char* n)   const { int i = AxisIndex(n);   return i >= 0 ? axes[i] : 0.0f; }
+
+        // Edges: true only on the frame the button went down / came up. Button()
+        // stays true for as long as it is held, which is why anything that should
+        // happen ONCE per press has to ask these instead.
+        bool Pressed(const char* n) const
+        { int i = ButtonIndex(n); return i >= 0 && buttons[i] && !prev[i]; }
+        bool Released(const char* n) const
+        { int i = ButtonIndex(n); return i >= 0 && !buttons[i] && prev[i]; }
     };
 }

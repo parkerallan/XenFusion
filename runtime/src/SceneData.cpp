@@ -259,6 +259,13 @@ namespace scenedata
             const JValue* vis = jo.Find("visible");
             o.visible = (vis && vis->type == JValue::Bool) ? vis->b : true;
 
+            // "tags" is absent from scenes authored before tags existed.
+            const JValue* tags = jo.Find("tags");
+            if (tags && tags->type == JValue::Array)
+                for (size_t t = 0; t < tags->arr.size(); ++t)
+                    if (tags->arr[t].type == JValue::Str)
+                        o.tags.push_back(tags->arr[t].str);
+
             const JValue* attrs = jo.Find("attributes");
             if (attrs && attrs->type == JValue::Array)
             {

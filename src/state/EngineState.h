@@ -168,6 +168,10 @@ struct SceneObject
     float       rotation[3] = {0.0f, 0.0f, 0.0f};
     float       scale[3]    = {1.0f, 1.0f, 1.0f};
     bool        visible     = true;
+    // Free-form labels for gameplay queries (find_by_tag / obj:has_tag).
+    // Matching is exact and case-sensitive. Omitted from the JSON when empty,
+    // so scenes authored before tags existed load and re-save unchanged.
+    std::vector<std::string> tags;
     std::vector<ObjectAttribute> attributes;
 };
 

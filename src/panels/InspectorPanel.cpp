@@ -170,6 +170,39 @@ void InspectorPanel::Render(EngineState& state)
 
     changed |= ImGui::Checkbox("Visible", &obj->visible);
 
+    // Tags: a comma-separated list, since they are short labels a script matches
+    // exactly (find_by_tag / obj:has_tag) rather than structured data.
+    {
+        std::string joined;
+        for (std::size_t t = 0; t < obj->tags.size(); ++t)
+        {
+            if (t) joined += ", ";
+            joined += obj->tags[t];
+        }
+        char tag_buf[256];
+        std::strncpy(tag_buf, joined.c_str(), sizeof(tag_buf) - 1);
+        tag_buf[sizeof(tag_buf) - 1] = '\0';
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputTextWithHint("##tags", "Tags (comma separated)", tag_buf, sizeof(tag_buf)))
+        {
+            obj->tags.clear();
+            const std::string text = tag_buf;
+            std::size_t start = 0;
+            while (start <= text.size())
+            {
+                const std::size_t comma = text.find(',', start);
+                const std::size_t end = (comma == std::string::npos) ? text.size() : comma;
+                std::size_t b = start, e = end;
+                while (b < e && std::isspace((unsigned char)text[b])) ++b;
+                while (e > b && std::isspace((unsigned char)text[e - 1])) --e;
+                if (e > b) obj->tags.push_back(text.substr(b, e - b));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+            changed = true;
+        }
+    }
+
     ImGui::SeparatorText("Transform");
     changed |= ImGui::DragFloat3("Position", obj->position, 0.05f);
     changed |= ImGui::DragFloat3("Rotation", obj->rotation, 0.5f);

@@ -21,8 +21,11 @@ namespace input
     }
 
     // Poll controller 0 into s (clears first). No-op fields stay zero if absent.
+    // Rolls the previous frame first, so InputState::Pressed/Released work for
+    // every caller without them having to remember to do it.
     inline void PollXInput(InputState& s)
     {
+        s.BeginFrame();
         s.Clear();
         XINPUT_STATE st;
         memset(&st, 0, sizeof(st));

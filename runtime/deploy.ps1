@@ -124,14 +124,24 @@ $startup = "scenes/Main.scene"
 if ($proj) { $s = (Get-Content $proj.FullName -Raw | ConvertFrom-Json).startupScene; if ($s) { $startup = $s } }
 $sceneFile = Join-Path $Project $startup
 
+# Cook the assets of EVERY scene, not just the startup one. scene.load() can
+# switch to any scene in the project, and a scene whose meshes never reached the
+# pak loads and renders nothing at all on the console (raw assets are not
+# shipped) — a failure that only shows up on hardware. The residency budget
+# evicts what isn't being drawn, so carrying every level in the pak costs disc
+# space, not runtime memory.
 $meshes = @()
 $images = @()
 $videos = @()
 $audios = @()
 $fonts = @()
 $animators = @()
-if (Test-Path $sceneFile) {
-    $scene = Get-Content $sceneFile -Raw | ConvertFrom-Json
+$sceneFiles = @(Get-ChildItem (Join-Path $Project "scenes") -Filter *.scene -Recurse -ErrorAction SilentlyContinue)
+if (-not $sceneFiles -and (Test-Path $sceneFile)) { $sceneFiles = @(Get-Item $sceneFile) }
+foreach ($sf in $sceneFiles) {
+    $scene = $null
+    try { $scene = Get-Content $sf.FullName -Raw | ConvertFrom-Json }
+    catch { Write-Warning "$($sf.Name): not valid scene JSON, skipped"; continue }
     foreach ($o in $scene.objects) {
         foreach ($a in $o.attributes) {
             if ($a.model_path) { $meshes += $a.model_path }
@@ -144,6 +154,7 @@ if (Test-Path $sceneFile) {
         }
     }
 }
+Write-Output "spakc: scanning $($sceneFiles.Count) scene(s) for assets"
 # Assets a Lua script names (gui.panel{ texture = "assets/ui/panel.png" }). The
 # scene scan above only sees attribute paths, so anything a script references
 # would be missing from the pak. The path written in the script IS the lookup
@@ -198,12 +209,21 @@ if ($animators.Count -gt 0) {
 
 $imageArgs = @()
 foreach ($image in $images) { $imageArgs += @("--image", [string]$image) }
+# Lightmaps are per-scene (bake output sits beside the .scene), so every scene
+# that has been baked contributes its atlas pair. The per-mesh UV2 sidecars are
+# shared across scenes, so they are added once.
 $lightmapArgs = @()
-$lightmapRel = [System.IO.Path]::ChangeExtension($startup, ".lmap").Replace('\', '/')
-if (Test-Path (Join-Path $Project $lightmapRel)) {
+$anyLightmap = $false
+foreach ($sf in $sceneFiles) {
+    $rel = ($sf.FullName.Substring($Project.Length).TrimStart('\', '/')).Replace('\', '/')
+    $lightmapRel = [System.IO.Path]::ChangeExtension($rel, ".lmap").Replace('\', '/')
+    if (-not (Test-Path (Join-Path $Project $lightmapRel))) { continue }
+    $anyLightmap = $true
     $lightmapArgs += @("--lmap", $lightmapRel)
     $base = $lightmapRel.Substring(0, $lightmapRel.Length - 5)
     $lightmapArgs += @("--image", ($base + "_lm0.png"), "--image", ($base + "_lm1.png"))
+}
+if ($anyLightmap) {
     foreach ($mesh in $meshes) {
         $uv = [System.IO.Path]::ChangeExtension([string]$mesh, ".lmuv").Replace('\', '/')
         if (Test-Path (Join-Path $Project $uv)) { $lightmapArgs += @("--lmuv", $uv) }

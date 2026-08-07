@@ -47,10 +47,37 @@ public:
     // goes to OutputDebugString; find resolves a scene object name to its index.
     bool  InputButton(const char* name);
     float InputAxis(const char* name);
+    bool  InputButtonPressed(const char* name);
+    bool  InputButtonReleased(const char* name);
     void  Log(const char* msg);
+    void  LogError(const char* msg);
     int   FindObject(const char* name);
+    int   ObjectCount();
     const char* ObjectName(int index);
     void  TextSetValue(int objectIndex, const char* value);
+    bool  GetObjectTransform(int objectIndex, float pos[3], float rot[3], float scale[3]);
+    void  SetObjectTransform(int objectIndex, const float pos[3], const float rot[3],
+                             const float scale[3], int mask);
+    bool  GetObjectVisible(int objectIndex);
+    void  SetObjectVisible(int objectIndex, bool visible);
+    bool  SetActiveCamera(int objectIndex);
+    int   GetActiveCamera();
+    int   ObjectTagCount(int objectIndex);
+    const char* ObjectTag(int objectIndex, int tagIndex);
+    bool  AddObjectTag(int objectIndex, const char* tag);
+    bool  RemoveObjectTag(int objectIndex, const char* tag);
+    unsigned ObjectGeneration(int objectIndex);
+    bool  ObjectAlive(int objectIndex);
+    int   SpawnObject(int sourceObjectIndex, const char* name, const float pos[3]);
+    bool  DestroyObject(int objectIndex);
+    bool  LoadScene(const char* name, float minSeconds);
+    bool  SceneIsLoading();
+    float SceneProgress();
+    const char* SceneName();
+    bool  AttrGet(int objectIndex, int attrIndex, const char* field, attrfields::Value& out);
+    bool  AttrSet(int objectIndex, int attrIndex, const char* field, const attrfields::Value& in);
+    int   AttrCount(int objectIndex);
+    const char* AttrType(int objectIndex, int attrIndex);
     void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
     bool  VideoIsPlaying(int objectIndex);
     void  AudioSetPlaying(int objectIndex, bool play); // Lua audio.*
@@ -95,25 +122,90 @@ private:
         int         object_index; // for physics pose override
         bool        dynamic_lighting;
         bool        cast_shadow;
+        bool        visible;      // obj:show()/obj:hide(); the item is kept either
+                                  // way so the animator and stream stay warm
         float       scale[3];     // authored scale (collider is sized separately)
         RuntimeAnimator animator;
         std::vector<float> skin_palette;
         std::vector<int> bone_collider_handles;
         std::vector<RuntimeAnimator::BoneColliderPose> bone_collider_poses;
+        DrawItem() : object_index(-1), dynamic_lighting(false), cast_shadow(false),
+                     visible(true)
+        { scale[0] = scale[1] = scale[2] = 1.0f; }
     };
     struct ShaderItem
     {
         std::string shader_path;
         std::string model_path;
+        int   object_index;
+        bool  visible;
         float pos[3];
         float rot[3];
         float scale[3];
+        ShaderItem() : object_index(-1), visible(true)
+        {
+            pos[0] = pos[1] = pos[2] = 0.0f;
+            rot[0] = rot[1] = rot[2] = 0.0f;
+            scale[0] = scale[1] = scale[2] = 1.0f;
+        }
     };
 
-    void BuildDrawLists();
+    // createItems = true builds the resource-owning DrawItem/ShaderItem shells
+    // (Init only); false updates them in place from the live scene.
+    void RebuildSceneLists(bool createItems);
+    void BuildDrawLists() { RebuildSceneLists(true); }
+    // Re-derive everything a script can change (transforms, visibility, lights,
+    // the active camera, overlays) from m_scene. Driven by m_scene_dirty, so a
+    // scene no script touches never pays for it.
+    void RefreshSceneDerived() { RebuildSceneLists(false); }
     void LoadLightmaps(const std::string& startupScene);
     void BuildPhysics(); // create the Bullet world from Rigid Body / Trigger attributes
     void BuildScripts(); // load each object's .lua and run on_start
+    // One object's collider descriptors — shared by the initial build and by
+    // spawning, so a spawned body is set up exactly like an authored one.
+    void AppendBodyDescs(int objectIndex, std::vector<phys::BodyDesc>& descs,
+                         std::vector<std::vector<float>*>& geomPos,
+                         std::vector<std::vector<unsigned int>*>& geomIdx);
+
+    // --- Object lifetime + scene switching (see the Lua spawn/scene tables) ---
+    void ResetObjectSlots();     // one live slot per scene object, generation 1
+    void ApplyPendingObjects();  // end-of-frame spawn/destroy drain
+    void ApplyPendingScene();    // end-of-frame scene swap
+    std::vector<unsigned>      m_obj_gen;   // per-slot generation (handle stamp)
+    std::vector<unsigned char> m_obj_alive; // 0 = free slot awaiting reuse
+    std::vector<int>           m_pending_spawn;
+    std::vector<int>           m_pending_destroy;
+    std::string                m_pending_scene;
+
+    // --- Phased scene load ---
+    // A scene change runs as: parse the target and start streaming its meshes,
+    // keep the CURRENT scene rendering (so a gui.* loading panel and the script
+    // driving it stay alive), then hand over in one frame once everything is
+    // resident. Waiting on meshes only is deliberate — textures are drawable
+    // blurry from their small mips and sharpen in play, which is what the
+    // progressive mip streaming exists for.
+    // Progress is the fraction of the mesh BYTES this load has to read that have
+    // arrived — the pak directory gives each mesh's size up front, so this is a
+    // real measure of the streaming work and not a count of assets or a timer.
+    // Hand-over additionally requires every texture those meshes use to be
+    // DRAWABLE (small mips registered); the full-resolution halves keep streaming
+    // into the new scene and are never waited on.
+    enum LoadState { LoadIdle = 0, LoadPrefetch = 1 };
+    static const float kSceneLoadTimeout;
+    void  UpdateSceneLoad(float dt);
+    unsigned int PakEntryBytes(unsigned int hash) const;
+
+    int                       m_load_state;
+    RtScene                   m_next_scene;  // parsed up front, swapped in at hand-over
+    std::vector<std::string>  m_load_meshes;
+    std::vector<unsigned int> m_load_mesh_bytes;
+    unsigned int              m_load_mesh_total;
+    float                     m_load_elapsed;
+    float                     m_load_min_time;
+    float                     m_load_progress;
+    // Frames the load has ticked for. The hand-over needs at least two, so the
+    // loading screen the script just built gets drawn before it is torn down.
+    int                       m_load_frames;
     // Extract CPU collision geometry (positions, + indices for exact) for a mesh
     // collider straight from the pak's MSH2/MSH3 blob. Native-endian on the console;
     // skinned collision uses authored bind-pose geometry.
@@ -275,6 +367,9 @@ private:
     float m_time;
     float m_frame_dt;
     bool  m_frame_prepared;
+    // Set by the ScriptHost setters when a script mutates m_scene; consumed by
+    // PrepareFrame, which then re-derives the draw state.
+    bool  m_scene_dirty;
 
     std::vector<DrawItem>   m_draw_items;
     std::vector<ShaderItem> m_shader_items;

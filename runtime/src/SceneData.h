@@ -212,6 +212,7 @@ struct RtObject
     float rotation[3];
     float scale[3];
     bool  visible;
+    std::vector<std::string> tags; // gameplay labels (find_by_tag / obj:has_tag)
     std::vector<RtAttribute> attributes;
 
     RtObject()

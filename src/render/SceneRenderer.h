@@ -18,6 +18,7 @@
 #include "text/TextLayout.h"
 #include "gui/GuiContext.h"
 #include "gui/GuiHost.h"
+#include "state/EngineState.h" // ObjectAttribute, for the live attribute overlay
 
 #include <d3d9.h>
 
@@ -28,6 +29,7 @@
 
 struct EngineState;
 struct SceneFile;
+struct SceneObject;
 
 struct SceneBoneColliderPose
 {
@@ -55,11 +57,37 @@ public:
     // goes to the editor Log; find resolves a scene object name to its index.
     bool  InputButton(const char* name);
     float InputAxis(const char* name);
+    bool  InputButtonPressed(const char* name);
+    bool  InputButtonReleased(const char* name);
     void  Log(const char* msg);
     void  LogError(const char* msg);
     int   FindObject(const char* name);
+    int   ObjectCount();
     const char* ObjectName(int index);
     void  TextSetValue(int objectIndex, const char* value);
+    bool  GetObjectTransform(int objectIndex, float pos[3], float rot[3], float scale[3]);
+    void  SetObjectTransform(int objectIndex, const float pos[3], const float rot[3],
+                             const float scale[3], int mask);
+    bool  GetObjectVisible(int objectIndex);
+    void  SetObjectVisible(int objectIndex, bool visible);
+    bool  SetActiveCamera(int objectIndex);
+    int   GetActiveCamera();
+    int   ObjectTagCount(int objectIndex);
+    const char* ObjectTag(int objectIndex, int tagIndex);
+    bool  AddObjectTag(int objectIndex, const char* tag);
+    bool  RemoveObjectTag(int objectIndex, const char* tag);
+    unsigned ObjectGeneration(int objectIndex);
+    bool  ObjectAlive(int objectIndex);
+    int   SpawnObject(int sourceObjectIndex, const char* name, const float pos[3]);
+    bool  DestroyObject(int objectIndex);
+    bool  LoadScene(const char* name, float minSeconds);
+    bool  SceneIsLoading();
+    float SceneProgress();
+    const char* SceneName();
+    bool  AttrGet(int objectIndex, int attrIndex, const char* field, attrfields::Value& out);
+    bool  AttrSet(int objectIndex, int attrIndex, const char* field, const attrfields::Value& in);
+    int   AttrCount(int objectIndex);
+    const char* AttrType(int objectIndex, int attrIndex);
 
     // gui::HostAssets — the GUI core's only per-target seam. Paths are project
     // relative; the editor resolves them against the project root, loads
@@ -337,7 +365,17 @@ private:
     // attributes, stepped in RenderGpu; poses override the draw items and the
     // debug wireframes for the frame. Stopped restores authored transforms
     // (the scene is never mutated).
-    void StartPhysics(const SceneFile& scene);
+    // Non-const because spawn() appends live objects to the scene for the
+    // session (see m_authored_object_count); the authored data is never edited.
+    void StartPhysics(SceneFile& scene);
+    // One object's collider descriptors — shared by the Play-session build and
+    // by spawn(), so a spawned body is set up exactly like an authored one.
+    void AppendBodyDescs(const SceneFile& scene, int objectIndex,
+                         std::vector<phys::BodyDesc>& descs,
+                         std::vector<std::vector<float>*>& geomPos,
+                         std::vector<std::vector<unsigned int>*>& geomIdx);
+    void StartScripts(const SceneFile& scene);
+    bool ReadScriptSource(const std::string& relPath, std::string& out);
     void StopPhysics();
 
     struct PhysDebug
@@ -561,6 +599,49 @@ private:
         float    pitch  = -1.0f;
         unsigned gen    = 0;
     };
+    // Live per-object scene state for the Play session. Unlike the runtime,
+    // which owns its scene outright, the editor is handed the AUTHORED project
+    // every frame — so a script's writes land here instead of in SceneObject.
+    // Nothing a script does can dirty the project or survive Stop.
+    //
+    // Sized in StartPhysics (one entry per object, seeded from the authored
+    // values) and cleared in StopPhysics. `dirty` stays false until a script
+    // actually writes, so the draw loop pays nothing for untouched objects.
+    struct LiveObject
+    {
+        float pos[3]   = {0, 0, 0};
+        float rot[3]   = {0, 0, 0};
+        float scale[3] = {1, 1, 1};
+        bool  visible  = true;
+        int   cam_active = -1; // -1 = authored, else camera.set_active override
+        bool  dirty    = false;
+        std::vector<std::string> tags;
+        // Cloned from the authored attributes the first time a script writes a
+        // field (obj:set). Empty until then, so the common case costs nothing.
+        bool  has_attrs = false;
+        std::vector<ObjectAttribute> attrs;
+    };
+    std::vector<LiveObject> m_live;
+    // Object lifetime for the Play session. Slots are append-only with a free
+    // list and a per-slot generation, exactly as on the console, so a handle to
+    // a destroyed object can't alias whatever spawn reuses its slot.
+    std::vector<unsigned>      m_obj_gen;
+    std::vector<unsigned char> m_obj_alive;
+    std::vector<int>           m_pending_destroy;
+    // Spawned objects are appended to the SceneFile so RenderUi (which iterates
+    // the authored scene) can draw them at all. The project is NOT marked dirty
+    // and StopPhysics truncates them away again, so nothing survives the session.
+    SceneFile*                 m_play_scene = nullptr;
+    std::size_t                m_authored_object_count = 0;
+    std::string                m_pending_scene;   // scene.load, applied on Stop
+    float                      m_load_ready_time = 0.0f; // m_time the swap may happen at
+    float                      m_load_min_time   = 0.0f; // opt-in hold, 0 = none
+    int                        m_load_frames     = 0;    // frames drawn since it began
+    void ApplyPendingDestroys();
+    // Overlay `authored` with this object's live state, if a script changed it.
+    // Returns false when nothing was overridden and `authored` can be used as is.
+    bool ApplyLive(int objectIndex, const SceneObject& authored, SceneObject& out) const;
+
     std::string AudioKeyFor(const AudioItem& item) const;
     std::map<std::string, AudioOverride> m_audio_overrides;
     std::vector<AudioItem> m_audio_items;

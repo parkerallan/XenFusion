@@ -5,6 +5,7 @@
 
 #include <map>
 #include <math.h>
+#include <utility>
 
 // Bullet 2.82 wrapper. Shared verbatim by the editor and the Xbox 360 runtime.
 // Strict C++03. The SIMD backend is chosen by btScalar.h from the platform
@@ -87,6 +88,24 @@ namespace phys
             return true;
         }
 
+        // Closest-hit ray callback that ignores ghosts. Trigger volumes and bone
+        // colliders are btGhostObjects with no contact response — a script asking
+        // "what is in front of me" means solid geometry, not a trigger it is
+        // standing inside.
+        struct SolidRayCallback : public btCollisionWorld::ClosestRayResultCallback
+        {
+            SolidRayCallback(const btVector3& from, const btVector3& to)
+                : btCollisionWorld::ClosestRayResultCallback(from, to) {}
+
+            virtual bool needsCollision(btBroadphaseProxy* proxy0) const
+            {
+                const btCollisionObject* o = (const btCollisionObject*)proxy0->m_clientObject;
+                if (o && o->getInternalType() == btCollisionObject::CO_GHOST_OBJECT)
+                    return false;
+                return btCollisionWorld::ClosestRayResultCallback::needsCollision(proxy0);
+            }
+        };
+
         // Write a Bullet transform back into a row-major, row-vector D3DMATRIX-style
         // float[16] (rotation + translation, no scale). Inverse of MakeTransform's
         // basis mapping: D3D 3x3 = transpose(Bullet basis).
@@ -140,6 +159,10 @@ namespace phys
 
         // objectIndex -> rigid body (for scripting verbs to find a body by index).
         std::map<int, btRigidBody*> bodyByIndex;
+
+        // Last step's contacting body pairs (lowest object index first), for the
+        // same enter/exit diffing DrainTriggerEvents does with lastOverlap.
+        std::map<std::pair<int, int>, char> lastContacts;
         Impl()
                         : config(0), dispatcher(0), broadphase(0), solver(0), world(0), ghostCb(0) {}
     };
@@ -182,6 +205,7 @@ namespace phys
         s.lastOverlap.clear();
         s.objIndexOf.clear();
         s.bodyByIndex.clear();
+        s.lastContacts.clear();
         s.boneColliders.clear();
 
         delete s.world;      s.world = 0;
@@ -192,10 +216,10 @@ namespace phys
         delete s.ghostCb;    s.ghostCb = 0;
     }
 
-    void PhysicsWorld::Build(const std::vector<BodyDesc>& bodies)
+    void PhysicsWorld::CreateWorld()
     {
-        Clear();
         Impl& s = *m_impl;
+        if (s.world) return;
 
         s.config     = new btDefaultCollisionConfiguration();
         s.dispatcher = new btCollisionDispatcher(s.config);
@@ -212,10 +236,22 @@ namespace phys
         // Required for btGhostObject to accumulate overlapping pairs.
         s.ghostCb = new btGhostPairCallback();
         s.broadphase->getOverlappingPairCache()->setInternalGhostPairCallback(s.ghostCb);
+    }
 
+    void PhysicsWorld::Build(const std::vector<BodyDesc>& bodies)
+    {
+        Clear();
+        CreateWorld();
         for (size_t i = 0; i < bodies.size(); ++i)
+            AddBody(bodies[i]);
+    }
+
+    bool PhysicsWorld::AddBody(const BodyDesc& desc)
+    {
+        Impl& s = *m_impl;
+        CreateWorld(); // spawning into an empty world is legal
         {
-            const BodyDesc& d = bodies[i];
+            const BodyDesc& d = desc;
 
             // MeshExact is concave -> Static only (Bullet can't run it dynamic).
             bool forceStatic = false;
@@ -272,8 +308,9 @@ namespace phys
 
                 Impl::TriggerRec tr; tr.ghost = ghost; tr.objectIndex = d.objectIndex; tr.boneHash = 0;
                 s.triggers.push_back(tr);
+                s.lastOverlap.resize(s.triggers.size());
                 s.objIndexOf[ghost] = d.objectIndex;
-                continue;
+                return true;
             }
 
             const bool isDynamic = (d.kind == BodyDesc::Dynamic) && !forceStatic;
@@ -326,8 +363,78 @@ namespace phys
                 s.readback.push_back(rr);
             }
         }
+        return true;
+    }
 
-        s.lastOverlap.resize(s.triggers.size());
+    void PhysicsWorld::RemoveBody(int objectIndex)
+    {
+        Impl& s = *m_impl;
+        if (!s.world) return;
+
+        // Everything belonging to the object goes: it may own both a Rigid Body
+        // and a Trigger Volume. Shapes and motion states are dropped from the
+        // owning vectors too, so repeated spawn/destroy doesn't grow the world.
+        std::map<int, btRigidBody*>::iterator bodyIt = s.bodyByIndex.find(objectIndex);
+        if (bodyIt != s.bodyByIndex.end() && bodyIt->second)
+        {
+            btRigidBody* body = bodyIt->second;
+            s.world->removeRigidBody(body);
+
+            btCollisionShape*     shape = body->getCollisionShape();
+            btDefaultMotionState* motion =
+                (btDefaultMotionState*)body->getMotionState();
+
+            for (size_t i = 0; i < s.rigidBodies.size(); ++i)
+                if (s.rigidBodies[i] == body) { s.rigidBodies.erase(s.rigidBodies.begin() + i); break; }
+            for (size_t i = 0; i < s.readback.size(); ++i)
+                if (s.readback[i].body == body) { s.readback.erase(s.readback.begin() + i); break; }
+            s.objIndexOf.erase(body);
+            s.bodyByIndex.erase(bodyIt);
+            delete body;
+
+            if (motion)
+                for (size_t i = 0; i < s.motionStates.size(); ++i)
+                    if (s.motionStates[i] == motion)
+                    { delete motion; s.motionStates.erase(s.motionStates.begin() + i); break; }
+            // Mesh shapes reference the interface/vertex stores, which are freed
+            // only by Clear — so leave those alone and drop primitive shapes only.
+            if (shape && !shape->isConcave())
+                for (size_t i = 0; i < s.shapes.size(); ++i)
+                    if (s.shapes[i] == shape)
+                    { delete shape; s.shapes.erase(s.shapes.begin() + i); break; }
+        }
+
+        // Trigger ghosts (skipping bone colliders, which belong to the animation
+        // system and are torn down with it).
+        for (size_t t = s.triggers.size(); t-- > 0; )
+        {
+            if (s.triggers[t].objectIndex != objectIndex || s.triggers[t].boneHash != 0)
+                continue;
+            btGhostObject* ghost = s.triggers[t].ghost;
+            s.world->removeCollisionObject(ghost);
+            s.objIndexOf.erase(ghost);
+            btCollisionShape* shape = ghost->getCollisionShape();
+            delete ghost;
+            if (shape && !shape->isConcave())
+                for (size_t i = 0; i < s.shapes.size(); ++i)
+                    if (s.shapes[i] == shape)
+                    { delete shape; s.shapes.erase(s.shapes.begin() + i); break; }
+            s.triggers.erase(s.triggers.begin() + t);
+            if (t < s.lastOverlap.size()) s.lastOverlap.erase(s.lastOverlap.begin() + t);
+        }
+
+        // Any contact pair involving the object is stale now; dropping it means
+        // the next drain reports no phantom exit for a body that no longer exists.
+        for (std::map<std::pair<int, int>, char>::iterator it = s.lastContacts.begin();
+             it != s.lastContacts.end(); )
+        {
+            if (it->first.first == objectIndex || it->first.second == objectIndex)
+            {
+                std::map<std::pair<int, int>, char>::iterator dead = it++;
+                s.lastContacts.erase(dead);
+            }
+            else ++it;
+        }
     }
 
     int PhysicsWorld::AddBoneCollider(int ownerObjectIndex, unsigned int boneHash,
@@ -414,18 +521,17 @@ namespace phys
             }
 
             std::map<int, char>& last = s.lastOverlap[t];
-            // Entered: in current, not in last.
+            // Entered: in current, not in last. Still overlapping: in both.
             for (std::map<int, char>::const_iterator it = current.begin(); it != current.end(); ++it)
             {
-                if (last.find(it->first) == last.end())
-                {
-                    TriggerEvent e;
-                    e.triggerObjectIndex = s.triggers[t].objectIndex;
-                    e.otherObjectIndex   = it->first;
-                    e.boneHash           = s.triggers[t].boneHash;
-                    e.entered            = true;
-                    out.push_back(e);
-                }
+                const bool wasThere = last.find(it->first) != last.end();
+                TriggerEvent e;
+                e.triggerObjectIndex = s.triggers[t].objectIndex;
+                e.otherObjectIndex   = it->first;
+                e.boneHash           = s.triggers[t].boneHash;
+                e.entered            = !wasThere;
+                e.phase              = wasThere ? PhaseStay : PhaseEnter;
+                out.push_back(e);
             }
             // Exited: in last, not in current.
             for (std::map<int, char>::const_iterator it = last.begin(); it != last.end(); ++it)
@@ -437,6 +543,7 @@ namespace phys
                     e.otherObjectIndex   = it->first;
                     e.boneHash           = s.triggers[t].boneHash;
                     e.entered            = false;
+                    e.phase              = PhaseExit;
                     out.push_back(e);
                 }
             }
@@ -444,7 +551,65 @@ namespace phys
         }
     }
 
+    void PhysicsWorld::DrainCollisionEvents(std::vector<CollisionEvent>& out)
+    {
+        Impl& s = *m_impl;
+        out.clear();
+        if (!s.world || !s.dispatcher) { s.lastContacts.clear(); return; }
+
+        // This step's touching pairs. Ghosts (trigger volumes and bone colliders)
+        // also produce manifolds, but they report through DrainTriggerEvents —
+        // skip them here so a trigger never looks like a collision.
+        std::map<std::pair<int, int>, char> current;
+        const int manifolds = s.dispatcher->getNumManifolds();
+        for (int i = 0; i < manifolds; ++i)
+        {
+            const btPersistentManifold* m = s.dispatcher->getManifoldByIndexInternal(i);
+            if (!m || m->getNumContacts() <= 0) continue;
+            const btCollisionObject* b0 = m->getBody0();
+            const btCollisionObject* b1 = m->getBody1();
+            if (!b0 || !b1) continue;
+            if (b0->getInternalType() == btCollisionObject::CO_GHOST_OBJECT ||
+                b1->getInternalType() == btCollisionObject::CO_GHOST_OBJECT) continue;
+
+            std::map<const btCollisionObject*, int>::const_iterator i0 = s.objIndexOf.find(b0);
+            std::map<const btCollisionObject*, int>::const_iterator i1 = s.objIndexOf.find(b1);
+            if (i0 == s.objIndexOf.end() || i1 == s.objIndexOf.end()) continue;
+            int a = i0->second, b = i1->second;
+            if (a == b) continue;
+            if (a > b) { const int t = a; a = b; b = t; }
+            current[std::make_pair(a, b)] = 1;
+        }
+
+        typedef std::map<std::pair<int, int>, char>::const_iterator PairIt;
+        for (PairIt it = current.begin(); it != current.end(); ++it)
+        {
+            CollisionEvent e;
+            e.aObjectIndex = it->first.first;
+            e.bObjectIndex = it->first.second;
+            e.phase = (s.lastContacts.find(it->first) != s.lastContacts.end())
+                          ? PhaseStay : PhaseEnter;
+            out.push_back(e);
+        }
+        for (PairIt it = s.lastContacts.begin(); it != s.lastContacts.end(); ++it)
+        {
+            if (current.find(it->first) != current.end()) continue;
+            CollisionEvent e;
+            e.aObjectIndex = it->first.first;
+            e.bObjectIndex = it->first.second;
+            e.phase        = PhaseExit;
+            out.push_back(e);
+        }
+        s.lastContacts.swap(current);
+    }
+
     // --- Scripting verbs -----------------------------------------------------
+
+    bool PhysicsWorld::HasBody(int objectIndex) const
+    {
+        std::map<int, btRigidBody*>::const_iterator it = m_impl->bodyByIndex.find(objectIndex);
+        return it != m_impl->bodyByIndex.end() && it->second != 0;
+    }
 
     void PhysicsWorld::ApplyImpulse(int objectIndex, float x, float y, float z)
     {
@@ -452,6 +617,22 @@ namespace phys
         if (it == m_impl->bodyByIndex.end() || !it->second) return;
         it->second->activate(true);
         it->second->applyCentralImpulse(btVector3(x, y, z));
+    }
+
+    void PhysicsWorld::ApplyForce(int objectIndex, float x, float y, float z)
+    {
+        std::map<int, btRigidBody*>::iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return;
+        it->second->activate(true);
+        it->second->applyCentralForce(btVector3(x, y, z));
+    }
+
+    void PhysicsWorld::ApplyTorque(int objectIndex, float x, float y, float z)
+    {
+        std::map<int, btRigidBody*>::iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return;
+        it->second->activate(true);
+        it->second->applyTorque(btVector3(x, y, z));
     }
 
     void PhysicsWorld::SetLinearVelocity(int objectIndex, float x, float y, float z)
@@ -467,6 +648,23 @@ namespace phys
         std::map<int, btRigidBody*>::const_iterator it = m_impl->bodyByIndex.find(objectIndex);
         if (it == m_impl->bodyByIndex.end() || !it->second) return false;
         const btVector3& v = it->second->getLinearVelocity();
+        out[0] = v.x(); out[1] = v.y(); out[2] = v.z();
+        return true;
+    }
+
+    void PhysicsWorld::SetAngularVelocity(int objectIndex, float x, float y, float z)
+    {
+        std::map<int, btRigidBody*>::iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return;
+        it->second->activate(true);
+        it->second->setAngularVelocity(btVector3(x, y, z));
+    }
+
+    bool PhysicsWorld::GetAngularVelocity(int objectIndex, float out[3]) const
+    {
+        std::map<int, btRigidBody*>::const_iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return false;
+        const btVector3& v = it->second->getAngularVelocity();
         out[0] = v.x(); out[1] = v.y(); out[2] = v.z();
         return true;
     }
@@ -494,6 +692,72 @@ namespace phys
         if (it == m_impl->bodyByIndex.end() || !it->second) return false;
         const btVector3& o = it->second->getWorldTransform().getOrigin();
         out[0] = o.x(); out[1] = o.y(); out[2] = o.z();
+        return true;
+    }
+
+    bool PhysicsWorld::GetRotation(int objectIndex, float outDeg[3]) const
+    {
+        std::map<int, btRigidBody*>::const_iterator it = m_impl->bodyByIndex.find(objectIndex);
+        if (it == m_impl->bodyByIndex.end() || !it->second) return false;
+        // Bullet's basis is the transpose of the renderer's row-vector rotation
+        // (see MakeTransformPR), so r[i][j] = basis[j][i). Inverting X*Y*Z:
+        //   r02 = -sin(y), r12 = sin(x)cos(y), r22 = cos(x)cos(y),
+        //   r00 = cos(y)cos(z), r01 = cos(y)sin(z).
+        const btMatrix3x3& b = it->second->getWorldTransform().getBasis();
+        float r[3][3];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                r[i][j] = (float)b[j][i];
+
+        float s = -r[0][2];
+        if (s < -1.0f) s = -1.0f;
+        if (s >  1.0f) s =  1.0f;
+        const float ay = asinf(s);
+        float ax, az;
+        if (fabsf(s) > 0.99999f) // gimbal lock: cos(y) ~ 0, fold z into x
+        {
+            ax = atan2f(-r[2][1], r[1][1]);
+            az = 0.0f;
+        }
+        else
+        {
+            ax = atan2f(r[1][2], r[2][2]);
+            az = atan2f(r[0][1], r[0][0]);
+        }
+        const float r2d = 180.0f / 3.14159265358979323846f;
+        outDeg[0] = ax * r2d; outDeg[1] = ay * r2d; outDeg[2] = az * r2d;
+        return true;
+    }
+
+    bool PhysicsWorld::Raycast(const float origin[3], const float dir[3],
+                               float maxDistance, RayHit& out) const
+    {
+        const Impl& s = *m_impl;
+        if (!s.world) return false;
+
+        btVector3 d((btScalar)dir[0], (btScalar)dir[1], (btScalar)dir[2]);
+        const btScalar len = d.length();
+        if (len <= SIMD_EPSILON) return false;
+        d /= len;
+        if (!(maxDistance > 0.0f)) maxDistance = 1000.0f;
+
+        const btVector3 from((btScalar)origin[0], (btScalar)origin[1], (btScalar)origin[2]);
+        const btVector3 to = from + d * (btScalar)maxDistance;
+
+        SolidRayCallback cb(from, to);
+        s.world->rayTest(from, to, cb);
+        if (!cb.hasHit()) return false;
+
+        std::map<const btCollisionObject*, int>::const_iterator it =
+            s.objIndexOf.find(cb.m_collisionObject);
+        out.objectIndex = (it != s.objIndexOf.end()) ? it->second : -1;
+        out.point[0]  = cb.m_hitPointWorld.x();
+        out.point[1]  = cb.m_hitPointWorld.y();
+        out.point[2]  = cb.m_hitPointWorld.z();
+        out.normal[0] = cb.m_hitNormalWorld.x();
+        out.normal[1] = cb.m_hitNormalWorld.y();
+        out.normal[2] = cb.m_hitNormalWorld.z();
+        out.distance  = (cb.m_hitPointWorld - from).length();
         return true;
     }
 }

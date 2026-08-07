@@ -744,6 +744,37 @@ void StreamCache::RefreshMeshTextures(CacheMesh& cm)
     }
 }
 
+bool StreamCache::MeshTextureHashes(const std::string& relPath,
+                                    std::vector<unsigned int>& out) const
+{
+    out.clear();
+    if (relPath.empty()) return false;
+    const unsigned int hash = spak::NameHash(relPath.c_str());
+    std::map<unsigned int, CacheMesh>::const_iterator it = m_meshes.find(hash);
+    if (it == m_meshes.end() || it->second.state != StResident) return false;
+
+    const std::vector<unsigned int>& hashes = it->second.texHash;
+    for (size_t i = 0; i < hashes.size(); ++i)
+    {
+        if (hashes[i] == 0) continue; // empty material slot
+        bool seen = false;
+        for (size_t k = 0; k < out.size() && !seen; ++k)
+            seen = (out[k] == hashes[i]);
+        if (!seen) out.push_back(hashes[i]);
+    }
+    return true;
+}
+
+bool StreamCache::TextureDrawable(unsigned int texHash) const
+{
+    if (texHash == 0) return true; // no texture in this slot: nothing to wait for
+    std::map<unsigned int, CacheTex>::const_iterator it = m_textures.find(texHash);
+    if (it == m_textures.end()) return false;       // never requested yet
+    if (it->second.state == StMissing) return true; // absent from the pak
+    // StLo = small mips registered and drawable; StResident = full-res in too.
+    return it->second.state == StLo || it->second.state == StResident;
+}
+
 RtMesh* StreamCache::GetMesh(const std::string& relPath, bool* inPak)
 {
     if (inPak) *inPak = false;

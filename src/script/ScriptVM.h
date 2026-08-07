@@ -37,13 +37,33 @@ namespace script
 
         void Start();                 // call each loaded on_start once
         void Update(float dt);        // call each on_update(dt)
+
+        // Trigger overlap dispatch. phase is phys::Phase (0=enter, 1=stay,
+        // 2=exit) and selects the handler: on_trigger(other, bone) for enter
+        // (unchanged signature), on_trigger_stay / on_trigger_exit otherwise.
+        // Handlers that a script does not define cost nothing.
         void FireTrigger(int objectIndex, int otherObjectIndex,
-                 const char* boneName = 0); // on_trigger(other, bone)
+                 const char* boneName = 0, int phase = 0);
+
+        // Contact dispatch between two non-trigger bodies: each side's script
+        // gets on_collision(other, phase) with `other` being the far object.
+        void FireCollision(int aObjectIndex, int bObjectIndex, int phase);
+
+        // An object is being destroyed: run its on_destroy, then drop its
+        // environment so the slot is clean if a later spawn reuses it. Safe to
+        // call for an object that has no script.
+        void UnloadScript(int objectIndex);
+
+        // Run on_start for a single object (a spawn, after its script loaded);
+        // Start() runs it for everything loaded so far.
+        void StartOne(int objectIndex);
 
         void Clear();                 // tear down the VM
         bool Empty() const;           // no scripts loaded
 
     private:
+        void TickTimers(float dt); // time.after / time.every scheduler
+
         struct Impl;
         Impl* m_impl;
 

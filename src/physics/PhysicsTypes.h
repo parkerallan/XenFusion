@@ -78,15 +78,49 @@ namespace phys
         }
     };
 
+    // Overlap/contact lifecycle shared by trigger and collision events.
+    enum Phase { PhaseEnter = 0, PhaseStay = 1, PhaseExit = 2 };
+
     // A trigger overlap change since the previous step.
     struct TriggerEvent
     {
         int  triggerObjectIndex;
         int  otherObjectIndex;
         unsigned int boneHash;
-        bool entered;          // true = entered, false = exited
+        bool entered;          // true = entered, false = exited (kept for callers
+                               // that predate `phase`; equals phase == PhaseEnter)
+        int  phase;            // Phase
 
-        TriggerEvent() : triggerObjectIndex(-1), otherObjectIndex(-1), boneHash(0), entered(false) {}
+        TriggerEvent() : triggerObjectIndex(-1), otherObjectIndex(-1), boneHash(0),
+                         entered(false), phase(PhaseEnter) {}
+    };
+
+    // A contact between two non-trigger bodies, diffed step to step exactly like
+    // TriggerEvent. Both objects get the callback (the pair is reported once,
+    // with a < b by object index).
+    struct CollisionEvent
+    {
+        int aObjectIndex;
+        int bObjectIndex;
+        int phase;             // Phase
+
+        CollisionEvent() : aObjectIndex(-1), bObjectIndex(-1), phase(PhaseEnter) {}
+    };
+
+    // Closest hit from PhysicsWorld::Raycast. `normal` is the surface normal at
+    // the hit, pointing back toward the ray origin.
+    struct RayHit
+    {
+        int   objectIndex;
+        float distance;
+        float point[3];
+        float normal[3];
+
+        RayHit() : objectIndex(-1), distance(0.0f)
+        {
+            point[0] = point[1] = point[2] = 0.0f;
+            normal[0] = normal[1] = normal[2] = 0.0f;
+        }
     };
 
     // A simulated body's world transform read back after a step. `matrix` is a

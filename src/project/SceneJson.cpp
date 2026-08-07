@@ -24,6 +24,9 @@ namespace project
             jo["rotation"] = {o.rotation[0], o.rotation[1], o.rotation[2]};
             jo["scale"]    = {o.scale[0], o.scale[1], o.scale[2]};
             jo["visible"]  = o.visible;
+            // Only written when non-empty, so scenes that predate tags round-trip
+            // byte-identical rather than gaining an empty array.
+            if (!o.tags.empty()) jo["tags"] = o.tags;
             jo["attributes"] = json::array();
             for (const ObjectAttribute& a : o.attributes)
             {
@@ -211,6 +214,9 @@ namespace project
                 read3("rotation", o.rotation, 0, 0, 0);
                 read3("scale",    o.scale,    1, 1, 1);
                 o.visible = jo.value("visible", true);
+                if (jo.contains("tags") && jo["tags"].is_array())
+                    for (const json& jt : jo["tags"])
+                        if (jt.is_string()) o.tags.push_back(jt.get<std::string>());
                 if (jo.contains("attributes") && jo["attributes"].is_array())
                 {
                     for (const json& ja : jo["attributes"])

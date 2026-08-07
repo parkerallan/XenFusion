@@ -65,6 +65,20 @@ public:
     bool GetRawRange(const SpakEntry* entry, unsigned int offset, unsigned int bytes,
                      void* out);
 
+    // --- Load-progress queries (scene loading) --------------------------------
+    // The texture hashes a mesh's subsets reference. Only answerable once the
+    // mesh itself is resident: the hashes live INSIDE the mesh payload, which is
+    // why a scene's full asset set cannot be known before its meshes have landed.
+    // Zero hashes (empty material slots) are skipped. Returns false if the mesh
+    // is not resident yet.
+    bool MeshTextureHashes(const std::string& relPath,
+                           std::vector<unsigned int>& out) const;
+
+    // True once a texture can actually be drawn — its small mips are registered
+    // (blurry is fine) or it is fully resident. The full-resolution half keeps
+    // streaming afterwards and is deliberately NOT waited on.
+    bool TextureDrawable(unsigned int texHash) const;
+
 private:
     // StLo: the texture's small mips are registered and it is drawable (blurry)
     // while its full-resolution half is still in flight. Only textures cooked as a

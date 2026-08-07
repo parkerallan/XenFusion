@@ -1254,7 +1254,12 @@ void SceneRenderer::RenderUi(EngineState& state)
         EnsureLightmaps(*scene);
         for (int i = 0; i < (int)scene->objects.size(); ++i)
         {
-            const SceneObject& o = scene->objects[i];
+            // Draw the object as a script left it, without touching the project:
+            // the authored SceneObject is used directly unless a script wrote to
+            // it this Play session, in which case we render an overlaid copy.
+            const SceneObject& authored = scene->objects[i];
+            SceneObject overlaid;
+            const SceneObject& o = ApplyLive(i, authored, overlaid) ? overlaid : authored;
             if (!o.visible)
                 continue;
             const bool selected = (i == state.selected_object);
@@ -1551,6 +1556,23 @@ void SceneRenderer::RenderUi(EngineState& state)
     // down on Stop (or when the scene selection goes away). The button that
     // toggles state.physics_playing is drawn in the viewport overlay below.
     {
+        // scene.load() from a script: switch the editor to that scene and start
+        // a fresh Play session on it — the editor equivalent of the console's
+        // unload/reload, expressed in the editor's own Play/Stop terms.
+        if (m_phys_on && !m_pending_scene.empty() && m_load_frames >= 2 &&
+            m_time >= m_load_ready_time)
+        {
+            const std::string want = m_pending_scene;
+            StopPhysics(); // clears m_pending_scene and undoes the live layer
+            for (std::size_t s = 0; s < state.scenes.size(); ++s)
+            {
+                const std::string& have = state.scenes[s].name;
+                if (have != want && have != want + ".scene") continue;
+                state.selected_scene = (int)s;
+                break;
+            }
+        }
+
         SceneFile* pscene = state.SelectedScene();
         if (state.physics_playing && pscene)
         {
@@ -1571,6 +1593,9 @@ void SceneRenderer::RenderUi(EngineState& state)
     {
         input::PollXInput(m_input);
         input::ApplyMapping(state.controller_mapping, m_input);
+        // Primed after the mapping, not inside the poll: in the editor a button
+        // can come from the keyboard overlay, so the state is only complete here.
+        if (!m_input.primed) m_input.Prime();
     }
 
     // No directional light authored: keep the legacy fixed sun — white when the
@@ -2133,6 +2158,10 @@ void SceneRenderer::RenderGpu(float dt)
         return;
 
     m_time += dt; // drives animated custom shaders (gTime)
+    // A scene.load in flight ticks here so the switch in RenderUi can require a
+    // frame to have been DRAWN first — otherwise the loading screen a script just
+    // built is torn down with the old scene before it ever reaches the display.
+    if (!m_pending_scene.empty()) ++m_load_frames;
 
     // Physics preview: step Bullet, then override this frame's draw items with the
     // simulated poses (world = Scale * pose, keeping authored scale). Trigger
@@ -2144,6 +2173,10 @@ void SceneRenderer::RenderGpu(float dt)
         // ScriptVM::Update drains them before running any on_update.
         m_gui.Update(dt, m_input);
         m_script.Update(dt); // scripts set impulses/velocity/transforms for this step
+        // Objects a script destroyed this frame leave the world now, after every
+        // on_update has run — removing them mid-loop would edit the lists the
+        // update is walking.
+        ApplyPendingDestroys();
         // gui.set_paused(true) freezes the simulation but NOT scripts or
         // rendering, so the menu that raised it stays live. Poses are still
         // read back: the draw items are rebuilt from the scene every frame, so
@@ -2166,13 +2199,20 @@ void SceneRenderer::RenderGpu(float dt)
             }
         }
 
-        // Dispatch trigger enter events to scripts (no automatic engine logging —
-        // a script's own on_trigger + log() is the only trigger output).
+        // Dispatch trigger enter/stay/exit events to scripts (no automatic engine
+        // logging — a script's own on_trigger + log() is the only trigger output).
         std::vector<phys::TriggerEvent> events;
         m_phys.DrainTriggerEvents(events);
         for (size_t ei = 0; ei < events.size(); ++ei)
-            if (events[ei].entered)
-                m_script.FireTrigger(events[ei].triggerObjectIndex, events[ei].otherObjectIndex);
+            m_script.FireTrigger(events[ei].triggerObjectIndex, events[ei].otherObjectIndex,
+                                 nullptr, events[ei].phase);
+
+        // ...and contacts between ordinary bodies (on_collision).
+        std::vector<phys::CollisionEvent> contacts;
+        m_phys.DrainCollisionEvents(contacts);
+        for (size_t ci = 0; ci < contacts.size(); ++ci)
+            m_script.FireCollision(contacts[ci].aObjectIndex, contacts[ci].bObjectIndex,
+                                   contacts[ci].phase);
     }
 
     UpdateAnimations(m_gui.Paused() ? 0.0f : dt);
@@ -3830,13 +3870,53 @@ void SceneRenderer::BuildGrid()
 
 // --- Physics preview ---------------------------------------------------------
 
-void SceneRenderer::StartPhysics(const SceneFile& scene)
+// A project-relative .lua read whole. Shared by the Play-session load and by
+// spawn(), so a spawned object's script comes up the same way an authored one does.
+bool SceneRenderer::ReadScriptSource(const std::string& relPath, std::string& out)
 {
+    std::ifstream in(m_project_root / relPath, std::ios::binary);
+    if (!in) { applog::Error("Script not found: " + relPath); return false; }
+    std::ostringstream ss; ss << in.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+void SceneRenderer::StartPhysics(SceneFile& scene)
+{
+    m_play_scene = &scene;
+    m_authored_object_count = scene.objects.size();
+    m_obj_gen.assign(scene.objects.size(), 1u);
+    m_obj_alive.assign(scene.objects.size(), 1);
+    m_pending_destroy.clear();
+    m_pending_scene.clear();
+
     m_video_overrides.clear(); // each Play session starts from the authored play modes
     m_audio_overrides.clear();
     m_text_overrides.clear();
+    // Drop the edge history so a key still held from the last session (or from
+    // clicking Play itself) doesn't read as a press on the first frame.
+    m_input.Reset();
     std::vector<phys::BodyDesc> descs;
     m_phys_names.assign(scene.objects.size(), std::string());
+
+    // Seed the live layer from the authored scene. Every entry starts clean, so
+    // the draw loop skips the overlay entirely until a script writes something.
+    m_live.assign(scene.objects.size(), LiveObject());
+    for (size_t i = 0; i < scene.objects.size(); ++i)
+    {
+        const SceneObject& so = scene.objects[i];
+        LiveObject& lo = m_live[i];
+        for (int k = 0; k < 3; ++k)
+        { lo.pos[k] = so.position[k]; lo.rot[k] = so.rotation[k]; lo.scale[k] = so.scale[k]; }
+        lo.visible = so.visible;
+        lo.tags    = so.tags;
+        // The attribute clone is what obj:get/obj:set read and write. It is
+        // seeded here (the host methods have no other route to the authored
+        // scene), but stays UNUSED by the draw path until a script writes —
+        // has_attrs gates that — so editing a light in the Inspector mid-Play
+        // still takes effect.
+        lo.attrs = so.attributes;
+    }
 
     // Heap-owned mesh geometry kept alive until Build() copies what it needs.
     std::vector<std::vector<float>*>        geomPos;
@@ -3844,14 +3924,37 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
 
     for (int i = 0; i < (int)scene.objects.size(); ++i)
     {
-        const SceneObject& o = scene.objects[i];
-        m_phys_names[i] = o.name;
+        m_phys_names[i] = scene.objects[i].name;
+        AppendBodyDescs(scene, i, descs, geomPos, geomIdx);
+    }
 
-        // The object's 3D Model, used by mesh-shape colliders.
-        std::string model_path;
-        for (const ObjectAttribute& ma : o.attributes)
-            if (ma.type == "3D Model" && !ma.model_path.empty()) { model_path = ma.model_path; break; }
+    m_phys.Build(descs);
 
+    for (std::size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
+    for (std::size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
+    geomPos.clear();
+    geomIdx.clear();
+    StartScripts(scene);
+}
+
+// One object's Rigid Body / Trigger Volume attributes as neutral descriptors.
+// Split out of StartPhysics so spawn() can add a clone's collider to the live
+// world through PhysicsWorld::AddBody with exactly the same setup.
+void SceneRenderer::AppendBodyDescs(const SceneFile& scene, int objectIndex,
+                                    std::vector<phys::BodyDesc>& descs,
+                                    std::vector<std::vector<float>*>& geomPos,
+                                    std::vector<std::vector<unsigned int>*>& geomIdx)
+{
+    if (objectIndex < 0 || objectIndex >= (int)scene.objects.size()) return;
+    const int i = objectIndex;
+    const SceneObject& o = scene.objects[i];
+
+    // The object's 3D Model, used by mesh-shape colliders.
+    std::string model_path;
+    for (const ObjectAttribute& ma : o.attributes)
+        if (ma.type == "3D Model" && !ma.model_path.empty()) { model_path = ma.model_path; break; }
+
+    {
         for (const ObjectAttribute& a : o.attributes)
         {
             const bool rigid = (a.type == "Rigid Body");
@@ -3925,14 +4028,12 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
             descs.push_back(d);
         }
     }
+}
 
-    m_phys.Build(descs);
-
-    for (std::size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
-    for (std::size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
-
-    // Lua scripts: load each object's .lua and run its on_start. The GUI tree
-    // lives for exactly the Play session, so it starts fresh alongside the VM.
+// Lua scripts: load each object's .lua and run its on_start. The GUI tree lives
+// for exactly the Play session, so it starts fresh alongside the VM.
+void SceneRenderer::StartScripts(const SceneFile& scene)
+{
     m_gui.Begin(this);
     m_script.Begin(&m_phys, this, &m_gui);
     int scriptCount = 0;
@@ -3943,10 +4044,9 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
         {
             if (a.type != "Script" || a.script_path.empty())
                 continue;
-            std::ifstream in(m_project_root / a.script_path, std::ios::binary);
-            if (!in) { applog::Error("Script not found: " + a.script_path); continue; }
-            std::ostringstream ss; ss << in.rdbuf();
-            m_script.LoadScript(i, ss.str(),
+            std::string source_text;
+            if (!ReadScriptSource(a.script_path, source_text)) continue;
+            m_script.LoadScript(i, source_text,
                                 std::filesystem::path(a.script_path).filename().string());
             ++scriptCount;
         }
@@ -3955,8 +4055,8 @@ void SceneRenderer::StartPhysics(const SceneFile& scene)
 
     m_phys_poses.clear();
     m_phys_on = true;
-    applog::Info("Physics: play (" + std::to_string((int)descs.size()) + " bodies, " +
-                 std::to_string(scriptCount) + " scripts)");
+    applog::Info("Physics: play (" + std::to_string((int)scene.objects.size()) +
+                 " objects, " + std::to_string(scriptCount) + " scripts)");
 }
 
 void SceneRenderer::StopPhysics()
@@ -3968,6 +4068,16 @@ void SceneRenderer::StopPhysics()
     m_gui.Clear();
     m_phys.Clear();
     m_phys_poses.clear();
+    m_live.clear(); // every script-side scene change was live-only; Stop restores
+    // Drop anything spawn() appended, so the project is exactly as authored.
+    if (m_play_scene && m_play_scene->objects.size() > m_authored_object_count)
+        m_play_scene->objects.resize(m_authored_object_count);
+    m_play_scene = nullptr;
+    m_authored_object_count = 0;
+    m_obj_gen.clear();
+    m_obj_alive.clear();
+    m_pending_destroy.clear();
+    m_pending_scene.clear();
     m_phys_on = false;
     applog::Info("Physics: stop");
     // m_phys_debug is rebuilt from the scene each RenderUi (authoring wireframes).
@@ -3976,6 +4086,8 @@ void SceneRenderer::StopPhysics()
 // --- script::ScriptHost (editor) ---
 bool  SceneRenderer::InputButton(const char* name) { return m_input.Button(name); }
 float SceneRenderer::InputAxis(const char* name)   { return m_input.Axis(name); }
+bool  SceneRenderer::InputButtonPressed(const char* name)  { return m_input.Pressed(name); }
+bool  SceneRenderer::InputButtonReleased(const char* name) { return m_input.Released(name); }
 void  SceneRenderer::Log(const char* msg)          { applog::Script(msg); }        // [LOG]
 void  SceneRenderer::LogError(const char* msg)     { applog::Error(msg); }          // [ERROR]
 void SceneRenderer::TextSetValue(int objectIndex, const char* value)
@@ -3983,6 +4095,324 @@ void SceneRenderer::TextSetValue(int objectIndex, const char* value)
     const char* name = ObjectName(objectIndex);
     if (name && *name)
         m_text_overrides[name] = value ? value : "";
+}
+
+// --- Live scene state (editor) -----------------------------------------------
+// Writes land in m_live, never in the authored SceneObject, so Play can move,
+// hide and re-tag anything without marking the project dirty. StopPhysics drops
+// the whole layer and the authored scene reappears.
+
+bool SceneRenderer::ApplyLive(int objectIndex, const SceneObject& authored,
+                              SceneObject& out) const
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return false;
+    const LiveObject& lo = m_live[objectIndex];
+    if (!lo.dirty) return false;
+
+    out = authored;
+    for (int k = 0; k < 3; ++k)
+    { out.position[k] = lo.pos[k]; out.rotation[k] = lo.rot[k]; out.scale[k] = lo.scale[k]; }
+    out.visible = lo.visible;
+    out.tags    = lo.tags;
+    if (lo.has_attrs) out.attributes = lo.attrs; // only once a script wrote a field
+    if (lo.cam_active >= 0)
+        for (size_t a = 0; a < out.attributes.size(); ++a)
+            if (out.attributes[a].type == "Camera")
+                out.attributes[a].cam_active = (lo.cam_active != 0);
+    return true;
+}
+
+bool SceneRenderer::GetObjectTransform(int objectIndex, float pos[3], float rot[3], float scale[3])
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return false;
+    const LiveObject& lo = m_live[objectIndex];
+    for (int k = 0; k < 3; ++k)
+    { pos[k] = lo.pos[k]; rot[k] = lo.rot[k]; scale[k] = lo.scale[k]; }
+    return true;
+}
+
+void SceneRenderer::SetObjectTransform(int objectIndex, const float pos[3], const float rot[3],
+                                       const float scale[3], int mask)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return;
+    LiveObject& lo = m_live[objectIndex];
+    if (mask & script::ScriptHost::XformPos)
+        for (int k = 0; k < 3; ++k) lo.pos[k] = pos[k];
+    if (mask & script::ScriptHost::XformRot)
+        for (int k = 0; k < 3; ++k) lo.rot[k] = rot[k];
+    if (mask & script::ScriptHost::XformScale)
+        for (int k = 0; k < 3; ++k) lo.scale[k] = scale[k];
+    lo.dirty = true;
+}
+
+bool SceneRenderer::GetObjectVisible(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return false;
+    return m_live[objectIndex].visible;
+}
+
+void SceneRenderer::SetObjectVisible(int objectIndex, bool visible)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return;
+    m_live[objectIndex].visible = visible;
+    m_live[objectIndex].dirty   = true;
+}
+
+bool SceneRenderer::SetActiveCamera(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return false;
+    // RenderUi takes the first active Camera in scene order, so deactivating the
+    // others is what actually makes the switch happen.
+    for (size_t i = 0; i < m_live.size(); ++i)
+    {
+        const int want = ((int)i == objectIndex) ? 1 : 0;
+        if (m_live[i].cam_active == want) continue;
+        m_live[i].cam_active = want;
+        m_live[i].dirty      = true;
+    }
+    return true;
+}
+
+int SceneRenderer::GetActiveCamera()
+{
+    for (size_t i = 0; i < m_live.size(); ++i)
+        if (m_live[i].cam_active == 1) return (int)i;
+    return -1; // no script override: the authored active camera is in the scene
+}
+
+int SceneRenderer::ObjectTagCount(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return 0;
+    return (int)m_live[objectIndex].tags.size();
+}
+
+const char* SceneRenderer::ObjectTag(int objectIndex, int tagIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return "";
+    const std::vector<std::string>& tags = m_live[objectIndex].tags;
+    if (tagIndex < 0 || tagIndex >= (int)tags.size()) return "";
+    return tags[tagIndex].c_str();
+}
+
+bool SceneRenderer::AddObjectTag(int objectIndex, const char* tag)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size() || !tag || !tag[0]) return false;
+    std::vector<std::string>& tags = m_live[objectIndex].tags;
+    for (size_t i = 0; i < tags.size(); ++i)
+        if (tags[i] == tag) return false;
+    tags.push_back(tag);
+    m_live[objectIndex].dirty = true;
+    return true;
+}
+
+// --- Object lifetime (editor) ------------------------------------------------
+// Same slot/generation scheme the console uses. The one difference is where a
+// spawned object lives: RenderUi draws from the authored SceneFile, so a clone
+// has to be appended to it. StopPhysics truncates those away and the project is
+// never marked dirty, so nothing a script spawned can reach disk on its own.
+
+unsigned SceneRenderer::ObjectGeneration(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_obj_gen.size()) return 0;
+    return m_obj_gen[objectIndex];
+}
+
+bool SceneRenderer::ObjectAlive(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_obj_alive.size()) return false;
+    return m_obj_alive[objectIndex] != 0;
+}
+
+int SceneRenderer::SpawnObject(int sourceObjectIndex, const char* name, const float pos[3])
+{
+    if (!m_play_scene) return -1;
+    std::vector<SceneObject>& objects = m_play_scene->objects;
+    if (sourceObjectIndex < 0 || sourceObjectIndex >= (int)objects.size()) return -1;
+
+    int slot = -1;
+    for (std::size_t i = 0; i < m_obj_alive.size(); ++i)
+        if (!m_obj_alive[i]) { slot = (int)i; break; }
+    if (slot < 0)
+    {
+        objects.push_back(SceneObject());
+        m_obj_gen.push_back(0u);
+        m_obj_alive.push_back(0);
+        m_live.push_back(LiveObject());
+        m_phys_names.push_back(std::string());
+        slot = (int)objects.size() - 1;
+    }
+
+    // By value: push_back above may have reallocated, invalidating a reference.
+    const SceneObject source = objects[sourceObjectIndex];
+    SceneObject& clone = objects[slot];
+    clone = source;
+    if (name && *name) clone.name = name;
+    for (int k = 0; k < 3; ++k) clone.position[k] = pos[k];
+    clone.visible = true; // templates are usually authored hidden
+
+    ++m_obj_gen[slot];
+    m_obj_alive[slot] = 1;
+    m_phys_names[slot] = clone.name;
+
+    LiveObject& lo = m_live[slot];
+    lo = LiveObject();
+    for (int k = 0; k < 3; ++k)
+    { lo.pos[k] = clone.position[k]; lo.rot[k] = clone.rotation[k]; lo.scale[k] = clone.scale[k]; }
+    lo.visible = clone.visible;
+    lo.tags    = clone.tags;
+    lo.attrs   = clone.attributes;
+
+    // The editor rebuilds its draw lists from the scene every frame, so the
+    // clone appears immediately; only its collider has to be created by hand.
+    std::vector<std::vector<float>*>        geomPos;
+    std::vector<std::vector<unsigned int>*> geomIdx;
+    std::vector<phys::BodyDesc> descs;
+    AppendBodyDescs(*m_play_scene, slot, descs, geomPos, geomIdx);
+    for (std::size_t d = 0; d < descs.size(); ++d)
+        m_phys.AddBody(descs[d]);
+    for (std::size_t g = 0; g < geomPos.size(); ++g) delete geomPos[g];
+    for (std::size_t g = 0; g < geomIdx.size(); ++g) delete geomIdx[g];
+
+    // A cloned Script attribute gets its own environment and its own on_start.
+    for (const ObjectAttribute& a : clone.attributes)
+    {
+        if (a.type != "Script" || a.script_path.empty()) continue;
+        std::string source_text;
+        if (!ReadScriptSource(a.script_path, source_text)) continue;
+        m_script.LoadScript(slot, source_text, a.script_path);
+        m_script.StartOne(slot);
+    }
+    return slot;
+}
+
+bool SceneRenderer::DestroyObject(int objectIndex)
+{
+    if (!ObjectAlive(objectIndex)) return false;
+    // Dead at once so handles stop resolving immediately; the physics body and
+    // the script environment come down at the end of the frame, because tearing
+    // them down here would edit the lists the update loop is walking.
+    m_obj_alive[objectIndex] = 0;
+    ++m_obj_gen[objectIndex];
+    m_pending_destroy.push_back(objectIndex);
+    return true;
+}
+
+void SceneRenderer::ApplyPendingDestroys()
+{
+    for (std::size_t i = 0; i < m_pending_destroy.size(); ++i)
+    {
+        const int slot = m_pending_destroy[i];
+        m_phys.RemoveBody(slot);
+        m_script.UnloadScript(slot);
+        if (m_play_scene && slot >= 0 && slot < (int)m_play_scene->objects.size())
+        {
+            // Emptying the object stops it drawing and contributing light. The
+            // slot itself stays put — the indices around it must not shift.
+            const std::string keep = m_play_scene->objects[slot].name;
+            m_play_scene->objects[slot] = SceneObject();
+            m_play_scene->objects[slot].name    = keep;
+            m_play_scene->objects[slot].visible = false;
+        }
+        if (slot >= 0 && slot < (int)m_live.size())
+        {
+            m_live[slot] = LiveObject();
+            m_live[slot].visible = false;
+            m_live[slot].dirty   = true;
+        }
+    }
+    m_pending_destroy.clear();
+}
+
+// Scene switching in the editor is a Play-session restart against a different
+// scene: the request is remembered here and the viewport's Play/Stop logic in
+// RenderUi acts on it, exactly as if the user had picked the scene and hit Play.
+//
+// The editor keeps every scene's assets in memory already, so there is nothing
+// to stream and progress is 1 immediately. The minimum display time is still
+// honoured, so a loading screen authored against the console behaves the same
+// way here — it just never has to wait for anything.
+bool SceneRenderer::LoadScene(const char* name, float minSeconds)
+{
+    if (!name || !*name) return false;
+    if (!m_pending_scene.empty()) return false; // one load at a time
+    m_pending_scene   = name;
+    m_load_frames     = 0;
+    m_load_min_time   = minSeconds > 0.0f ? minSeconds : 0.0f;
+    m_load_ready_time = m_time + m_load_min_time;
+    return true;
+}
+
+bool SceneRenderer::SceneIsLoading() { return !m_pending_scene.empty(); }
+
+// Every scene is already in memory in the editor, so a load has no bytes to read
+// and is genuinely complete the moment it starts. Reporting a timer here instead
+// would be inventing work that isn't happening.
+float SceneRenderer::SceneProgress() { return 1.0f; }
+
+const char* SceneRenderer::SceneName()
+{
+    return m_play_scene ? m_play_scene->name.c_str() : "";
+}
+
+// --- Attribute fields (obj:get / obj:set) ------------------------------------
+// Reads and writes the per-Play attribute clone, never the authored scene, so a
+// script can dim a light or fade an overlay without the project going dirty.
+
+int SceneRenderer::AttrCount(int objectIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return 0;
+    return (int)m_live[objectIndex].attrs.size();
+}
+
+const char* SceneRenderer::AttrType(int objectIndex, int attrIndex)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return "";
+    const std::vector<ObjectAttribute>& attrs = m_live[objectIndex].attrs;
+    if (attrIndex < 0 || attrIndex >= (int)attrs.size()) return "";
+    return attrs[attrIndex].type.c_str();
+}
+
+bool SceneRenderer::AttrGet(int objectIndex, int attrIndex, const char* field,
+                            attrfields::Value& out)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return false;
+    const attrfields::FieldDesc* desc = attrfields::Find(field);
+    if (!desc) return false;
+    const std::vector<ObjectAttribute>& attrs = m_live[objectIndex].attrs;
+    const int a = attrfields::ResolveIndex(attrs, attrIndex, *desc);
+    if (a < 0) return false;
+    return attrfields::Get(&attrs[a], *desc, out);
+}
+
+bool SceneRenderer::AttrSet(int objectIndex, int attrIndex, const char* field,
+                            const attrfields::Value& in)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size()) return false;
+    const attrfields::FieldDesc* desc = attrfields::Find(field);
+    if (!desc) return false;
+    LiveObject& lo = m_live[objectIndex];
+    const int a = attrfields::ResolveIndex(lo.attrs, attrIndex, *desc);
+    if (a < 0) return false;
+    if (!attrfields::Set(&lo.attrs[a], *desc, in)) return false;
+    // From here on the overlay's attributes are what gets drawn (RenderUi rebuilds
+    // from the scene every frame, so this shows up immediately).
+    lo.has_attrs = true;
+    lo.dirty     = true;
+    return true;
+}
+
+bool SceneRenderer::RemoveObjectTag(int objectIndex, const char* tag)
+{
+    if (objectIndex < 0 || objectIndex >= (int)m_live.size() || !tag) return false;
+    std::vector<std::string>& tags = m_live[objectIndex].tags;
+    for (size_t i = 0; i < tags.size(); ++i)
+        if (tags[i] == tag)
+        {
+            tags.erase(tags.begin() + i);
+            m_live[objectIndex].dirty = true;
+            return true;
+        }
+    return false;
 }
 // Lua video.play/stop: an override on the object's Video attribute play mode,
 // applied at capture time and dropped when the Play session ends — the
@@ -4067,13 +4497,15 @@ void SceneRenderer::AudioSetVolume(int objectIndex, float volume)
 {
     const char* name = ObjectName(objectIndex);
     if (name && *name)
-        m_audio_overrides[name].volume = volume < 0.0f ? 0.0f : volume;
+        // Clamped to the same 0..20 the attribute editor allows, so a stray
+        // audio.set_volume(500) can't blow the mix out.
+        m_audio_overrides[name].volume = volume < 0.0f ? 0.0f : (volume > 20.0f ? 20.0f : volume);
 }
 void SceneRenderer::AudioSetPitch(int objectIndex, float pitch)
 {
     const char* name = ObjectName(objectIndex);
     if (name && *name)
-        m_audio_overrides[name].pitch = pitch < 0.1f ? 0.1f : pitch;
+        m_audio_overrides[name].pitch = pitch < 0.1f ? 0.1f : (pitch > 4.0f ? 4.0f : pitch);
 }
 void SceneRenderer::AudioSetLoop(int objectIndex, bool loop)
 {
@@ -4094,6 +4526,12 @@ const char* SceneRenderer::ObjectName(int index)
     if (index >= 0 && index < (int)m_phys_names.size())
         return m_phys_names[index].c_str();
     return "";
+}
+int SceneRenderer::ObjectCount()
+{
+    // m_phys_names is filled by StartPhysics, so this is the scene's object count
+    // for the whole Play session — which is the only time scripts run.
+    return (int)m_phys_names.size();
 }
 
 void SceneRenderer::AppendColliderWire(const PhysDebug& pd, const D3DMATRIX& m,

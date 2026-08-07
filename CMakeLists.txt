@@ -159,6 +159,7 @@ add_executable(XenFusion
     src/anim/AnimationClip.cpp
     src/anim/AnimatorRuntime.cpp
     src/physics/PhysicsWorld.cpp
+    src/scene/AttrFieldsEditor.cpp
     src/script/ScriptVM.cpp
     src/input/ControllerMapping.cpp
     src/panels/MapperPanel.cpp
