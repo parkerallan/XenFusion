@@ -1,0 +1,96 @@
+name: Release
+
+# Every push to master publishes a versioned build of the XenFusion engine to
+# the Releases tab. This builds the engine ONLY -- the Xbox 360 runtime
+# (game360.xex / game.spak / .iso) is deliberately not built or shipped here,
+# since it requires the Xbox 360 XDK, which is not redistributable and never
+# leaves the developer's machine.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # major.minor comes from project(XenFusion VERSION x.y ...) in
+      # CMakeLists.txt; the patch is the Actions run number, which is monotonic
+      # and never reused, so two pushes in quick succession cannot collide.
+      - name: Derive version
+        id: version
+        shell: pwsh
+        run: |
+          $text = Get-Content -Raw CMakeLists.txt
+          $m = [regex]::Match($text, 'project\(XenFusion\s+VERSION\s+([0-9]+\.[0-9]+)')
+          if (-not $m.Success) {
+              throw "Could not parse VERSION out of project(XenFusion ...) in CMakeLists.txt"
+          }
+          $tag = "v$($m.Groups[1].Value).$env:GITHUB_RUN_NUMBER"
+          Write-Host "version: $tag"
+          "tag=$tag"                          | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "zip=XenFusion-$tag-win64.zip"      | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # Pulls imgui, nlohmann/json, ImGuiColorTextEdit, ImGuizmo and assimp via
+      # FetchContent -- all pinned to fixed tags/commits in CMakeLists.txt.
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      # Builds XenFusion, animc and lightc, and runs the POST_BUILD steps that
+      # stage fonts/, branding/ and shaders/ beside the exe.
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release
+
+      # Ship everything the Release build produces, minus the static-library and
+      # linker byproducts of the dependency targets, which aren't runnable.
+      - name: Stage and zip
+        shell: pwsh
+        run: |
+          $stage = "staging"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          Copy-Item -Recurse -Force "build/Release" $stage
+
+          # Static-library / linker byproducts of the dependency targets.
+          Get-ChildItem $stage -File |
+              Where-Object { $_.Extension -in '.lib', '.exp', '.pdb', '.ilk' } |
+              Remove-Item -Force
+
+          # State the engine writes beside itself the first time it runs. A CI
+          # runner never launches the exe so these shouldn't exist, but
+          # settings.json records the local XDK and emulator paths and must
+          # never end up in a public download.
+          'settings.json', 'recent_projects.txt', 'imgui.ini' | ForEach-Object {
+              Remove-Item (Join-Path $stage $_) -Force -ErrorAction SilentlyContinue
+          }
+
+          if (-not (Test-Path (Join-Path $stage 'XenFusion.exe'))) {
+              throw "XenFusion.exe is missing from $stage -- refusing to publish an empty archive"
+          }
+
+          Write-Host "--- archive contents ---"
+          Get-ChildItem $stage -Recurse -File |
+              ForEach-Object { $_.FullName.Substring((Resolve-Path $stage).Path.Length + 1) }
+
+          Compress-Archive -Path (Join-Path $stage '*') `
+                           -DestinationPath "${{ steps.version.outputs.zip }}" -Force
+
+      # gh creates the tag itself at the pushed commit, so a failed build leaves
+      # behind no orphaned tag and no partial release.
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" "${{ steps.version.outputs.zip }}" `
+              --title "XenFusion ${{ steps.version.outputs.tag }}" `
+              --target "$env:GITHUB_SHA" `
+              --generate-notes
