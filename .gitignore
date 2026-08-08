@@ -1,4 +1,6 @@
-build/
+# Leading slash anchors these to the repo root. Without it, "build/" also
+# matches src/build/, which silently kept BuildRun.cpp out of the repo.
+/build/
 build-tests/
 out/
 .vs/
