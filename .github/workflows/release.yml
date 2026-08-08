@@ -42,7 +42,9 @@ jobs:
       # FetchContent -- all pinned to fixed tags/commits in CMakeLists.txt.
       - name: Configure
         shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        run: |
+          cmake --version
+          cmake -S . -B build -A x64
 
       # Builds XenFusion, animc and lightc, and runs the POST_BUILD steps that
       # stage fonts/, branding/ and shaders/ beside the exe.
