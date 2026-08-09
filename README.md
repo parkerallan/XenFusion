@@ -5,6 +5,10 @@
 XenFusion is a game engine targeting the Xbox 360 — scene authoring,
 rendering, physics, animation and scripting done through DirectX 9. You can build on Windows with the runtime to a `.xex` binary or a `.iso` disc image.
 
+<img width="1424" height="890" alt="demo" src="https://github.com/user-attachments/assets/c1d1e77c-db19-439b-b034-579bc32b0059" />
+
+<img width="800" height="480" alt="demo" src="https://github.com/user-attachments/assets/f0be2d2b-7640-4492-9012-251555bbe72b" />
+
 ---
 
 ## Features
