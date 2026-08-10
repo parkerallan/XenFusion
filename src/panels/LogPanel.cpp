@@ -80,15 +80,84 @@ void LogPanel::Render(EngineState& state)
     if (ImGui::BeginChild("##logscroll", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
                           ImGuiWindowFlags_HorizontalScrollbar))
     {
-        for (const LogEntry& e : applog::Entries())
+        const std::vector<LogEntry>& entries = applog::Entries();
+
+        // Entries only ever append, so a stored index stays valid — except
+        // across a Clear(), where the list shrinks and every index goes stale.
+        if ((int)entries.size() < m_last_count)
+            m_selection.Clear();
+        m_last_count = (int)entries.size();
+
+        m_visible.clear();
+        for (int i = 0; i < (int)entries.size(); ++i)
+            if (Enabled(state, entries[i].level))
+                m_visible.push_back(i);
+
+        // The drawn rows are a filtered subset, so the adapter maps a row
+        // position to the entry index the selection is actually keyed by.
+        // ApplyRequests runs every range/select-all through it.
+        m_selection.UserData = &m_visible;
+        m_selection.AdapterIndexToStorageId =
+            [](ImGuiSelectionBasicStorage* self, int row) -> ImGuiID
+            { return (ImGuiID)(*(const std::vector<int>*)self->UserData)[row]; };
+
+        ImGuiMultiSelectIO* ms = ImGui::BeginMultiSelect(
+            ImGuiMultiSelectFlags_BoxSelect1d | ImGuiMultiSelectFlags_ClearOnEscape |
+            ImGuiMultiSelectFlags_ClearOnClickVoid,
+            m_selection.Size, (int)m_visible.size());
+        m_selection.ApplyRequests(ms);
+
+        for (int row = 0; row < (int)m_visible.size(); ++row)
         {
-            if (!Enabled(state, e.level))
-                continue;
+            const int index = m_visible[row];
+            const LogEntry& e = entries[index];
+            ImGui::SetNextItemSelectionUserData(row);
+            ImGui::PushID(index);
+            // The Selectable carries an empty label: log text can contain '##',
+            // which a label would read as an ID separator and hide everything
+            // after it. The real text is drawn back over the row instead.
+            const ImVec2 row_pos = ImGui::GetCursorPos();
+            ImGui::Selectable("##row", m_selection.Contains((ImGuiID)index));
+            ImGui::SetCursorPos(row_pos);
             ImGui::PushStyleColor(ImGuiCol_Text, Color(e.level));
             ImGui::TextUnformatted(Tag(e.level));
             ImGui::SameLine(0.0f, 0.0f);
             ImGui::TextUnformatted(e.text.c_str());
             ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+
+        ms = ImGui::EndMultiSelect();
+        m_selection.ApplyRequests(ms);
+
+        // Ctrl+C is the expected gesture but invisible, so the right-click menu
+        // offers the same thing.
+        bool copy = ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, ImGuiInputFlags_RouteFocused);
+        if (ImGui::BeginPopupContextWindow("##logmenu"))
+        {
+            if (ImGui::MenuItem("Copy", "Ctrl+C", false, m_selection.Size > 0))
+                copy = true;
+            if (ImGui::MenuItem("Select All", "Ctrl+A", false, !m_visible.empty()))
+                for (int i = 0; i < (int)m_visible.size(); ++i)
+                    m_selection.SetItemSelected((ImGuiID)m_visible[i], true);
+            ImGui::EndPopup();
+        }
+
+        if (copy && m_selection.Size > 0)
+        {
+            // Walk rows, not the selection storage, so the clipboard comes out
+            // in the order the lines are shown.
+            std::string text;
+            for (int row = 0; row < (int)m_visible.size(); ++row)
+            {
+                const int index = m_visible[row];
+                if (!m_selection.Contains((ImGuiID)index))
+                    continue;
+                text += Tag(entries[index].level);
+                text += entries[index].text;
+                text += '\n';
+            }
+            ImGui::SetClipboardText(text.c_str());
         }
 
         if (state.auto_scroll_log && ImGui::GetScrollY() >= ImGui::GetScrollMaxY())

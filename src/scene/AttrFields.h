@@ -85,6 +85,16 @@
     X("image_tint",               Vec3,  image_tint)               \
     X("image_alpha",              Float, image_alpha)              \
     X("image_priority",           Int,   image_priority)           \
+    /* --- Color block --- */                              \
+    X("color_x",                  Float, color_x)                  \
+    X("color_y",                  Float, color_y)                  \
+    X("color_w",                  Float, color_w)                  \
+    X("color_h",                  Float, color_h)                  \
+    X("color_stretch",            Bool,  color_stretch)            \
+    X("color_lock_aspect",        Bool,  color_lock_aspect)        \
+    X("color_rgb",                Vec3,  color_rgb)                \
+    X("color_alpha",              Float, color_alpha)              \
+    X("color_priority",           Int,   color_priority)           \
     /* --- Skybox --- */                                   \
     X("sky_path",                 Str,   sky_path)                 \
     X("sky_rotation",             Float, sky_rotation)             \

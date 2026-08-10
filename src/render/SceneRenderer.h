@@ -485,6 +485,18 @@ private:
         int   sequence = 0;
     };
 
+    // A flat block. Image's item minus the texture, so the draw needs no lookup
+    // and no aspect fix-up — w/h are used exactly as authored.
+    struct ColorItem
+    {
+        float x = 0, y = 0, w = 0, h = 0;
+        bool  stretch = false;
+        float rgb[3] = {1, 1, 1};
+        float alpha = 1.0f;
+        int   priority = 1;
+        int   sequence = 0;
+    };
+
     struct TextItem
     {
         std::string object;
@@ -660,6 +672,7 @@ private:
     };
     std::map<std::string, VideoOverride> m_video_overrides;
     std::vector<ImageItem> m_image_items;
+    std::vector<ColorItem> m_color_items;
     std::vector<TextItem> m_text_items;
     std::map<std::string, std::string> m_text_overrides;
     std::map<std::string, IDirect3DTexture9*> m_image_textures;
@@ -667,6 +680,8 @@ private:
     vid::VideoPlayer       m_video;
     IDirect3DVertexShader9* m_image_vs = nullptr;
     IDirect3DPixelShader9*  m_image_ps = nullptr;
+    IDirect3DVertexShader9* m_color_vs = nullptr;
+    IDirect3DPixelShader9*  m_color_ps = nullptr;
     IDirect3DVertexShader9* m_text_vs = nullptr;
     IDirect3DPixelShader9*  m_text_ps = nullptr;
     IDirect3DVertexShader9* m_video_vs = nullptr;

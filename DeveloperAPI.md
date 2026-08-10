@@ -416,6 +416,7 @@ project; on the console they last for the session.
 | Rigid Body | `phys_kind`, `phys_shape`, `phys_size`, `phys_mass`, `phys_lin_damping`, `phys_ang_damping`, `phys_restitution`, `phys_friction`, `phys_gravity`, `phys_gravity_scale`, `phys_lock_rotation` |
 | Trigger Volume | `trig_shape`, `trig_size` |
 | Image | `image_path`, `image_x`, `image_y`, `image_w`, `image_h`, `image_stretch`, `image_lock_aspect`, `image_tint`, `image_alpha`, `image_priority` |
+| Color | `color_x`, `color_y`, `color_w`, `color_h`, `color_stretch`, `color_lock_aspect`, `color_rgb`, `color_alpha`, `color_priority` |
 | Skybox | `sky_path`, `sky_rotation` |
 | Text | `text_font_path`, `text_value`, `text_x`, `text_y`, `text_w`, `text_h`, `text_font_size`, `text_color`, `text_alpha`, `text_lock_aspect`, `text_priority` |
 | Video | `video_path`, `video_x`, `video_y`, `video_w`, `video_h`, `video_stretch`, `video_lock_aspect`, `video_tint`, `video_alpha`, `video_priority`, `video_play_mode`, `video_volume`, `video_muted` |

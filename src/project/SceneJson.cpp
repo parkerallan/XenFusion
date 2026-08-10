@@ -127,6 +127,18 @@ namespace project
                     ja["alpha"]      = a.image_alpha;
                     ja["priority"]   = a.image_priority;
                 }
+                else if (a.type == "Color")
+                {
+                    ja["x"]          = a.color_x;
+                    ja["y"]          = a.color_y;
+                    ja["w"]          = a.color_w;
+                    ja["h"]          = a.color_h;
+                    ja["stretch"]    = a.color_stretch;
+                    ja["lockAspect"] = a.color_lock_aspect;
+                    ja["color"]      = {a.color_rgb[0], a.color_rgb[1], a.color_rgb[2]};
+                    ja["alpha"]      = a.color_alpha;
+                    ja["priority"]   = a.color_priority;
+                }
                 else if (a.type == "Text")
                 {
                     ja["fontPath"]   = a.text_font_path;
@@ -318,6 +330,19 @@ namespace project
                                 for (int k = 0; k < 3; ++k) a.image_tint[k] = ja["tint"][k].get<float>();
                             a.image_alpha       = ja.value("alpha", 1.0f);
                             a.image_priority    = ja.value("priority", 1);
+                        }
+                        else if (a.type == "Color")
+                        {
+                            a.color_x           = ja.value("x", 0.0f);
+                            a.color_y           = ja.value("y", 0.0f);
+                            a.color_w           = ja.value("w", 256.0f);
+                            a.color_h           = ja.value("h", 256.0f);
+                            a.color_stretch     = ja.value("stretch", false);
+                            a.color_lock_aspect = ja.value("lockAspect", false);
+                            if (ja.contains("color") && ja["color"].is_array() && ja["color"].size() == 3)
+                                for (int k = 0; k < 3; ++k) a.color_rgb[k] = ja["color"][k].get<float>();
+                            a.color_alpha       = ja.value("alpha", 1.0f);
+                            a.color_priority    = ja.value("priority", 1);
                         }
                         else if (a.type == "Text")
                         {

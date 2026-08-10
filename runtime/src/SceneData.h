@@ -83,6 +83,15 @@ struct RtAttribute
     float image_alpha;
     int   image_priority;
 
+    // For "Color" (a flat screen-space block). No asset of any kind — nothing
+    // for the cooker to pack, so it works from the scene JSON alone.
+    float color_x, color_y, color_w, color_h;
+    bool  color_stretch;
+    bool  color_lock_aspect;
+    float color_rgb[3];
+    float color_alpha;
+    int   color_priority;
+
     // For "Skybox" (the scene background). An equirectangular image, cooked as
     // an ordinary TX2D entry; rotation is a yaw about world Y, in degrees.
     std::string sky_path;
@@ -173,6 +182,13 @@ struct RtAttribute
         image_tint[0] = image_tint[1] = image_tint[2] = 1.0f;
         image_alpha = 1.0f;
         image_priority = 1;
+        color_x = 0.0f; color_y = 0.0f;
+        color_w = 256.0f; color_h = 256.0f;
+        color_stretch = false;
+        color_lock_aspect = false;
+        color_rgb[0] = color_rgb[1] = color_rgb[2] = 1.0f;
+        color_alpha = 1.0f;
+        color_priority = 1;
         sky_rotation = 0.0f;
         text_x = 64.0f; text_y = 36.0f;
         text_w = 400.0f; text_h = 80.0f;

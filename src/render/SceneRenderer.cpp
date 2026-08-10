@@ -608,6 +608,7 @@ void SceneRenderer::LoadStandardShader()
     reload("skybox", m_sky_vs, m_sky_ps); // Skybox attribute background (optional)
     reload("beam", m_beam_vs, m_beam_ps); // spot volumetric shaft (optional)
     reload("image", m_image_vs, m_image_ps); // Image attribute overlay (optional)
+    reload("color", m_color_vs, m_color_ps); // Color attribute block (optional)
     reload("text", m_text_vs, m_text_ps); // Text attribute overlay (optional)
     reload("video", m_video_vs, m_video_ps); // Video attribute overlay (optional)
     reload("gui", m_gui_vs, m_gui_ps); // Lua-scriptable GUI (optional)
@@ -648,6 +649,8 @@ void SceneRenderer::Shutdown()
     m_text_fonts.clear();
     if (m_image_ps)   { m_image_ps->Release();   m_image_ps = nullptr; }
     if (m_image_vs)   { m_image_vs->Release();   m_image_vs = nullptr; }
+    if (m_color_ps)   { m_color_ps->Release();   m_color_ps = nullptr; }
+    if (m_color_vs)   { m_color_vs->Release();   m_color_vs = nullptr; }
     if (m_text_ps)    { m_text_ps->Release();    m_text_ps = nullptr; }
     if (m_text_vs)    { m_text_vs->Release();    m_text_vs = nullptr; }
     if (m_video_ps)   { m_video_ps->Release();   m_video_ps = nullptr; }
@@ -1242,6 +1245,7 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_spot_gizmos.clear();
     m_spot_beams.clear();
     m_image_items.clear();
+    m_color_items.clear();
     m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
@@ -1419,6 +1423,21 @@ void SceneRenderer::RenderUi(EngineState& state)
                     image.priority = a.image_priority;
                     image.sequence = overlay_sequence++;
                     m_image_items.push_back(image);
+                }
+                // A fully transparent block is dropped here rather than blended
+                // away — it costs a full-screen fill otherwise, and a script
+                // raising alpha again puts it back next frame.
+                else if (a.type == "Color" && a.color_alpha > 0.0f)
+                {
+                    ColorItem block;
+                    block.x = a.color_x; block.y = a.color_y;
+                    block.w = a.color_w; block.h = a.color_h;
+                    block.stretch = a.color_stretch;
+                    for (int k = 0; k < 3; ++k) block.rgb[k] = a.color_rgb[k];
+                    block.alpha = a.color_alpha;
+                    block.priority = a.color_priority;
+                    block.sequence = overlay_sequence++;
+                    m_color_items.push_back(block);
                 }
                 else if (a.type == "Text" && !a.text_font_path.empty() && !a.text_value.empty())
                 {
@@ -3379,13 +3398,16 @@ void SceneRenderer::RenderOverlay(float dt)
             ++i;
     }
 
-    if ((m_image_items.empty() && m_text_items.empty() && m_video_items.empty()) || !m_rtSurface)
+    if ((m_image_items.empty() && m_color_items.empty() && m_text_items.empty()
+         && m_video_items.empty()) || !m_rtSurface)
         return;
 
     struct OverlayRef { int kind; int index; int priority; int sequence; };
     std::vector<OverlayRef> order;
     for (int i = 0; i < (int)m_image_items.size(); ++i)
         order.push_back({0, i, m_image_items[i].priority, m_image_items[i].sequence});
+    for (int i = 0; i < (int)m_color_items.size(); ++i)
+        order.push_back({3, i, m_color_items[i].priority, m_color_items[i].sequence});
     for (int i = 0; i < (int)m_text_items.size(); ++i)
         order.push_back({1, i, m_text_items[i].priority, m_text_items[i].sequence});
     for (int i = 0; i < (int)m_video_items.size(); ++i)
@@ -3465,6 +3487,33 @@ void SceneRenderer::RenderOverlay(float dt)
             m_device->SetVertexShaderConstantF(0, halfTexel, 1);
             m_device->SetPixelShaderConstantF(0, tint, 1);
             m_device->SetTexture(0, texture);
+            m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+            continue;
+        }
+
+        if (ref.kind == 3)
+        {
+            if (!m_color_vs || !m_color_ps)
+                continue;
+            const ColorItem& item = m_color_items[ref.index];
+
+            float x0 = -1.0f, y0 = 1.0f, x1 = 1.0f, y1 = -1.0f;
+            if (!item.stretch)
+            {
+                x0 = item.x / 1280.0f * 2.0f - 1.0f;
+                x1 = (item.x + item.w) / 1280.0f * 2.0f - 1.0f;
+                y0 = 1.0f - item.y / 720.0f * 2.0f;
+                y1 = 1.0f - (item.y + item.h) / 720.0f * 2.0f;
+            }
+            const QuadVtx quad[4] = {
+                { x0, y0, 0.0f, 0.0f, 0.0f }, { x1, y0, 0.0f, 1.0f, 0.0f },
+                { x0, y1, 0.0f, 0.0f, 1.0f }, { x1, y1, 0.0f, 1.0f, 1.0f },
+            };
+            const float rgba[4] = { item.rgb[0], item.rgb[1], item.rgb[2], item.alpha };
+            m_device->SetVertexShader(m_color_vs);
+            m_device->SetPixelShader(m_color_ps);
+            m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+            m_device->SetPixelShaderConstantF(0, rgba, 1);
             m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
             continue;
         }

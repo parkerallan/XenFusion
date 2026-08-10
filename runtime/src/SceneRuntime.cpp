@@ -800,6 +800,7 @@ void SceneRuntime::ApplyPendingScene()
     m_draw_items.clear();
     m_shader_items.clear();
     m_image_items.clear();
+    m_color_items.clear();
     m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
@@ -1320,6 +1321,7 @@ void SceneRuntime::InitBloom(XboxRenderer& renderer)
 
     m_content.LoadBuiltin("beam", m_beam);
     m_content.LoadBuiltin("image", m_image_shader); // Image attribute overlay (optional)
+    m_content.LoadBuiltin("color", m_color_shader); // Color attribute block (optional)
     m_content.LoadBuiltin("text", m_text_shader);   // Text attribute overlay (optional)
     m_content.LoadBuiltin("gui", m_gui_shader);     // Lua-scriptable GUI (optional)
     m_content.LoadBuiltin("video", m_video_shader); // Video attribute overlay (optional)
@@ -1642,6 +1644,7 @@ void SceneRuntime::Shutdown()
         }
     m_video_tex.clear();
     m_image_shader.Release();
+    m_color_shader.Release();
     m_text_shader.Release();
     m_gui_shader.Release();
     m_video_shader.Release();
@@ -1804,6 +1807,7 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
             m_shader_items[i].visible = false;
     }
     m_image_items.clear();
+    m_color_items.clear();
     m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
@@ -1942,6 +1946,21 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
                 image.priority = at.image_priority;
                 image.sequence = overlay_sequence++;
                 m_image_items.push_back(image);
+            }
+            // A fully transparent block is dropped here rather than blended away
+            // — it costs a full-screen fill otherwise, and a script raising
+            // alpha again puts it back next frame.
+            else if (at.type == "Color" && at.color_alpha > 0.0f)
+            {
+                ColorItem block;
+                block.x = at.color_x; block.y = at.color_y;
+                block.w = at.color_w; block.h = at.color_h;
+                block.stretch = at.color_stretch;
+                for (int k = 0; k < 3; ++k) block.rgb[k] = at.color_rgb[k];
+                block.alpha = at.color_alpha;
+                block.priority = at.color_priority;
+                block.sequence = overlay_sequence++;
+                m_color_items.push_back(block);
             }
             else if (at.type == "Text" && !at.text_font_path.empty() && !at.text_value.empty())
             {
@@ -3112,12 +3131,13 @@ void SceneRuntime::RenderOverlay(float dt)
             ++i;
     }
 
-    if (m_image_items.empty() && m_text_items.empty() && m_video_items.empty())
+    if (m_image_items.empty() && m_color_items.empty() && m_text_items.empty()
+        && m_video_items.empty())
         return;
 
     struct OverlayRef
     {
-        int kind; // 0=image, 1=text, 2=video
+        int kind; // 0=image, 1=text, 2=video, 3=color
         int index;
         int priority;
         int sequence;
@@ -3128,6 +3148,15 @@ void SceneRuntime::RenderOverlay(float dt)
     for (int i = 0; i < (int)m_image_items.size(); ++i)
     {
         OverlayRef ref(0, i, m_image_items[i].priority, m_image_items[i].sequence);
+        int j = 0;
+        while (j < (int)order.size() &&
+               (order[j].priority > ref.priority ||
+            (order[j].priority == ref.priority && order[j].sequence <= ref.sequence))) ++j;
+        order.insert(order.begin() + j, ref);
+    }
+    for (int i = 0; i < (int)m_color_items.size(); ++i)
+    {
+        OverlayRef ref(3, i, m_color_items[i].priority, m_color_items[i].sequence);
         int j = 0;
         while (j < (int)order.size() &&
                (order[j].priority > ref.priority ||
@@ -3221,6 +3250,60 @@ void SceneRuntime::RenderOverlay(float dt)
             m_device->SetVertexShaderConstantF(0, halfTexel, 1);
             m_device->SetPixelShaderConstantF(0, tint, 1);
             m_device->SetTexture(0, texture);
+            m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
+            continue;
+        }
+
+        if (ref.kind == 3)
+        {
+            if (!m_color_shader.Valid())
+                continue;
+            const ColorItem& item = m_color_items[ref.index];
+
+            if (!stateSet)
+            {
+                m_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+                m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+                m_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+                m_device->SetRenderState(D3DRS_COLORWRITEENABLE,
+                    D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+                    D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+                m_device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
+                m_device->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ZERO);
+                m_device->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
+                m_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+                m_device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+                m_device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+                m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+                m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+                m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                stateSet = true;
+            }
+
+            float x0 = -1.0f, y0 = 1.0f, x1 = 1.0f, y1 = -1.0f;
+            if (!item.stretch)
+            {
+                x0 = item.x / 1280.0f * 2.0f - 1.0f;
+                x1 = (item.x + item.w) / 1280.0f * 2.0f - 1.0f;
+                y0 = 1.0f - item.y / 720.0f * 2.0f;
+                y1 = 1.0f - (item.y + item.h) / 720.0f * 2.0f;
+            }
+            const QuadVtx quad[4] = {
+                { x0, y0, 0.0f, 0.0f, 0.0f },
+                { x1, y0, 0.0f, 1.0f, 0.0f },
+                { x0, y1, 0.0f, 0.0f, 1.0f },
+                { x1, y1, 0.0f, 1.0f, 1.0f },
+            };
+            const float halfTexel[4] = { 1.0f / 1280.0f, 1.0f / 720.0f, 0.0f, 0.0f };
+            const float rgba[4] = { item.rgb[0], item.rgb[1], item.rgb[2], item.alpha };
+            m_device->SetVertexShader(m_color_shader.vs);
+            m_device->SetPixelShader(m_color_shader.ps);
+            m_device->SetVertexShaderConstantF(0, halfTexel, 1);
+            m_device->SetPixelShaderConstantF(0, rgba, 1);
             m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
             continue;
         }

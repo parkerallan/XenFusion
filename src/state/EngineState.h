@@ -100,6 +100,19 @@ struct ObjectAttribute
     float image_alpha   = 1.0f;
     int   image_priority = 1;
 
+    // For "Color" (a flat screen-space block — fades, letterbox bars, a panel
+    // behind some Text). Image's field set minus the asset: there is nothing to
+    // load, so the same 1280x720 reference space drives a solid quad.
+    float color_x      = 0.0f;
+    float color_y      = 0.0f;
+    float color_w      = 256.0f;
+    float color_h      = 256.0f;
+    bool  color_stretch = false;
+    bool  color_lock_aspect = false;
+    float color_rgb[3] = {1.0f, 1.0f, 1.0f};
+    float color_alpha  = 1.0f;
+    int   color_priority = 1;
+
     // For "Skybox" (the scene background, behind everything). An
     // equirectangular (lat-long) PNG/JPG, cooked like any other image; rotation
     // is a yaw about world Y, in degrees. The first Skybox in scene order wins

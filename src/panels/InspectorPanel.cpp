@@ -786,6 +786,53 @@ void InspectorPanel::Render(EngineState& state)
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
+        else if (attr.type == "Color")
+        {
+            bool edited = false, commit = false;
+            if (ImGui::Checkbox("Stretch To Screen", &attr.color_stretch)) { edited = commit = true; }
+            ImGui::BeginDisabled(attr.color_stretch);
+            float pos[2] = { attr.color_x, attr.color_y };
+            if (ImGui::DragFloat2("Position", pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            {
+                attr.color_x = pos[0]; attr.color_y = pos[1];
+                edited = true;
+            }
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            if (attr.color_lock_aspect)
+            {
+                // No source image to take a ratio from, so hold the ratio the
+                // block already has and let width drive height.
+                const float aspect = attr.color_h > 0.0f ? attr.color_w / attr.color_h : 1.0f;
+                if (ImGui::DragFloat("Width", &attr.color_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                {
+                    attr.color_h = attr.color_w / aspect;
+                    edited = true;
+                }
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            else
+            {
+                float size[2] = { attr.color_w, attr.color_h };
+                if (ImGui::DragFloat2("Size", size, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                {
+                    attr.color_w = size[0]; attr.color_h = size[1];
+                    edited = true;
+                }
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.color_lock_aspect)) { edited = commit = true; }
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
+            edited |= ImGui::ColorEdit3("Color", attr.color_rgb);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragFloat("Alpha", &attr.color_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            edited |= ImGui::DragInt("Priority", &attr.color_priority, 0.1f, 0, 100);
+            commit |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::TextDisabled("Higher priority draws behind lower.");
+            if (edited && scene) scene->dirty = true;
+            if (commit) save();
+        }
         else if (attr.type == "Text")
         {
             char path_buf[260];
@@ -1199,6 +1246,13 @@ void InspectorPanel::Render(EngineState& state)
         {
             ObjectAttribute attr;
             attr.type = "Image";
+            obj->attributes.push_back(attr);
+            save();
+        }
+        if (ImGui::MenuItem("Color"))
+        {
+            ObjectAttribute attr;
+            attr.type = "Color";
             obj->attributes.push_back(attr);
             save();
         }

@@ -445,6 +445,29 @@ namespace scenedata
                         if (ial && ial->type == JValue::Number) at.image_alpha = (float)ial->num;
                         if (ipr && ipr->type == JValue::Number) at.image_priority = (int)ipr->num;
                     }
+                    else if (at.type == "Color")
+                    {
+                        const JValue* cx  = ja.Find("x");
+                        const JValue* cy  = ja.Find("y");
+                        const JValue* cw  = ja.Find("w");
+                        const JValue* ch  = ja.Find("h");
+                        const JValue* cst = ja.Find("stretch");
+                        const JValue* cla = ja.Find("lockAspect");
+                        const JValue* ccl = ja.Find("color");
+                        const JValue* cal = ja.Find("alpha");
+                        const JValue* cpr = ja.Find("priority");
+                        if (cx  && cx->type  == JValue::Number) at.color_x = (float)cx->num;
+                        if (cy  && cy->type  == JValue::Number) at.color_y = (float)cy->num;
+                        if (cw  && cw->type  == JValue::Number) at.color_w = (float)cw->num;
+                        if (ch  && ch->type  == JValue::Number) at.color_h = (float)ch->num;
+                        if (cst && cst->type == JValue::Bool)   at.color_stretch = cst->b;
+                        if (cla && cla->type == JValue::Bool)   at.color_lock_aspect = cla->b;
+                        at.color_rgb[0] = NumAt(ccl, 0, 1.0f);
+                        at.color_rgb[1] = NumAt(ccl, 1, 1.0f);
+                        at.color_rgb[2] = NumAt(ccl, 2, 1.0f);
+                        if (cal && cal->type == JValue::Number) at.color_alpha = (float)cal->num;
+                        if (cpr && cpr->type == JValue::Number) at.color_priority = (int)cpr->num;
+                    }
                     else if (at.type == "Skybox")
                     {
                         const JValue* skp = ja.Find("skyboxPath");

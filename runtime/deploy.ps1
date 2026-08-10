@@ -78,10 +78,21 @@ New-Item -ItemType Directory -Force $shaderOut | Out-Null
 $xdk = if ($Xedk) { $Xedk } elseif ($env:XEDK) { $env:XEDK } else { [Environment]::GetEnvironmentVariable('XEDK','Machine') }
 $fxc = if ($xdk) { Join-Path $xdk "bin\win32\fxc.exe" } else { $null }
 if ($fxc -and (Test-Path $fxc)) {
+    # exit code: errors throw with the compiler's own message, warnings just print.
+    function Invoke-Fxc([string[]]$fxcArgs) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { $log = (& $fxc @fxcArgs 2>&1 | Out-String) }
+        finally { $ErrorActionPreference = $prev }
+        if ($LASTEXITCODE -ne 0) { throw "fxc failed: $($fxcArgs -join ' ')`n$log" }
+        foreach ($line in ($log -split "`r?`n")) {
+            if ($line -match ':\s*warning\s') { Write-Output "WARN: $($line.Trim())" }
+        }
+    }
     function Compile-Xeno($hlsl, $bakeDir) {
         $stem = [System.IO.Path]::GetFileNameWithoutExtension($hlsl)
-        & $fxc /Tvs_3_0 /EVSMain /Zpc "/Fo$(Join-Path $shaderOut ($stem + '_vs.cso'))" $hlsl 2>&1 | Out-Null
-        & $fxc /Tps_3_0 /EPSMain /Zpc "/Fo$(Join-Path $shaderOut ($stem + '_ps.cso'))" $hlsl 2>&1 | Out-Null
+        Invoke-Fxc @("/Tvs_3_0", "/EVSMain", "/Zpc", "/Fo$(Join-Path $shaderOut ($stem + '_vs.cso'))", $hlsl)
+        Invoke-Fxc @("/Tps_3_0", "/EPSMain", "/Zpc", "/Fo$(Join-Path $shaderOut ($stem + '_ps.cso'))", $hlsl)
         if ($bakeDir) {
             $dirs = Select-String -Path $hlsl -Pattern '//@' | ForEach-Object { $_.Line.Trim() }
             if ($dirs) { $dirs | Set-Content -Path (Join-Path $shaderOut ($stem + '.dir')) -Encoding ascii }
@@ -93,9 +104,9 @@ if ($fxc -and (Test-Path $fxc)) {
     $engineShaderDir = Join-Path (Split-Path -Parent $root) "src\shaders"
     if (-not (Test-Path (Join-Path $engineShaderDir "standard.hlsl"))) { throw "Built-in material not found in: $engineShaderDir" }
     Get-ChildItem $engineShaderDir -Filter *.hlsl | ForEach-Object { Compile-Xeno $_.FullName $false }
-    & $fxc /Tvs_3_0 /ESkinVSMain /Zpc "/Fo$(Join-Path $shaderOut 'standard_skin_vs.cso')" (Join-Path $engineShaderDir "standard.hlsl") 2>&1 | Out-Null
-    & $fxc /Tvs_3_0 /ELightmapVSMain /Zpc "/Fo$(Join-Path $shaderOut 'standard_lightmap_vs.cso')" (Join-Path $engineShaderDir "standard.hlsl") 2>&1 | Out-Null
-    & $fxc /Tps_3_0 /EShadowPSMain /Zpc "/Fo$(Join-Path $shaderOut 'standard_shadow_ps.cso')" (Join-Path $engineShaderDir "standard.hlsl") 2>&1 | Out-Null
+    Invoke-Fxc @("/Tvs_3_0", "/ESkinVSMain", "/Zpc", "/Fo$(Join-Path $shaderOut 'standard_skin_vs.cso')", (Join-Path $engineShaderDir "standard.hlsl"))
+    Invoke-Fxc @("/Tvs_3_0", "/ELightmapVSMain", "/Zpc", "/Fo$(Join-Path $shaderOut 'standard_lightmap_vs.cso')", (Join-Path $engineShaderDir "standard.hlsl"))
+    Invoke-Fxc @("/Tps_3_0", "/EShadowPSMain", "/Zpc", "/Fo$(Join-Path $shaderOut 'standard_shadow_ps.cso')", (Join-Path $engineShaderDir "standard.hlsl"))
     Get-ChildItem (Join-Path $Project "assets") -Filter *.hlsl -Recurse -ErrorAction SilentlyContinue |
         ForEach-Object { Compile-Xeno $_.FullName $true }           # custom shaders (+ //@ sidecar)
     Write-Output "Compiled Xenos shaders (.cso) + baked //@ sidecars"

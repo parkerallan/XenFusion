@@ -32,6 +32,7 @@ attach to it in the Inspector. These are the current attributes available under
 | **Rigid Body** | Bullet 2.82 rigid body. Box, sphere, capsule, cylinder, convex-hull or exact-mesh collider, static or dynamic. |
 | **Trigger Volume** | Non-solid box, sphere, capsule or cylinder that reports overlaps to scripts instead of blocking movement. |
 | **Image** | 2D screen-space image, for HUD and overlay art. |
+| **Color** | 2D screen-space color block. Used for fades, letterbox bars, flat panels, etc. |
 | **Text** | TrueType text rendering. |
 | **Video** | MPEG-1 video overlay with MP2 audio, streamed from disc. |
 | **Audio** | MP2 playback, either flat 2D or spatialised through X3DAudio with distance falloff. |

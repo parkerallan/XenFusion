@@ -389,6 +389,21 @@ private:
         { tint[0] = tint[1] = tint[2] = 1.0f; }
     };
 
+    // A flat block. Image's item minus the texture, so the draw needs no cache
+    // lookup and no aspect fix-up — w/h are used exactly as authored.
+    struct ColorItem
+    {
+        float x, y, w, h;
+        bool  stretch;
+        float rgb[3];
+        float alpha;
+        int   priority;
+        int   sequence;
+        ColorItem() : x(0), y(0), w(0), h(0), stretch(false),
+                      alpha(1.0f), priority(1), sequence(0)
+        { rgb[0] = rgb[1] = rgb[2] = 1.0f; }
+    };
+
     struct TextItem
     {
         std::string object;
@@ -522,6 +537,7 @@ private:
     aud::AudioPlayer       m_audio;
 
     std::vector<ImageItem>  m_image_items;
+    std::vector<ColorItem>  m_color_items;
     std::vector<TextItem>   m_text_items;
     std::map<std::string, std::string> m_text_overrides;
     std::vector<VideoItem>  m_video_items;
@@ -539,6 +555,7 @@ private:
     std::map<std::string, VideoOverride> m_video_overrides;
     vid::VideoPlayer        m_video;
     RtShader                m_image_shader;
+    RtShader                m_color_shader;
     RtShader                m_text_shader;
     RtShader                m_video_shader;
 
