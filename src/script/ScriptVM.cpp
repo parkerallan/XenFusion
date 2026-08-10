@@ -968,6 +968,18 @@ namespace
         if (!strcmp(name, "right"))  return gui::AlignRight;
         return fallback;
     }
+    // Animated-GIF play mode. Spelled as a string here to match the
+    // neighbouring gui options (align/valign/anchor); the Image attribute's
+    // image_play_mode is the same three values as an int, which is that layer's
+    // own convention for enum fields.
+    int playModeFromName(const char* name, int fallback)
+    {
+        if (!name) return fallback;
+        if (!strcmp(name, "off"))  return gifanim::PlayOff;
+        if (!strcmp(name, "once")) return gifanim::PlayOnce;
+        if (!strcmp(name, "loop")) return gifanim::PlayLoop;
+        return fallback;
+    }
     int alignVFromName(const char* name, int fallback)
     {
         if (!name) return fallback;
@@ -1089,6 +1101,11 @@ namespace
         if (lua_isnumber(L, -1)) g->SetSlice(h, (float)lua_tonumber(L, -1));
         lua_pop(L, 1);
 
+        lua_getfield(L, optsIdx, "play_mode");
+        if (lua_isstring(L, -1))
+            g->SetPlayMode(h, playModeFromName(lua_tostring(L, -1), gifanim::PlayLoop));
+        lua_pop(L, 1);
+
         lua_getfield(L, optsIdx, "text");
         if (lua_isstring(L, -1)) g->SetText(h, lua_tostring(L, -1));
         lua_pop(L, 1);
@@ -1162,6 +1179,13 @@ namespace
     int l_gui_image(lua_State* L)  { return guiCreate(L, gui::KindImage); }
     int l_gui_button(lua_State* L) { return guiCreate(L, gui::KindButton); }
 
+    int l_gui_set_play_mode(lua_State* L)
+    {
+        gui::Context* g = getGui(L);
+        if (g) g->SetPlayMode(toWidget(L, 1),
+                              playModeFromName(lua_tostring(L, 2), gifanim::PlayLoop));
+        return 0;
+    }
     int l_gui_set_focus(lua_State* L)
     {
         gui::Context* g = getGui(L);
@@ -1559,6 +1583,7 @@ namespace script
             lua_pushcfunction(L, l_gui_panel);      lua_setfield(L, -2, "panel");
             lua_pushcfunction(L, l_gui_label);      lua_setfield(L, -2, "label");
             lua_pushcfunction(L, l_gui_image);      lua_setfield(L, -2, "image");
+            lua_pushcfunction(L, l_gui_set_play_mode); lua_setfield(L, -2, "set_play_mode");
             lua_pushcfunction(L, l_gui_button);     lua_setfield(L, -2, "button");
             lua_pushcfunction(L, l_gui_root);       lua_setfield(L, -2, "root");
             lua_pushcfunction(L, l_gui_set_focus);  lua_setfield(L, -2, "set_focus");

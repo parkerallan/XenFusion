@@ -14,6 +14,32 @@ StreamCache::StreamCache()
 namespace
 {
     const unsigned int kEvictGraceFrames = 2; // don't evict just-used assets
+
+    // Parse a 'GIFA' payload (SpakFormat.h): fixed header then one u32 delay per
+    // frame, all big-endian. Rejects anything whose declared frame count doesn't
+    // match the bytes actually present, so a truncated entry is StMissing rather
+    // than a read past the buffer.
+    bool ParseCookedGif(const unsigned char* payload, unsigned int size, RtGifInfo& out)
+    {
+        if (!payload || size < spak::kGifHeaderBytes) return false;
+        if (endian::LoadU32BE(payload + 0) != spak::kGifMagic)   return false;
+        if (endian::LoadU32BE(payload + 4) != spak::kGifVersion) return false;
+        const unsigned int framesHash = endian::LoadU32BE(payload + 8);
+        const unsigned int w          = endian::LoadU32BE(payload + 12);
+        const unsigned int h          = endian::LoadU32BE(payload + 16);
+        const unsigned int count      = endian::LoadU32BE(payload + 20);
+        if (w == 0 || h == 0 || count == 0 || count > spak::kMaxGifFrames) return false;
+        if (size < spak::kGifHeaderBytes + count * 4u) return false;
+
+        out.framesHash      = framesHash;
+        out.info.frameW     = (int)w;
+        out.info.frameH     = (int)h;
+        out.info.frameCount = (int)count;
+        out.info.delaysMs.resize(count);
+        for (unsigned int i = 0; i < count; ++i)
+            out.info.delaysMs[i] = endian::LoadU32BE(payload + spak::kGifHeaderBytes + i * 4u);
+        return true;
+    }
 }
 
 StreamCache::~StreamCache()
@@ -186,6 +212,7 @@ void StreamCache::Shutdown()
         it->second.tex.Release();
     m_textures.clear();
     m_fonts.clear();
+    m_gifs.clear();
     m_ranges.clear();
     m_loBlobs.clear();
 
@@ -405,6 +432,21 @@ void StreamCache::Update(unsigned int budget)
                 m_residentBytes    += fit->second.bytes;
             }
             else fit->second.state = StMissing;
+            continue;
+        }
+        std::map<unsigned int, CacheGif>::iterator git = m_gifs.find(c.hash);
+        if (git != m_gifs.end())
+        {
+            if (c.ok && !c.payload.empty())
+                c.ok = ParseCookedGif(&c.payload[0], (unsigned int)c.payload.size(), git->second.gif);
+            if (c.ok)
+            {
+                git->second.state   = StResident;
+                git->second.bytes   = (unsigned int)c.payload.size();
+                git->second.lastUse = m_frame;
+                m_residentBytes    += git->second.bytes;
+            }
+            else git->second.state = StMissing;
         }
     }
 
@@ -464,6 +506,11 @@ void StreamCache::EvictIfOverBudget()
                 it->second.lastUse < bestLast)
             { bestLast = it->second.lastUse; bestHash = it->first; kind = 2; }
 
+        for (std::map<unsigned int, CacheGif>::iterator it = m_gifs.begin(); it != m_gifs.end(); ++it)
+            if (it->second.state == StResident && it->second.lastUse + kEvictGraceFrames <= m_frame &&
+                it->second.lastUse < bestLast)
+            { bestLast = it->second.lastUse; bestHash = it->first; kind = 3; }
+
         if (kind < 0)
             break; // everything resident is in active use — exceed budget gracefully
 
@@ -484,17 +531,26 @@ void StreamCache::EvictIfOverBudget()
             freed = it->second.bytes;
             m_textures.erase(it);
         }
-        else
+        else if (kind == 2)
         {
             std::map<unsigned int, CacheFont>::iterator it = m_fonts.find(bestHash);
             freed = it->second.bytes;
             m_fonts.erase(it);
         }
+        else
+        {
+            // Only the small metadata record is charged here; the frames are a
+            // TX2D entry with its own budget line, evicted as kind 1.
+            std::map<unsigned int, CacheGif>::iterator it = m_gifs.find(bestHash);
+            freed = it->second.bytes;
+            m_gifs.erase(it);
+        }
         m_residentBytes -= freed;
 
         char msg[128];
         sprintf_s(msg, sizeof(msg), "cache: evicted 0x%08x (%s), freed %u KB, resident %u MB / %u MB\n",
-                  bestHash, kind == 0 ? "mesh" : kind == 1 ? "tex" : "font", freed / 1024,
+                  bestHash, kind == 0 ? "mesh" : kind == 1 ? "tex" : kind == 2 ? "font" : "gif",
+                  freed / 1024,
                   (unsigned int)(m_residentBytes / (1024 * 1024)), (unsigned int)(m_budgetBytes / (1024 * 1024)));
         OutputDebugStringA(msg);
     }
@@ -678,6 +734,16 @@ IDirect3DTexture9* StreamCache::GetTextureByHash(unsigned int hash)
             }
             else Enqueue(hash, e);
         }
+        else if (e && (e->type == spak::kTypeGif || e->type == spak::kTypeFont))
+        {
+            // This hash belongs to another cache. Do NOT record it here: the
+            // drain routes a completion by whichever map holds the hash and
+            // checks m_textures first, so a stray entry would swallow that
+            // asset's own completion and leave it loading forever. Answer NULL
+            // without caching; a caller asking a font or GIF path for a plain
+            // texture is a bug in the caller, and re-finding costs one lookup.
+            return NULL;
+        }
         else { ct.state = StMissing; m_textures[hash] = ct; }
         it = m_textures.find(hash);
     }
@@ -726,6 +792,44 @@ const text::CookedFont* StreamCache::GetFont(const std::string& relPath,
         return NULL;
     if (outAtlas) *outAtlas = atlas;
     return &cached.font;
+}
+
+const RtGifInfo* StreamCache::GetGif(const std::string& relPath,
+                                     IDirect3DArrayTexture9** outFrames)
+{
+    if (outFrames) *outFrames = NULL;
+    if (relPath.empty() || !m_pak)
+        return NULL;
+
+    const unsigned int hash = spak::NameHash(relPath.c_str());
+    std::map<unsigned int, CacheGif>::iterator it = m_gifs.find(hash);
+    if (it == m_gifs.end())
+    {
+        CacheGif cached;
+        const SpakEntry* entry = m_pak->Find(hash);
+        cached.entry = entry;
+        if (entry && entry->type == spak::kTypeGif)
+        { cached.state = StLoading; m_gifs[hash] = cached; Enqueue(hash, entry); }
+        else
+        { cached.state = StMissing; m_gifs[hash] = cached; }
+        it = m_gifs.find(hash);
+    }
+
+    CacheGif& cached = it->second;
+    if (cached.state != StResident)
+        return NULL;
+    cached.lastUse = m_frame;
+
+    // The frames are cooked unsplit, so this is NULL until the whole stack is
+    // resident — the overlay skips a frame rather than sampling slices that
+    // haven't landed. The entry is a normal TX2D; what it actually carries is a
+    // stacked texture, so the header is reinterpreted here (see SpakFormat.h's
+    // 'GIFA' block and StreamPak::RegisterXpr, which builds it type-agnostically).
+    IDirect3DTexture9* asTexture = GetTextureByHash(cached.gif.framesHash);
+    if (!asTexture)
+        return NULL;
+    if (outFrames) *outFrames = (IDirect3DArrayTexture9*)asTexture;
+    return &cached.gif;
 }
 
 void StreamCache::RefreshMeshTextures(CacheMesh& cm)

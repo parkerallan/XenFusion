@@ -126,6 +126,7 @@ namespace project
                     ja["tint"]       = {a.image_tint[0], a.image_tint[1], a.image_tint[2]};
                     ja["alpha"]      = a.image_alpha;
                     ja["priority"]   = a.image_priority;
+                    ja["playMode"]   = a.image_play_mode;
                 }
                 else if (a.type == "Color")
                 {
@@ -330,6 +331,7 @@ namespace project
                                 for (int k = 0; k < 3; ++k) a.image_tint[k] = ja["tint"][k].get<float>();
                             a.image_alpha       = ja.value("alpha", 1.0f);
                             a.image_priority    = ja.value("priority", 1);
+                            a.image_play_mode   = ja.value("playMode", 2);
                         }
                         else if (a.type == "Color")
                         {

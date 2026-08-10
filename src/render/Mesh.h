@@ -192,6 +192,13 @@ namespace mesh
                                    AlphaKind* out_alpha = nullptr,
                                    bool* out_height = nullptr);
 
+    // Upload w*h RGBA8 pixels already in memory (stb's byte order) as a single
+    // mip-0 texture. Shared with LoadTexture so the RGBA->BGRA swizzle lives in
+    // one place; used for decoded GIF frames, which never touch a file of their
+    // own.
+    IDirect3DTexture9* CreateTextureFromRgba(IDirect3DDevice9* device,
+                                             const unsigned char* pixels, int w, int h);
+
     // Load the project's environment cube map: six square, same-sized face
     // images env_px/nx/py/ny/pz/nz.png inside `dir`. Metal surfaces reflect it
     // (standard.hlsl s5). Returns null when any face is missing/mismatched —

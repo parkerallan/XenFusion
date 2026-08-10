@@ -23,7 +23,8 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 15. [Animator](#15-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`
 16. [Utility](#16-utility) — `log`
 17. [Text](#17-text) — `text.set`
-18. [GUI](#18-gui) — `gui.panel`, `gui.label`, `gui.image`, `gui.button`, `gui.root`, `gui.set_focus`, `gui.focus`, `gui.set_paused`, `gui.is_paused`, `gui.clear`
+18. [GUI](#18-gui) — `gui.panel`, `gui.label`, `gui.image`, `gui.button`, `gui.root`, `gui.set_focus`, `gui.set_play_mode`, `gui.focus`, `gui.set_paused`, `gui.is_paused`, `gui.clear`
+19. [Animated GIFs](#19-animated-gifs) — `image_play_mode`, limits
 
 ---
 
@@ -415,7 +416,7 @@ project; on the console they last for the session.
 | Lights (all four) | `light_color`, `light_intensity`, `light_range`, `light_inner_deg`, `light_outer_deg`, `light_mode`, `light_volumetric`, `light_volumetric_intensity` |
 | Rigid Body | `phys_kind`, `phys_shape`, `phys_size`, `phys_mass`, `phys_lin_damping`, `phys_ang_damping`, `phys_restitution`, `phys_friction`, `phys_gravity`, `phys_gravity_scale`, `phys_lock_rotation` |
 | Trigger Volume | `trig_shape`, `trig_size` |
-| Image | `image_path`, `image_x`, `image_y`, `image_w`, `image_h`, `image_stretch`, `image_lock_aspect`, `image_tint`, `image_alpha`, `image_priority` |
+| Image | `image_path`, `image_x`, `image_y`, `image_w`, `image_h`, `image_stretch`, `image_lock_aspect`, `image_tint`, `image_alpha`, `image_priority`, `image_play_mode` |
 | Color | `color_x`, `color_y`, `color_w`, `color_h`, `color_stretch`, `color_lock_aspect`, `color_rgb`, `color_alpha`, `color_priority` |
 | Skybox | `sky_path`, `sky_rotation` |
 | Text | `text_font_path`, `text_value`, `text_x`, `text_y`, `text_w`, `text_h`, `text_font_size`, `text_color`, `text_alpha`, `text_lock_aspect`, `text_priority` |
@@ -1065,6 +1066,7 @@ the scene.
 | `gui.image{ … }` → widget | a texture |
 | `gui.button{ … }` → widget | a plate plus a caption; **focusable** by default |
 | `gui.set_focus(widget)` | move the highlight to a widget |
+| `gui.set_play_mode(widget, mode)` | animated `.gif` texture: `"loop"`, `"once"`, `"off"` |
 | `gui.focus()` → widget | the focused widget, or `nil` |
 | `gui.set_paused(b)` | pause gameplay while the menu stays live |
 | `gui.is_paused()` → `boolean` | true while paused |
@@ -1093,13 +1095,19 @@ gui.label{ parent = plate, anchor = "top", y = 30, w = 520, h = 64,
 | `color` | a label's text colour; every other widget's background |
 | `focus_color` | background while focused |
 | `text_color` · `focus_text_color` | caption colour on widgets that also have a background |
-| `texture` | project-relative `.png` / `.jpg` |
+| `texture` | project-relative `.png` / `.jpg` / `.gif` (a `.gif` animates) |
 | `slice` | 9-slice border in pixels — the border keeps its size, the middle stretches |
+| `play_mode` | animated `.gif` only: `"loop"` (default), `"once"`, `"off"` |
 | `text` · `font` · `size` | caption, project-relative `.ttf` / `.otf`, pixel size |
 | `align` · `valign` | `left` `center` `right` · `top` `middle` `bottom` |
 | `wrap` | wrap text at the widget's width |
 | `visible` · `enabled` · `focusable` | booleans; buttons are focusable unless you say otherwise |
 | `on_confirm` · `on_cancel` · `on_focus` | callbacks, called with the widget |
+
+A `.gif` `texture` animates on its own embedded frame delays, per widget — two
+widgets on the same file keep separate clocks. The same limits apply as to an
+animated Image attribute (see **Animated GIFs** below), and `slice` is ignored:
+a GIF always draws as a plain stretched quad.
 
 On a button, `color` is the plate and `text_color` is the caption. Set both
 pairs — with only `color`/`focus_color`, a focused button's caption renders in
@@ -1222,3 +1230,56 @@ function on_update(dt)
     end
 end
 ```
+---
+
+## 19. Animated GIFs
+
+Point an **Image** attribute at a `.gif` and it animates. A `gui.image` widget
+does the same with a `.gif` `texture`. Timing always comes from the delays
+stored in the GIF itself — there is no speed control.
+
+The only control is the play mode, `image_play_mode` on the attribute (or
+`play_mode` / `gui.set_play_mode` on a widget):
+
+| Value | Name | Behaviour |
+|---|---|---|
+| `2` | Loop *(default)* | runs forever |
+| `1` | Play Once | plays through, then holds the last frame |
+| `0` | Off | holds frame 1 |
+
+```lua
+find("Logo"):set("image_play_mode", 1)   -- play it once, then stop on the end
+```
+
+Switching play mode restarts from frame 1, which is also how you replay a
+finished **Play Once**.
+
+Playback belongs to the *attribute*, not the file: two objects showing the same
+GIF animate independently. In the engine viewport a GIF sits frozen on frame 1
+while you are editing and animates once you press **Play**, matching the Video
+attribute; **Stop** rewinds it.
+
+### Limits
+
+- **64 frames.** The console stores the frames as one Xbox 360 array texture,
+  whose array size is a 6-bit hardware field. A longer GIF fails the cook with a
+  message naming the limit, rather than shipping something wrong. Frame
+  *dimensions* are not the constraint (8192 px), frame *count* is.
+- **Cooked, never decoded on console.** The frames are compressed to DXT offline
+  by the deploy step. A path a script builds at run time
+  (`"anim/" .. n .. ".gif"`) is invisible to that scan and will not be in the
+  pak — the same rule as every other asset.
+- **Loop counts are ignored.** A GIF's own "play N times" extension is not read;
+  `Loop` loops forever.
+- Frame delays under one display frame are limited by the frame rate.
+- On a GUI widget, `slice` (9-slice) is ignored for a GIF.
+
+Rough resident cost on console, DXT1 with mips — there is a per-frame floor of
+about 24 KB from texture tiling, so small frames cost more than raw pixel maths
+suggests:
+
+| frames × size | total |
+|---|---|
+| 64 × 128² | 2.0 MB |
+| 64 × 256² | 4.0 MB |
+| 64 × 512² | 12.0 MB |

@@ -99,6 +99,7 @@ struct ObjectAttribute
     float image_tint[3] = {1.0f, 1.0f, 1.0f};
     float image_alpha   = 1.0f;
     int   image_priority = 1;
+    int   image_play_mode = 2;                   // .gif only: 0=Off, 1=Play Once, 2=Loop
 
     // For "Color" (a flat screen-space block — fades, letterbox bars, a panel
     // behind some Text). Image's field set minus the asset: there is nothing to

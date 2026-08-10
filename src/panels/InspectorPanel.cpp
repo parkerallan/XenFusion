@@ -1,5 +1,6 @@
 #include "panels/InspectorPanel.h"
 
+#include "image/GifAnim.h"
 #include "project/ProjectIO.h"
 #include "state/EngineState.h"
 #include "ui/Icons.h"
@@ -706,7 +707,7 @@ void InspectorPanel::Render(EngineState& state)
         else if (attr.type == "Image")
         {
             char buf[260];
-            const std::string shown = attr.image_path.empty() ? "(drag a PNG or JPG from Assets)" : attr.image_path;
+            const std::string shown = attr.image_path.empty() ? "(drag a PNG, JPG or GIF from Assets)" : attr.image_path;
             std::strncpy(buf, shown.c_str(), sizeof(buf) - 1);
             buf[sizeof(buf) - 1] = '\0';
 
@@ -722,7 +723,7 @@ void InspectorPanel::Render(EngineState& state)
                     std::string dropped((const char*)payload->Data, (std::size_t)payload->DataSize);
                     std::string ext = std::filesystem::path(dropped).extension().string();
                     for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-                    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
+                    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif")
                     {
                         attr.image_path = dropped;
                         int width = 0, height = 0, channels = 0;
@@ -737,7 +738,7 @@ void InspectorPanel::Render(EngineState& state)
                     }
                     else
                     {
-                        state.AddLog("Image attributes support PNG and JPG files", LogLevel::Error);
+                        state.AddLog("Image attributes support PNG, JPG and GIF files", LogLevel::Error);
                     }
                 }
                 ImGui::EndDragDropTarget();
@@ -783,6 +784,13 @@ void InspectorPanel::Render(EngineState& state)
             edited |= ImGui::DragInt("Priority", &attr.image_priority, 0.1f, 0, 100);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
             ImGui::TextDisabled("Higher priority draws behind lower.");
+            if (gifanim::IsGifPath(attr.image_path))
+            {
+                const char* modes = "Off\0Play Once\0Loop\0";
+                if (ImGui::Combo("Play Mode", &attr.image_play_mode, modes)) { edited = commit = true; }
+                ImGui::TextDisabled("Timing comes from the GIF's own frame delays.");
+                ImGui::TextDisabled("Animates in Play; frozen on frame 1 while editing.");
+            }
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }

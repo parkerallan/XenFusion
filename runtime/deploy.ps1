@@ -178,7 +178,7 @@ Write-Output "spakc: scanning $($sceneFiles.Count) scene(s) for assets"
 Get-ChildItem $Project -Filter *.lua -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
     $script = $_
     foreach ($m in [regex]::Matches((Get-Content $script.FullName -Raw),
-                                    '["'']([^"'']+\.(?:png|jpg|jpeg|ttf|otf))["'']')) {
+                                    '["'']([^"'']+\.(?:png|jpg|jpeg|gif|ttf|otf))["'']')) {
         $rel = $m.Groups[1].Value.Replace('\', '/')
         if (-not (Test-Path (Join-Path $Project $rel))) {
             Write-Warning "$($script.Name): asset not found, not cooked - $rel"

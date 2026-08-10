@@ -92,6 +92,29 @@ namespace spak
     const unsigned int kMaxFontGlyphs   = 256;
     const unsigned int kMaxFontKerning  = 65536;
 
+    // Animated GIF payload (all fields big-endian). Same two-entry shape as a
+    // cooked font: this metadata entry is keyed at the GIF's own path and names
+    // its companion pixel entry, which lives at "<path>#frames".
+    //   header: magic, version, framesHash, frameW, frameH, frameCount
+    //   then frameCount * u32 of per-frame delay in milliseconds
+    //
+    // The companion is an ordinary 'TX2D' entry and registers through the
+    // ordinary path — but the D3D resource it carries is a *stacked* (array)
+    // texture, one slice per GIF frame, cooked by Bundler's <ArrayTexture> RDF
+    // element. Bundler tags an array texture RESOURCETYPE_TEXTURE just like a
+    // 2D one, so StreamPak::RegisterXpr needs no special case; only the code
+    // that binds it has to know, and it casts the header to
+    // IDirect3DArrayTexture9. Never split: a stacked texture has no TXLO form.
+    //
+    // The 64-frame ceiling is hardware. The Xenos texture fetch constant stores
+    // an array size in GPUTEXTURESIZE_STACK::Depth, which is 6 bits wide (see
+    // the XDK's d3d9gpu.h), holding ArraySize-1.
+    const unsigned int kTypeGif         = 0x47494641; // 'GIFA'
+    const unsigned int kGifMagic        = 0x47494631; // 'GIF1'
+    const unsigned int kGifVersion      = 1;
+    const unsigned int kGifHeaderBytes  = 24;         // 6 * u32
+    const unsigned int kMaxGifFrames    = 64;
+
     // Static mesh payload (big-endian): a fixed 16-byte header, then one 40-byte record
     // per material subset, then vertexCount*44 bytes of native-endian vertices,
     // then indexCount*4 bytes of native-endian u32 indices. Each subset draws its

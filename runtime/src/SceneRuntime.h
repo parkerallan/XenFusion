@@ -42,6 +42,8 @@ public:
     bool TextureSize(int textureId, int& outWidth, int& outHeight);
     const text::FontMetrics* AcquireFont(const char* relPath);
     int  AcquireFontAtlas(const char* relPath);
+    const gifanim::Info* AcquireGifFrame(const char* relPath, int frame,
+                                         int& outTextureId, float& outGifSlice);
 
     // script::ScriptHost — input is stubbed until the input system lands; log
     // goes to OutputDebugString; find resolves a scene object name to its index.
@@ -384,8 +386,13 @@ private:
         float alpha;
         int   priority;
         int   sequence;
+        // .gif only. `key` is "<object>#<attrIndex>" so playback belongs to the
+        // attribute, not the file: two objects showing the same GIF run their
+        // own clocks. Same idiom as VideoItem.
+        int         play_mode;
+        std::string key;
         ImageItem() : x(0), y(0), w(0), h(0), stretch(false), lock_aspect(false),
-                  alpha(1.0f), priority(1), sequence(0)
+                  alpha(1.0f), priority(1), sequence(0), play_mode(2)
         { tint[0] = tint[1] = tint[2] = 1.0f; }
     };
 
@@ -473,20 +480,27 @@ private:
     // uses zeroes the glow mask underneath so bloom can never halo through a
     // menu.
     void RenderGui();
-    // Texture ids are indices into this table. Fonts and plain textures share
-    // the id space; `isFont` picks which cache lookup resolves it.
+    // Texture ids are indices into this table. Fonts, plain textures and
+    // animated GIFs share the id space; `kind` picks which cache lookup
+    // resolves it. Ids stay valid across streaming because the resolve happens
+    // per frame, not at Acquire time.
     struct GuiAsset
     {
+        enum Kind { KTexture = 0, KFont, KGif };
         std::string path;
-        bool        isFont;
-        GuiAsset() : isFont(false) {}
+        int         kind;
+        GuiAsset() : kind(KTexture) {}
     };
     IDirect3DTexture9* GuiTexture(int textureId);
     std::vector<GuiAsset>      m_gui_assets;
     std::map<std::string, int> m_gui_texture_ids;
     std::map<std::string, int> m_gui_font_atlas_ids;
+    // GIFs get their own id table for the same reason fonts do: one path must
+    // never resolve to an asset of the wrong kind.
+    std::map<std::string, int> m_gui_gif_ids;
     gui::Context               m_gui;
     RtShader                   m_gui_shader;
+    RtShader                   m_gui_array_shader; // gui.image on an animated .gif
     // The item's stream key / play mode with any script override applied
     // (evaluated at draw time, after this frame's scripts ran).
     std::string VideoKeyFor(const VideoItem& item) const;
@@ -555,9 +569,16 @@ private:
     std::map<std::string, VideoOverride> m_video_overrides;
     vid::VideoPlayer        m_video;
     RtShader                m_image_shader;
+    RtShader                m_image_array_shader; // .gif overlays (tex3D over the frame stack)
     RtShader                m_color_shader;
     RtShader                m_text_shader;
     RtShader                m_video_shader;
+
+    // GIF playback clocks, keyed by ImageItem::key. Deliberately NOT cleared
+    // with m_image_items: BuildDrawLists re-runs whenever a script touches an
+    // attribute, and rewinding every GIF on that would make an animation
+    // stutter back to frame 1. Only a scene unload resets these.
+    std::map<std::string, gifanim::Playback> m_gif_play;
 
     // Streaming: the pak is driven through the residency cache.
     StreamCache m_cache;

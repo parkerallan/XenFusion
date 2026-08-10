@@ -15,6 +15,7 @@
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
 #include "input/InputState.h"
+#include "image/GifAnim.h"
 #include "text/TextLayout.h"
 #include "gui/GuiContext.h"
 #include "gui/GuiHost.h"
@@ -97,6 +98,8 @@ public:
     bool TextureSize(int textureId, int& outWidth, int& outHeight);
     const text::FontMetrics* AcquireFont(const char* relPath);
     int  AcquireFontAtlas(const char* relPath);
+    const gifanim::Info* AcquireGifFrame(const char* relPath, int frame,
+                                         int& outTextureId, float& outGifSlice);
     void  VideoSetPlaying(int objectIndex, bool play, bool loop); // Lua video.play/stop
     bool  VideoIsPlaying(int objectIndex);
     void  AudioSetPlaying(int objectIndex, bool play); // Lua audio.*
@@ -483,6 +486,21 @@ private:
         float alpha = 1.0f;
         int   priority = 1;
         int   sequence = 0;
+        // .gif only. `key` is "<object>#<attrIndex>" so playback belongs to the
+        // attribute, not the file: two objects on the same GIF run their own
+        // clocks. Same idiom as VideoItem.
+        int         play_mode = 2;
+        std::string key;
+    };
+
+    // A decoded animated GIF. PC D3D9 has no array textures, so where the
+    // console keeps one stacked texture the renderer keeps a plain texture per
+    // frame and swaps which one is bound — the shared clock in gifanim keeps
+    // both showing the same frame at the same time.
+    struct GifFrames
+    {
+        std::vector<IDirect3DTexture9*> frames;
+        gifanim::Info info;
     };
 
     // A flat block. Image's item minus the texture, so the draw needs no lookup
@@ -555,6 +573,11 @@ private:
 
     void RenderOverlay(float dt);
     VideoTex* EnsureVideoTex(const std::string& key, const vid::Frame& frame);
+
+    // Decode a .gif into one texture per frame, once per absolute path. Returns
+    // null (and caches the failure as an empty entry) if it will not decode, so
+    // a bad path costs one attempt rather than one per frame.
+    GifFrames* EnsureGifFrames(const std::string& path_abs);
 
     // --- Lua-scriptable GUI (the `gui` table; src/gui is shared with the 360) ---
     // The tree lives for the Play session only, like the ScriptVM. Drawn by
@@ -676,6 +699,8 @@ private:
     std::vector<TextItem> m_text_items;
     std::map<std::string, std::string> m_text_overrides;
     std::map<std::string, IDirect3DTexture9*> m_image_textures;
+    std::map<std::string, GifFrames> m_gif_frames;              // key = absolute path
+    std::map<std::string, gifanim::Playback> m_gif_play;        // key = ImageItem::key
     std::map<std::string, PreviewFont> m_text_fonts;
     vid::VideoPlayer       m_video;
     IDirect3DVertexShader9* m_image_vs = nullptr;

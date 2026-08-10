@@ -1,5 +1,7 @@
 #pragma once
 
+#include "image/GifAnim.h"
+
 namespace text { struct FontMetrics; }
 
 namespace gui
@@ -36,5 +38,16 @@ namespace gui
 
         // Texture id of that font's SDF glyph atlas (-1 while unavailable).
         virtual int AcquireFontAtlas(const char* relPath) = 0;
+
+        // Animated GIF support. Returns NULL for anything that is not a GIF (or
+        // is not ready), in which case the caller falls back to AcquireTexture.
+        //
+        // The two targets store GIF frames differently and this is where that
+        // difference is absorbed, so the GUI core never learns which target it
+        // is on: the renderer returns a texture id belonging to `frame` itself
+        // with outGifSlice < 0, while the console returns the id of one stacked
+        // texture and the W coordinate of that frame's slice.
+        virtual const gifanim::Info* AcquireGifFrame(const char* relPath, int frame,
+                                                     int& outTextureId, float& outGifSlice) = 0;
     };
 }

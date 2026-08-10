@@ -82,6 +82,7 @@ struct RtAttribute
     float image_tint[3];
     float image_alpha;
     int   image_priority;
+    int   image_play_mode;                       // .gif only: 0=Off, 1=Play Once, 2=Loop
 
     // For "Color" (a flat screen-space block). No asset of any kind — nothing
     // for the cooker to pack, so it works from the scene JSON alone.
@@ -182,6 +183,7 @@ struct RtAttribute
         image_tint[0] = image_tint[1] = image_tint[2] = 1.0f;
         image_alpha = 1.0f;
         image_priority = 1;
+        image_play_mode = 2;
         color_x = 0.0f; color_y = 0.0f;
         color_w = 256.0f; color_h = 256.0f;
         color_stretch = false;

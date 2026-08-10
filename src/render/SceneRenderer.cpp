@@ -16,6 +16,8 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb/stb_truetype.h"
 
+#include "stb/stb_image.h" // GIF decode (implementation lives in TextureLoad.cpp)
+
 #include "imgui.h"
 #include "ImGuizmo.h"
 
@@ -644,6 +646,11 @@ void SceneRenderer::Shutdown()
     for (auto& image : m_image_textures)
         if (image.second) image.second->Release();
     m_image_textures.clear();
+    for (auto& gif : m_gif_frames)
+        for (IDirect3DTexture9* frame : gif.second.frames)
+            if (frame) frame->Release();
+    m_gif_frames.clear();
+    m_gif_play.clear();
     for (auto& font : m_text_fonts)
         if (font.second.atlas) font.second.atlas->Release();
     m_text_fonts.clear();
@@ -655,8 +662,9 @@ void SceneRenderer::Shutdown()
     if (m_text_vs)    { m_text_vs->Release();    m_text_vs = nullptr; }
     if (m_video_ps)   { m_video_ps->Release();   m_video_ps = nullptr; }
     if (m_video_vs)   { m_video_vs->Release();   m_video_vs = nullptr; }
-    // GUI: the textures themselves are owned by m_image_textures / m_text_fonts
-    // above, so only the id tables and the solid-fill white are ours to drop.
+    // GUI: the textures themselves are owned by m_image_textures / m_gif_frames
+    // / m_text_fonts above, so only the id tables and the solid-fill white are
+    // ours to drop.
     m_gui_textures.clear();
     m_gui_texture_ids.clear();
     m_gui_font_atlas_ids.clear();
@@ -1421,6 +1429,8 @@ void SceneRenderer::RenderUi(EngineState& state)
                     for (int k = 0; k < 3; ++k) image.tint[k] = a.image_tint[k];
                     image.alpha = a.image_alpha;
                     image.priority = a.image_priority;
+                    image.play_mode = a.image_play_mode;
+                    image.key = o.name + "#" + std::to_string((int)(&a - &o.attributes[0]));
                     image.sequence = overlay_sequence++;
                     m_image_items.push_back(image);
                 }
@@ -3121,6 +3131,75 @@ void SceneRenderer::RenderBloom()
 // Create (or resize) the three L8 plane textures for a video stream and upload
 // the frame when its id changed. MANAGED pool: uploads are a plain LockRect row
 // copy and the textures survive device resets.
+SceneRenderer::GifFrames* SceneRenderer::EnsureGifFrames(const std::string& path_abs)
+{
+    auto found = m_gif_frames.find(path_abs);
+    if (found != m_gif_frames.end())
+        return found->second.frames.empty() ? nullptr : &found->second;
+
+    // Insert first, so a file that fails to decode is remembered as an empty
+    // entry and is not re-read every frame.
+    GifFrames& cached = m_gif_frames[path_abs];
+    if (!m_device)
+        return nullptr;
+
+    std::vector<unsigned char> bytes;
+    if (FILE* f = _wfopen(std::filesystem::path(path_abs).wstring().c_str(), L"rb"))
+    {
+        std::fseek(f, 0, SEEK_END);
+        const long size = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (size > 0)
+        {
+            bytes.resize((size_t)size);
+            if (std::fread(bytes.data(), 1, bytes.size(), f) != bytes.size())
+                bytes.clear();
+        }
+        std::fclose(f);
+    }
+    if (bytes.empty())
+        return nullptr;
+
+    // stb composites GIF frame disposal, so each frame comes back as a full
+    // canvas — the same decode the cooker does, so the frames match the
+    // console's slices exactly.
+    int* delays = nullptr;
+    int w = 0, h = 0, frame_count = 0, comp = 0;
+    unsigned char* frames = stbi_load_gif_from_memory(
+        bytes.data(), (int)bytes.size(), &delays, &w, &h, &frame_count, &comp, 4);
+    if (!frames || frame_count <= 0 || w <= 0 || h <= 0)
+    {
+        if (delays) stbi_image_free(delays);
+        if (frames) stbi_image_free(frames);
+        return nullptr;
+    }
+
+    cached.info.frameW     = w;
+    cached.info.frameH     = h;
+    cached.info.frameCount = frame_count;
+    cached.info.delaysMs.resize((size_t)frame_count);
+    const size_t frame_pixels = (size_t)w * (size_t)h;
+    for (int i = 0; i < frame_count; ++i)
+    {
+        cached.info.delaysMs[(size_t)i] =
+            (unsigned int)(delays && delays[i] > 0 ? delays[i] : 0);
+        IDirect3DTexture9* tex = mesh::CreateTextureFromRgba(
+            m_device, frames + frame_pixels * 4 * (size_t)i, w, h);
+        if (!tex)
+        {
+            for (IDirect3DTexture9* t : cached.frames) t->Release();
+            cached.frames.clear();
+            stbi_image_free(delays);
+            stbi_image_free(frames);
+            return nullptr;
+        }
+        cached.frames.push_back(tex);
+    }
+    stbi_image_free(delays);
+    stbi_image_free(frames);
+    return &cached;
+}
+
 SceneRenderer::VideoTex* SceneRenderer::EnsureVideoTex(const std::string& key, const vid::Frame& frame)
 {
     VideoTex* t = nullptr;
@@ -3455,23 +3534,50 @@ void SceneRenderer::RenderOverlay(float dt)
             if (!m_image_vs || !m_image_ps)
                 continue;
             const ImageItem& item = m_image_items[ref.index];
-            auto found = m_image_textures.find(item.path_abs);
-            if (found == m_image_textures.end())
-                found = m_image_textures.emplace(item.path_abs,
-                    mesh::LoadTexture(m_device, item.path_abs, nullptr, nullptr)).first;
-            IDirect3DTexture9* texture = found->second;
-            if (!texture)
-                continue;
-            D3DSURFACE_DESC desc = {};
-            if (FAILED(texture->GetLevelDesc(0, &desc)))
-                continue;
+
+            // A .gif animates: the clock picks a frame and the draw binds that
+            // frame's own texture. Everything downstream — quad, UVs, shader,
+            // blending — is identical to a still image.
+            IDirect3DTexture9* texture = nullptr;
+            float sourceW = 0.0f, sourceH = 0.0f;
+            if (gifanim::IsGifPath(item.path_abs))
+            {
+                GifFrames* gif = EnsureGifFrames(item.path_abs);
+                if (!gif)
+                    continue;
+                gifanim::Playback& play = m_gif_play[item.key];
+                // dt is 0 unless Play is running, which is what freezes a GIF on
+                // frame 1 while the scene is being edited — matching the Video
+                // attribute rather than the Vulkan engine, which animates live.
+                gifanim::Advance(play, gif->info, item.play_mode, dt);
+                const int index = (play.frame >= 0 && play.frame < (int)gif->frames.size())
+                    ? play.frame : 0;
+                texture = gif->frames[(size_t)index];
+                sourceW = (float)gif->info.frameW;
+                sourceH = (float)gif->info.frameH;
+            }
+            else
+            {
+                auto found = m_image_textures.find(item.path_abs);
+                if (found == m_image_textures.end())
+                    found = m_image_textures.emplace(item.path_abs,
+                        mesh::LoadTexture(m_device, item.path_abs, nullptr, nullptr)).first;
+                texture = found->second;
+                if (!texture)
+                    continue;
+                D3DSURFACE_DESC desc = {};
+                if (FAILED(texture->GetLevelDesc(0, &desc)))
+                    continue;
+                sourceW = (float)desc.Width;
+                sourceH = (float)desc.Height;
+            }
 
             float x0 = -1.0f, y0 = 1.0f, x1 = 1.0f, y1 = -1.0f;
             if (!item.stretch)
             {
                 const float width = item.w;
-                const float height = item.lock_aspect && desc.Width > 0
-                    ? width * (float)desc.Height / (float)desc.Width : item.h;
+                const float height = item.lock_aspect && sourceW > 0.0f
+                    ? width * sourceH / sourceW : item.h;
                 x0 = item.x / 1280.0f * 2.0f - 1.0f;
                 x1 = (item.x + width) / 1280.0f * 2.0f - 1.0f;
                 y0 = 1.0f - item.y / 720.0f * 2.0f;
@@ -3651,6 +3757,36 @@ int SceneRenderer::AcquireTexture(const char* relPath)
     m_gui_textures.push_back(found->second);
     m_gui_texture_ids[key] = id;
     return id;
+}
+
+const gifanim::Info* SceneRenderer::AcquireGifFrame(const char* relPath, int frame,
+                                                    int& outTextureId, float& outGifSlice)
+{
+    outTextureId = -1;
+    outGifSlice  = -1.0f; // PC D3D9 has no array textures: always a plain 2D bind
+    if (!relPath || !*relPath || m_project_root.empty() || !gifanim::IsGifPath(relPath))
+        return NULL;
+
+    GifFrames* gif = EnsureGifFrames((m_project_root / relPath).string());
+    if (!gif || gif->frames.empty())
+        return NULL;
+
+    const int index = (frame >= 0 && frame < (int)gif->frames.size()) ? frame : 0;
+    // Each frame gets its own id, cached under "<path>#<frame>", so ids stay
+    // stable for the context's lifetime as HostAssets requires.
+    char suffix[16];
+    std::snprintf(suffix, sizeof(suffix), "#%d", index);
+    const std::string key = std::string(relPath) + suffix;
+    const auto cached = m_gui_texture_ids.find(key);
+    if (cached != m_gui_texture_ids.end())
+        outTextureId = cached->second;
+    else
+    {
+        outTextureId = (int)m_gui_textures.size();
+        m_gui_textures.push_back(gif->frames[(size_t)index]);
+        m_gui_texture_ids[key] = outTextureId;
+    }
+    return &gif->info;
 }
 
 bool SceneRenderer::TextureSize(int textureId, int& outWidth, int& outHeight)
@@ -4127,6 +4263,9 @@ void SceneRenderer::StopPhysics()
     m_obj_alive.clear();
     m_pending_destroy.clear();
     m_pending_scene.clear();
+    // Rewind every GIF so Stop returns the viewport to frame 1, the same still
+    // the scene shows before Play. The decoded frames stay cached.
+    m_gif_play.clear();
     m_phys_on = false;
     applog::Info("Physics: stop");
     // m_phys_debug is rebuilt from the scene each RenderUi (authoring wireframes).

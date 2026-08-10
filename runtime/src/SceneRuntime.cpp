@@ -804,6 +804,10 @@ void SceneRuntime::ApplyPendingScene()
     m_text_items.clear();
     m_video_items.clear();
     m_audio_items.clear();
+    // Scene teardown is the ONLY place GIF clocks rewind. BuildDrawLists also
+    // empties m_image_items, but it re-runs on any script attribute edit, and
+    // rewinding there would jerk every playing GIF back to frame 1.
+    m_gif_play.clear();
     m_text_overrides.clear();
     m_video_overrides.clear();
     m_audio_overrides.clear();
@@ -1040,7 +1044,7 @@ int SceneRuntime::AcquireTexture(const char* relPath)
         return cached->second;
     GuiAsset asset;
     asset.path = key;
-    asset.isFont = false;
+    asset.kind = GuiAsset::KTexture;
     const int id = (int)m_gui_assets.size();
     m_gui_assets.push_back(asset);
     m_gui_texture_ids[key] = id;
@@ -1052,11 +1056,52 @@ IDirect3DTexture9* SceneRuntime::GuiTexture(int textureId)
     if (textureId < 0 || textureId >= (int)m_gui_assets.size())
         return NULL;
     const GuiAsset& asset = m_gui_assets[textureId];
-    if (!asset.isFont)
+    if (asset.kind == GuiAsset::KTexture)
         return m_cache.GetTexture(asset.path);
+    if (asset.kind == GuiAsset::KGif)
+    {
+        // The stacked texture holding every frame. Returned as the 2D type
+        // because the whole GUI id space is IDirect3DTexture9*; RenderGui casts
+        // it back when the batch carries a slice. See SpakFormat.h's 'GIFA'.
+        IDirect3DArrayTexture9* frames = NULL;
+        m_cache.GetGif(asset.path, &frames);
+        return (IDirect3DTexture9*)frames;
+    }
     IDirect3DTexture9* atlas = NULL;
     m_cache.GetFont(asset.path, &atlas);
     return atlas;
+}
+
+const gifanim::Info* SceneRuntime::AcquireGifFrame(const char* relPath, int frame,
+                                                   int& outTextureId, float& outGifSlice)
+{
+    (void)frame; // every frame is a slice of the same resource here
+    outTextureId = -1;
+    outGifSlice  = -1.0f;
+    if (!relPath || !*relPath || !gifanim::IsGifPath(relPath))
+        return NULL;
+
+    IDirect3DArrayTexture9* frames = NULL;
+    const RtGifInfo* gif = m_cache.GetGif(relPath, &frames);
+    if (!gif || !frames)
+        return NULL; // still streaming — the widget skips this frame
+
+    const std::string key = relPath;
+    std::map<std::string, int>::const_iterator cached = m_gui_gif_ids.find(key);
+    if (cached != m_gui_gif_ids.end())
+        outTextureId = cached->second;
+    else
+    {
+        GuiAsset asset;
+        asset.path = key;
+        asset.kind = GuiAsset::KGif;
+        outTextureId = (int)m_gui_assets.size();
+        m_gui_assets.push_back(asset);
+        m_gui_gif_ids[key] = outTextureId;
+    }
+    outGifSlice = gifanim::SliceCoord(
+        (frame >= 0 && frame < gif->info.frameCount) ? frame : 0, gif->info.frameCount);
+    return &gif->info;
 }
 
 bool SceneRuntime::TextureSize(int textureId, int& outWidth, int& outHeight)
@@ -1096,7 +1141,7 @@ int SceneRuntime::AcquireFontAtlas(const char* relPath)
         return cached->second;
     GuiAsset asset;
     asset.path = key;
-    asset.isFont = true;
+    asset.kind = GuiAsset::KFont;
     const int id = (int)m_gui_assets.size();
     m_gui_assets.push_back(asset);
     m_gui_font_atlas_ids[key] = id;
@@ -1325,6 +1370,10 @@ void SceneRuntime::InitBloom(XboxRenderer& renderer)
     m_content.LoadBuiltin("text", m_text_shader);   // Text attribute overlay (optional)
     m_content.LoadBuiltin("gui", m_gui_shader);     // Lua-scriptable GUI (optional)
     m_content.LoadBuiltin("video", m_video_shader); // Video attribute overlay (optional)
+    // Animated .gif Image attributes and gui.image widgets: the tex3D twins of
+    // image.hlsl and gui.hlsl, console-only.
+    m_content.LoadBuiltin("image_array", m_image_array_shader);
+    m_content.LoadBuiltin("gui_array", m_gui_array_shader);
 }
 
 // One capture face: frame constants for the face's point of view, then both
@@ -1944,6 +1993,12 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
                 for (int k = 0; k < 3; ++k) image.tint[k] = at.image_tint[k];
                 image.alpha = at.image_alpha;
                 image.priority = at.image_priority;
+                image.play_mode = at.image_play_mode;
+                {
+                    char keybuf[16];
+                    sprintf_s(keybuf, sizeof(keybuf), "#%u", (unsigned int)a);
+                    image.key = o.name + keybuf;
+                }
                 image.sequence = overlay_sequence++;
                 m_image_items.push_back(image);
             }
@@ -2842,6 +2897,11 @@ void SceneRuntime::RenderGui()
     m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
     m_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     m_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    // Only a tex3D fetch reads the Z axis, so this is inert for every ordinary
+    // widget and is what keeps an animated GIF on exactly one frame.
+    m_device->SetSamplerState(0, D3DSAMP_MINFILTERZ, D3DTEXF_POINT);
+    m_device->SetSamplerState(0, D3DSAMP_MAGFILTERZ, D3DTEXF_POINT);
+    m_device->SetSamplerState(0, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
 
     const float halfTexel[4] = { 1.0f / 1280.0f, 1.0f / 720.0f, 0.0f, 0.0f };
     m_device->SetVertexShader(m_gui_shader.vs);
@@ -2862,12 +2922,20 @@ void SceneRuntime::RenderGui()
         if (!texture && batch.kind != gui::QuadSolid)
             continue;
 
-        // Kind select, matching gui.hlsl: Solid (0,0) Texture (0,1) Glyph (1,0).
+        // A batch carrying a slice is an animated GIF, whose frames live in one
+        // stacked texture; that needs a tex3D fetch, which is a different
+        // shader rather than a constant. Without it, fall back to the still
+        // path so a GIF widget shows something rather than nothing.
+        const bool isGif = batch.gifSlice >= 0.0f && m_gui_array_shader.Valid();
+
+        // gui.hlsl's kind select: Solid (0,0) Texture (0,1) Glyph (1,0).
+        // gui_array.hlsl reads c1.x as the slice instead.
         float mode[4];
         mode[0] = batch.kind == gui::QuadGlyph   ? 1.0f : 0.0f;
         mode[1] = batch.kind == gui::QuadTexture ? 1.0f : 0.0f;
         mode[2] = 0.0f;
         mode[3] = 0.0f;
+        if (isGif) { mode[0] = batch.gifSlice; mode[1] = 0.0f; }
 
         vertices.clear();
         vertices.reserve((size_t)batch.count * 6);
@@ -2892,6 +2960,7 @@ void SceneRuntime::RenderGui()
         if (vertices.empty())
             continue;
 
+        m_device->SetPixelShader(isGif ? m_gui_array_shader.ps : m_gui_shader.ps);
         m_device->SetPixelShaderConstantF(0, batch.rgba, 1);
         m_device->SetPixelShaderConstantF(1, mode, 1);
         m_device->SetTexture(0, texture);
@@ -3192,12 +3261,41 @@ void SceneRuntime::RenderOverlay(float dt)
             if (!m_image_shader.Valid())
                 continue;
             const ImageItem& item = m_image_items[ref.index];
-            IDirect3DTexture9* texture = m_cache.GetTexture(item.path);
-            if (!texture)
-                continue;
-            D3DSURFACE_DESC desc;
-            if (FAILED(texture->GetLevelDesc(0, &desc)))
-                continue;
+
+            // A .gif resolves to a stacked texture (one slice per frame) drawn
+            // by the tex3D twin of the image shader; anything else is the
+            // ordinary still path. sourceW/H drive Lock Aspect and must be the
+            // FRAME size either way.
+            const bool isGif = gifanim::IsGifPath(item.path);
+            IDirect3DTexture9*      texture = NULL;
+            IDirect3DArrayTexture9* frames  = NULL;
+            const RtGifInfo*        gif     = NULL;
+            float sourceW = 0.0f, sourceH = 0.0f;
+            float slice[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            if (isGif)
+            {
+                if (!m_image_array_shader.Valid())
+                    continue;
+                gif = m_cache.GetGif(item.path, &frames);
+                if (!gif || !frames)
+                    continue;
+                gifanim::Playback& play = m_gif_play[item.key];
+                gifanim::Advance(play, gif->info, item.play_mode, dt);
+                slice[0] = gifanim::SliceCoord(play.frame, gif->info.frameCount);
+                sourceW  = (float)gif->info.frameW;
+                sourceH  = (float)gif->info.frameH;
+            }
+            else
+            {
+                texture = m_cache.GetTexture(item.path);
+                if (!texture)
+                    continue;
+                D3DSURFACE_DESC desc;
+                if (FAILED(texture->GetLevelDesc(0, &desc)))
+                    continue;
+                sourceW = (float)desc.Width;
+                sourceH = (float)desc.Height;
+            }
 
             if (!stateSet)
             {
@@ -3222,6 +3320,13 @@ void SceneRuntime::RenderOverlay(float dt)
                     m_device->SetSamplerState(st, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
                     m_device->SetSamplerState(st, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
                     m_device->SetSamplerState(st, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                    // The Z axis is only consulted by a tex3D fetch, so this is
+                    // inert for still images and is what stops an animated GIF
+                    // from cross-fading two frames: POINT lands the fetch on
+                    // exactly one slice.
+                    m_device->SetSamplerState(st, D3DSAMP_MINFILTERZ, D3DTEXF_POINT);
+                    m_device->SetSamplerState(st, D3DSAMP_MAGFILTERZ, D3DTEXF_POINT);
+                    m_device->SetSamplerState(st, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
                 }
                 stateSet = true;
             }
@@ -3230,8 +3335,8 @@ void SceneRuntime::RenderOverlay(float dt)
             if (!item.stretch)
             {
                 const float width = item.w;
-                const float height = item.lock_aspect && desc.Width > 0
-                    ? width * (float)desc.Height / (float)desc.Width : item.h;
+                const float height = item.lock_aspect && sourceW > 0.0f
+                    ? width * sourceH / sourceW : item.h;
                 x0 = item.x / 1280.0f * 2.0f - 1.0f;
                 x1 = (item.x + width) / 1280.0f * 2.0f - 1.0f;
                 y0 = 1.0f - item.y / 720.0f * 2.0f;
@@ -3245,11 +3350,20 @@ void SceneRuntime::RenderOverlay(float dt)
             };
             const float halfTexel[4] = { 1.0f / 1280.0f, 1.0f / 720.0f, 0.0f, 0.0f };
             const float tint[4] = { item.tint[0], item.tint[1], item.tint[2], item.alpha };
-            m_device->SetVertexShader(m_image_shader.vs);
-            m_device->SetPixelShader(m_image_shader.ps);
+            const RtShader& shader = isGif ? m_image_array_shader : m_image_shader;
+            m_device->SetVertexShader(shader.vs);
+            m_device->SetPixelShader(shader.ps);
             m_device->SetVertexShaderConstantF(0, halfTexel, 1);
             m_device->SetPixelShaderConstantF(0, tint, 1);
-            m_device->SetTexture(0, texture);
+            if (isGif)
+            {
+                m_device->SetPixelShaderConstantF(1, slice, 1);
+                m_device->SetTexture(0, frames);
+            }
+            else
+            {
+                m_device->SetTexture(0, texture);
+            }
             m_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(QuadVtx));
             continue;
         }

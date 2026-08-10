@@ -5,6 +5,7 @@
 
 #include "gui/GuiTypes.h"
 #include "gui/GuiDrawList.h"
+#include "image/GifAnim.h"
 
 namespace input { struct InputState; }
 
@@ -60,6 +61,10 @@ namespace gui
         void SetAlign(Handle h, int alignH, int alignV);
         void SetWrap(Handle h, bool wrap);
         void SetFocusable(Handle h, bool focusable);
+        // Animated-GIF texture only: 0 = Off, 1 = Play Once, 2 = Loop. Same
+        // values as the Image attribute's image_play_mode. Ignored by a widget
+        // whose texture is a still image.
+        void SetPlayMode(Handle h, int mode);
 
         // --- queries ------------------------------------------------------
         bool Visible(Handle h) const;
@@ -121,6 +126,12 @@ namespace gui
             std::string texturePath;
             float       slice;      // 9-slice border, in reference pixels
 
+            // Animated-GIF playback, per widget: two widgets on the same GIF
+            // run independent clocks. Inert for a still texture, and wiped with
+            // the slot by Reset() so a recycled index never inherits a frame.
+            int              playMode;
+            gifanim::Playback gifPlay;
+
             std::string text;
             std::string fontPath;
             float       fontSize;
@@ -143,7 +154,7 @@ namespace gui
         int  Depth(int index) const;
 
         void EmitWidget(int index);
-        void EmitBackground(const Widget& w, const float* color);
+        void EmitBackground(Widget& w, const float* color);
         void EmitNineSlice(const Widget& w, const float* color,
                            int textureId, int texW, int texH);
         void EmitText(const Widget& w, const float* color);
@@ -170,6 +181,10 @@ namespace gui
         int  m_focus;            // widget index, -1 = none
         bool m_layoutDirty;
         bool m_paused;
+        // Last Update's dt, spent in Emit to step GIF widgets. Emit is where the
+        // host is reachable and so where a GIF's frame count is known, but Emit
+        // takes no arguments — a menu can be re-emitted without time passing.
+        float m_dt;
 
         // Directional-repeat state: a held direction fires once, waits out an
         // initial delay, then repeats. Owning this here is the point — no menu

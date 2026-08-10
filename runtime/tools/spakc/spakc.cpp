@@ -30,6 +30,7 @@
 #include <math.h>
 
 #include "SpakFormat.h"
+#include "image/GifAnim.h" // shared .gif detection, so routing matches both renderers
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -105,10 +106,12 @@ bool WriteFileBytes(const std::string& path, const unsigned char* data, size_t b
     return put == bytes;
 }
 
-bool WriteAtlasTga(const std::string& path, const std::vector<unsigned char>& alpha,
-                   int width, int height)
+// Write RGBA8 pixels (stb's order) as an uncompressed 32-bit top-left TGA, the
+// intermediate Bundler reads. `rgba` is width*height*4 bytes.
+bool WriteRgbaTga(const std::string& path, const unsigned char* rgba,
+                  int width, int height)
 {
-    if (width <= 0 || height <= 0 || alpha.size() != (size_t)width * height)
+    if (width <= 0 || height <= 0 || rgba == NULL)
         return false;
     std::vector<unsigned char> tga(18 + (size_t)width * height * 4, 0);
     tga[2] = 2; // uncompressed true-color
@@ -120,12 +123,24 @@ bool WriteAtlasTga(const std::string& path, const std::vector<unsigned char>& al
     tga[17] = 0x28; // 8 alpha bits, top-left origin
     for (int i = 0; i < width * height; ++i)
     {
-        tga[18 + i * 4 + 0] = 255;
-        tga[18 + i * 4 + 1] = 255;
-        tga[18 + i * 4 + 2] = 255;
-        tga[18 + i * 4 + 3] = alpha[i];
+        tga[18 + i * 4 + 0] = rgba[i * 4 + 2]; // B
+        tga[18 + i * 4 + 1] = rgba[i * 4 + 1]; // G
+        tga[18 + i * 4 + 2] = rgba[i * 4 + 0]; // R
+        tga[18 + i * 4 + 3] = rgba[i * 4 + 3]; // A
     }
     return WriteFileBytes(path, &tga[0], tga.size());
+}
+
+// An SDF glyph atlas: coverage lives in alpha, RGB is unused and written white.
+bool WriteAtlasTga(const std::string& path, const std::vector<unsigned char>& alpha,
+                   int width, int height)
+{
+    if (width <= 0 || height <= 0 || alpha.size() != (size_t)width * height)
+        return false;
+    std::vector<unsigned char> rgba((size_t)width * height * 4, 255);
+    for (int i = 0; i < width * height; ++i)
+        rgba[i * 4 + 3] = alpha[i];
+    return WriteRgbaTga(path, &rgba[0], width, height);
 }
 
 // Normalise a path (absolute or relative-to-CWD) to a full path.
@@ -201,24 +216,47 @@ bool RunBundler(const std::string& rdf, const std::string& xpr)
     return code == 0;
 }
 
-// Bake an image to an XPR2 blob via Bundler. `format` is a D3DFMT_* name (DXT5
+// Bake images to an XPR2 blob via Bundler. `format` is a D3DFMT_* name (DXT5
 // for diffuse; A8R8G8B8 uncompressed for normal maps, whose smooth gradients DXT
 // facets into visible block artifacts). Returns false on failure.
-bool CookTextureXPR(const std::string& absSource, const std::string& name, bool sRGB,
-                    const char* format, std::vector<unsigned char>& xprOut)
+//
+// One source cooks a plain <Texture>. Several cook an <ArrayTexture>: one Xenos
+// stacked texture with a slice per source, each with its own mip chain. That is
+// how an animated GIF ships — see SpakFormat.h's 'GIFA' block.
+//
+// Callers pass the source strings EXACTLY as they should appear in the RDF.
+// That matters for the array form: Bundler rejects any element whose tag text
+// exceeds 2048 characters (error 861b0002), which 64 absolute paths blow
+// through on their own. It resolves a relative Source against the RDF's own
+// directory, so the array caller writes its temp frames beside g_tmpBase and
+// passes bare filenames — 64 of those is about 1150 characters.
+bool CookTextureXPR(const std::vector<std::string>& sources, const std::string& name,
+                    bool sRGB, const char* format, std::vector<unsigned char>& xprOut)
 {
+    if (sources.empty()) return false;
     const std::string rdfPath = g_tmpBase + ".tmp.rdf";
     const std::string xprPath = g_tmpBase + ".tmp.xpr";
+    const std::string element = sources.size() == 1 ? "Texture" : "ArrayTexture";
     std::string rdf =
         "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<RDF Version=\"XPR2\">\n"
-        "  <Texture Name=\"" + name + "\" Source=\"" + absSource +
-        "\" Format=\"" + format + "\" Levels=\"0\" sRGB=\"" + (sRGB ? "true" : "false") + "\" />\n</RDF>\n";
+        "  <" + element + " Name=\"" + name + "\"";
+    for (size_t i = 0; i < sources.size(); ++i)
+        rdf += " Source=\"" + sources[i] + "\"";
+    rdf += std::string(" Format=\"") + format + "\" Levels=\"0\" sRGB=\"" +
+           (sRGB ? "true" : "false") + "\" />\n</RDF>\n";
     if (!WriteFileBytes(rdfPath, (const unsigned char*)rdf.data(), rdf.size())) return false;
     bool ok = RunBundler(rdfPath, xprPath) && ReadFileBytes(xprPath, xprOut) && xprOut.size() >= 12
               && ReadU32BE(&xprOut[0]) == 0x58505232u;
     DeleteFileA(rdfPath.c_str());
     DeleteFileA(xprPath.c_str());
     return ok;
+}
+
+// Single-source form: every existing caller.
+bool CookTextureXPR(const std::string& absSource, const std::string& name, bool sRGB,
+                    const char* format, std::vector<unsigned char>& xprOut)
+{
+    return CookTextureXPR(std::vector<std::string>(1, absSource), name, sRGB, format, xprOut);
 }
 
 // ---- 360 mip layout -------------------------------------------------------
@@ -330,23 +368,29 @@ bool ComputeMipSplit(int width, int height, D3DFORMAT format, MipSplit& out)
 
 // Classify the diffuse alpha like the editor: no alpha -> Opaque; >~3% fully
 // transparent texels (holes) -> Cutout; otherwise translucent -> Blend.
+unsigned int ClassifyAlphaRgba(const unsigned char* rgba, int pixelCount)
+{
+    if (!rgba || pixelCount <= 0) return spak::kAlphaOpaque;
+    int translucent = 0, transparent = 0;
+    for (int i = 0; i < pixelCount; ++i)
+    {
+        unsigned char a = rgba[i * 4 + 3];
+        if (a < 255) ++translucent;
+        if (a < 24)  ++transparent;
+    }
+    if (translucent == 0)                   return spak::kAlphaOpaque;
+    if (transparent > pixelCount / 32)      return spak::kAlphaCutout;
+    return spak::kAlphaBlend;
+}
+
 unsigned int ClassifyAlpha(const std::string& absPng)
 {
     int w = 0, h = 0, ch = 0;
     unsigned char* px = stbi_load(absPng.c_str(), &w, &h, &ch, 4);
     if (!px) return spak::kAlphaOpaque;
-    const int total = w * h;
-    int translucent = 0, transparent = 0;
-    for (int i = 0; i < total; ++i)
-    {
-        unsigned char a = px[i * 4 + 3];
-        if (a < 255) ++translucent;
-        if (a < 24)  ++transparent;
-    }
+    const unsigned int kind = ClassifyAlphaRgba(px, w * h);
     stbi_image_free(px);
-    if (translucent == 0)              return spak::kAlphaOpaque;
-    if (transparent > total / 32)      return spak::kAlphaCutout;
-    return spak::kAlphaBlend;
+    return kind;
 }
 
 // Does a normal map's alpha carry a height field (bump offset, 0.5 = neutral)?
@@ -412,6 +456,33 @@ D3DFORMAT D3DFormatFromName(const char* name)
     if (strcmp(name, "D3DFMT_A8R8G8B8") == 0) return D3DFMT_A8R8G8B8;
     if (strcmp(name, "D3DFMT_A8")       == 0) return D3DFMT_A8;
     return (D3DFORMAT)0; // unknown -> don't split
+}
+
+// Cook + add one STACKED (array) texture entry: `sources` become slices, in
+// order. Emitted as an ordinary kTypeTex2D entry because Bundler tags an array
+// texture RESOURCETYPE_TEXTURE exactly like a 2D one, so the runtime registers
+// it through the unchanged path; only the draw knows it is stacked.
+//
+// Never split — TXLO/TXHI carves a mip chain out of one 2D surface and has no
+// meaning for a stack. Sources are emitted into the RDF verbatim; see
+// CookTextureXPR for why they must be bare filenames beside g_tmpBase.
+unsigned int AddArrayTexture(std::vector<Entry>& entries, std::set<unsigned int>& seen,
+                             const std::vector<std::string>& sources, const std::string& name,
+                             unsigned int hash, bool sRGB, const char* format)
+{
+    if (sources.empty() || hash == 0) return 0;
+    if (seen.find(hash) != seen.end()) return hash; // already cooked
+    std::vector<unsigned char> xpr;
+    if (!CookTextureXPR(sources, name, sRGB, format, xpr))
+    { fprintf(stderr, "spakc: WARN array texture cook failed: %s\n", name.c_str()); return 0; }
+
+    Entry e;
+    e.hash = hash; e.type = spak::kTypeTex2D; e.payload = xpr;
+    e.sysMemSize = ReadU32BE(&xpr[4]);
+    e.vidMemSize = ReadU32BE(&xpr[8]);
+    entries.push_back(e);
+    seen.insert(hash);
+    return hash;
 }
 
 // Cook + add one texture entry, deduped by hash. `absSource` feeds Bundler;
@@ -708,6 +779,108 @@ bool AddImage(std::vector<Entry>& entries, std::set<unsigned int>& seen,
         return false;
     }
     printf("spakc: image %s (%s)\n", imageRel.c_str(), format);
+    return true;
+}
+
+// Cook an animated GIF into a stacked texture (one slice per frame) plus a
+// small 'GIFA' record holding the frame count and the GIF's own per-frame
+// delays. The console never decodes a GIF; playback there is just a change of
+// which slice the pixel shader fetches.
+//
+// Shaped like AddFont: the metadata entry sits at the asset's natural path and
+// names its companion pixel entry at "<path>#frames".
+bool AddGif(std::vector<Entry>& entries, std::set<unsigned int>& seen,
+            const std::string& rootAbs, const std::string& gifRel)
+{
+    const std::string gifAbs = AbsFrom(rootAbs, gifRel);
+    std::vector<unsigned char> bytes;
+    if (!ReadFileBytes(gifAbs, bytes) || bytes.empty())
+    { fprintf(stderr, "spakc: cannot read gif %s\n", gifAbs.c_str()); return false; }
+
+    // stb composites GIF frame disposal itself, so every frame it returns is a
+    // full canvas — no inter-frame patching on our side.
+    int* delays = NULL;
+    int w = 0, h = 0, frameCount = 0, comp = 0;
+    unsigned char* frames = stbi_load_gif_from_memory(
+        &bytes[0], (int)bytes.size(), &delays, &w, &h, &frameCount, &comp, 4);
+    if (!frames || frameCount <= 0 || w <= 0 || h <= 0)
+    {
+        if (delays) stbi_image_free(delays);
+        if (frames) stbi_image_free(frames);
+        fprintf(stderr, "spakc: cannot decode gif %s\n", gifAbs.c_str());
+        return false;
+    }
+    if (frameCount > (int)spak::kMaxGifFrames)
+    {
+        stbi_image_free(delays);
+        stbi_image_free(frames);
+        fprintf(stderr, "spakc: gif %s has %d frames — the Xbox 360 array-texture "
+                        "limit is %u slices, so it cannot be cooked. Shorten it or "
+                        "drop its frame rate.\n",
+                gifRel.c_str(), frameCount, spak::kMaxGifFrames);
+        return false;
+    }
+
+    // One temp TGA per frame, written NEXT TO the RDF and referenced by bare
+    // filename: Bundler caps an element's tag text at 2048 characters, which 64
+    // absolute paths exceed on their own.
+    const std::string tmpDir = DirOf(g_tmpBase);
+    const size_t framePixels = (size_t)w * (size_t)h;
+    std::vector<std::string> sourceNames;
+    std::vector<std::string> sourcePaths;
+    bool wroteAll = true;
+    for (int f = 0; f < frameCount && wroteAll; ++f)
+    {
+        char name[32];
+        sprintf(name, "spakc_gif%02d.tga", f);
+        const std::string abs = tmpDir.empty() ? std::string(name) : tmpDir + "\\" + name;
+        wroteAll = WriteRgbaTga(abs, frames + framePixels * 4 * (size_t)f, w, h);
+        sourceNames.push_back(name);
+        sourcePaths.push_back(abs);
+    }
+
+    const unsigned int alpha = ClassifyAlphaRgba(frames, (int)(framePixels * (size_t)frameCount));
+    const char* format = alpha == spak::kAlphaOpaque ? "D3DFMT_DXT1" : "D3DFMT_DXT5";
+
+    const std::string framesLogical = gifRel + "#frames";
+    const unsigned int framesHash = spak::NameHash(framesLogical.c_str());
+    const bool cooked = wroteAll &&
+        AddArrayTexture(entries, seen, sourceNames, framesLogical, framesHash,
+                        /*sRGB=*/false, format) != 0;
+    for (size_t i = 0; i < sourcePaths.size(); ++i)
+        DeleteFileA(sourcePaths[i].c_str());
+
+    if (!cooked)
+    {
+        stbi_image_free(delays);
+        stbi_image_free(frames);
+        fprintf(stderr, "spakc: cannot cook gif frames %s\n", gifAbs.c_str());
+        return false;
+    }
+
+    Entry entry;
+    entry.hash = spak::NameHash(gifRel.c_str());
+    entry.type = spak::kTypeGif;
+    PushU32BE(entry.payload, spak::kGifMagic);
+    PushU32BE(entry.payload, spak::kGifVersion);
+    PushU32BE(entry.payload, framesHash);
+    PushU32BE(entry.payload, (unsigned int)w);
+    PushU32BE(entry.payload, (unsigned int)h);
+    PushU32BE(entry.payload, (unsigned int)frameCount);
+    for (int f = 0; f < frameCount; ++f)
+    {
+        // stb hands back centiseconds already converted to ms; 0 means "as fast
+        // as possible", which every decoder clamps — gifanim::FrameDelaySeconds
+        // uses 100 ms, so record it as authored and let the clock decide.
+        const int ms = delays ? delays[f] : 0;
+        PushU32BE(entry.payload, (unsigned int)(ms > 0 ? ms : 0));
+    }
+    entries.push_back(entry);
+
+    stbi_image_free(delays);
+    stbi_image_free(frames);
+    printf("spakc: gif %s — %d frames of %dx%d (%s)\n",
+           gifRel.c_str(), frameCount, w, h, format);
     return true;
 }
 
@@ -1178,8 +1351,13 @@ int main(int argc, char** argv)
         int okMeshes = 0, okImages = 0, okVideos = 0, okAudios = 0, okFonts = 0, okAnimations = 0;
         for (size_t i = 0; i < meshes.size(); ++i)
             if (AddMesh(entries, seenTex, rootAbs, meshes[i])) ++okMeshes;
+        // deploy.ps1 sends every image path through --image, so route by
+        // extension here rather than adding a --gif the caller would have to
+        // classify for.
         for (size_t i = 0; i < images.size(); ++i)
-            if (AddImage(entries, seenTex, rootAbs, images[i])) ++okImages;
+            if (gifanim::IsGifPath(images[i]) ? AddGif(entries, seenTex, rootAbs, images[i])
+                                              : AddImage(entries, seenTex, rootAbs, images[i]))
+                ++okImages;
         for (size_t i = 0; i < videos.size(); ++i)
             if (AddVideo(entries, rootAbs, videos[i])) ++okVideos;
         for (size_t i = 0; i < audios.size(); ++i)

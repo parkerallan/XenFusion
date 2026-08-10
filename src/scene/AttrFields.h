@@ -85,6 +85,7 @@
     X("image_tint",               Vec3,  image_tint)               \
     X("image_alpha",              Float, image_alpha)              \
     X("image_priority",           Int,   image_priority)           \
+    X("image_play_mode",          Int,   image_play_mode)          \
     /* --- Color block --- */                              \
     X("color_x",                  Float, color_x)                  \
     X("color_y",                  Float, color_y)                  \

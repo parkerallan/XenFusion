@@ -169,6 +169,15 @@ parses Bundler's big-endian output — the offsets are a pure function of
 - Computed `baseSize + mipSize` must equal the XPR2's `dwDataSize`, else the
   texture ships unsplit with a warning. SDF font atlases, `Image` attributes and
   `gui.*` textures never split — they load whole, never low-res first.
+- **Animated GIFs** cook to two entries, the same shape as a font: a small
+  `'GIFA'` record at the GIF's own path (frame count + the GIF's per-frame
+  delays) naming a companion at `<path>#frames`. That companion is an ordinary
+  unsplit `TX2D`, but the resource inside it is a **stacked (array) texture**
+  with one slice per frame, cooked by Bundler's `<ArrayTexture>` element. Bundler
+  tags it `RESOURCETYPE_TEXTURE` like any 2D texture, so `RegisterXpr` needs no
+  special case — only the draw does, casting the header to
+  `IDirect3DArrayTexture9` and picking a slice with `tex3D`. Capped at **64
+  frames**: the Xenos fetch constant's array-size field is 6 bits.
 - Tile padding puts a ~16 KB floor under every mip level, so the low chunk is a
   fixed ~32 KB whatever the texture size. `kSplitMaxLowFraction` (½) therefore just
   sets the smallest texture worth splitting: 128² for DXT, 64² uncompressed.

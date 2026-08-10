@@ -8,6 +8,18 @@
 #include "Content.h"    // RtMesh (shared render unit)
 #include "StreamPak.h"
 #include "text/CookedFont.h"
+#include "image/GifAnim.h"
+
+// A cooked animated GIF's metadata: the shared playback clock's view of it plus
+// the hash of the companion entry holding the pixels. See SpakFormat.h's 'GIFA'
+// block — that companion is an ordinary TX2D entry whose D3D resource is a
+// stacked (array) texture with one slice per frame.
+struct RtGifInfo
+{
+    gifanim::Info info;
+    unsigned int  framesHash;
+    RtGifInfo() : framesHash(0) {}
+};
 
 // Phase 3 of the streaming subsystem (STREAMING.md): asynchronous residency.
 //
@@ -58,6 +70,13 @@ public:
     // are borrowed and remain valid until cache eviction/shutdown.
     const text::CookedFont* GetFont(const std::string& relPath,
                                     IDirect3DTexture9** outAtlas);
+
+    // Resolve a cooked animated GIF and the stacked texture holding its frames.
+    // Returns NULL until both the GIFA record and its companion TX2D are
+    // resident — the caller then just skips drawing that frame, exactly as it
+    // already does for a still image that has not landed yet.
+    const RtGifInfo* GetGif(const std::string& relPath,
+                            IDirect3DArrayTexture9** outFrames);
 
     // Request a raw byte range through the shared worker's fixed 16 KiB,
     // sector-aligned page cache. Returns true and copies the resident bytes when
@@ -114,6 +133,15 @@ private:
         unsigned int     lastUse;
         CacheFont() : state(StLoading), entry(NULL), bytes(0), lastUse(0) {}
     };
+    struct CacheGif
+    {
+        RtGifInfo        gif;
+        int              state;
+        const SpakEntry* entry;
+        unsigned int     bytes;
+        unsigned int     lastUse;
+        CacheGif() : state(StLoading), entry(NULL), bytes(0), lastUse(0) {}
+    };
     struct RangeKey
     {
         unsigned int hash, offset, bytes;
@@ -161,6 +189,7 @@ private:
     std::map<unsigned int, CacheMesh> m_meshes;    // key = nameHash(relPath)
     std::map<unsigned int, CacheTex>  m_textures;  // key = texture nameHash
     std::map<unsigned int, CacheFont> m_fonts;     // key = font path hash
+    std::map<unsigned int, CacheGif>  m_gifs;      // key = gif path hash
     std::map<RangeKey, RangePage>     m_ranges;
 
     // Every TXLO payload, read once at Init. A texture's hashes live inside its

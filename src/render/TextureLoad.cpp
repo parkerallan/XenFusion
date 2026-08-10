@@ -113,12 +113,20 @@ namespace mesh
             }
         }
 
+        IDirect3DTexture9* tex = CreateTextureFromRgba(device, pixels, w, h);
+        stbi_image_free(pixels);
+        return tex;
+    }
+
+    IDirect3DTexture9* CreateTextureFromRgba(IDirect3DDevice9* device,
+                                             const unsigned char* pixels, int w, int h)
+    {
+        if (!device || !pixels || w <= 0 || h <= 0)
+            return nullptr;
+
         IDirect3DTexture9* tex = nullptr;
         if (FAILED(device->CreateTexture((UINT)w, (UINT)h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr)))
-        {
-            stbi_image_free(pixels);
             return nullptr;
-        }
 
         D3DLOCKED_RECT rect;
         if (SUCCEEDED(tex->LockRect(0, &rect, nullptr, 0)))
@@ -138,8 +146,6 @@ namespace mesh
             }
             tex->UnlockRect(0);
         }
-
-        stbi_image_free(pixels);
         return tex;
     }
 

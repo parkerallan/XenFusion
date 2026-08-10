@@ -65,6 +65,8 @@ namespace gui
         focusTextColor[0] = focusTextColor[1] = focusTextColor[2] = focusTextColor[3] = 1.0f;
         texturePath.clear();
         slice = 0.0f;
+        playMode = gifanim::PlayLoop;
+        gifPlay  = gifanim::Playback();
 
         text.clear();
         fontPath.clear();
@@ -78,7 +80,7 @@ namespace gui
     }
 
     Context::Context()
-        : m_assets(0), m_focus(-1), m_layoutDirty(true), m_paused(false),
+        : m_assets(0), m_focus(-1), m_layoutDirty(true), m_paused(false), m_dt(0.0f),
           m_navHeld(-1), m_navTimer(0.0f), m_prevConfirm(false), m_prevCancel(false)
     {
         Clear();
@@ -320,6 +322,15 @@ namespace gui
         const int i = Resolve(h);
         if (i < 0) return;
         m_widgets[i].slice = slice < 0.0f ? 0.0f : slice;
+    }
+    void Context::SetPlayMode(Handle h, int mode)
+    {
+        const int i = Resolve(h);
+        if (i < 0) return;
+        if (mode < gifanim::PlayOff || mode > gifanim::PlayLoop) mode = gifanim::PlayLoop;
+        // gifanim::Advance rewinds on its own when it sees the mode change, so
+        // this is only the assignment.
+        m_widgets[i].playMode = mode;
     }
     void Context::SetText(Handle h, const char* value)
     {
@@ -569,6 +580,9 @@ namespace gui
 
     void Context::Update(float dt, const input::InputState& in)
     {
+        // Emit() steps GIF widgets and is the only place the host — and so a
+        // GIF's frame count — is reachable, but it takes no arguments.
+        m_dt = dt;
         Solve();
 
         // A widget can be hidden, disabled or destroyed by the very callback
@@ -627,12 +641,16 @@ namespace gui
         Solve();
         EmitWidget(kRootIndex);
         BuildBatches();
+        // Time is spent, not just read: a second Emit in the same frame (a host
+        // replaying the pass per tile band, say) must redraw the same frame
+        // rather than step the animation again.
+        m_dt = 0.0f;
         return m_draw;
     }
 
     void Context::EmitWidget(int index)
     {
-        const Widget& w = m_widgets[index];
+        Widget& w = m_widgets[index];
         if (!w.alive || !w.visible)
             return;   // hiding a container hides its whole subtree
 
@@ -660,13 +678,49 @@ namespace gui
             EmitWidget(children[i]);
     }
 
-    void Context::EmitBackground(const Widget& w, const float* color)
+    // Takes a mutable widget because an animated GIF's playback clock lives on
+    // the widget and is stepped right here, where the host is reachable.
+    void Context::EmitBackground(Widget& w, const float* color)
     {
         if (w.rect.Width() <= 0.0f || w.rect.Height() <= 0.0f)
             return;
 
+        // An animated GIF steps its own clock and then draws as one plain
+        // textured quad. Which resource that frame lives in is the host's
+        // business — see HostAssets::AcquireGifFrame. 9-slice is skipped: a
+        // sliced animation would need nine sub-rects per frame for no real gain.
+        const bool isGif = !w.texturePath.empty() && gifanim::IsGifPath(w.texturePath);
+        if (isGif)
+        {
+            int   gifTextureId = -1;
+            float gifSlice     = -1.0f;
+            // Advance needs the frame count, which only the host knows, so step
+            // with the info returned for the CURRENT frame and use the result
+            // next call. One frame of latency on a menu animation is invisible,
+            // and it keeps the core free of any decode.
+            const gifanim::Info* info = m_assets->AcquireGifFrame(
+                w.texturePath.c_str(), w.gifPlay.frame, gifTextureId, gifSlice);
+            if (info && gifTextureId >= 0)
+            {
+                gifanim::Advance(w.gifPlay, *info, w.playMode, m_dt);
+                Quad q;
+                q.x0 = w.rect.x0; q.y0 = w.rect.y0;
+                q.x1 = w.rect.x1; q.y1 = w.rect.y1;
+                q.kind = QuadTexture;
+                q.textureId = gifTextureId;
+                q.gifSlice = gifSlice;
+                CopyColor(q.rgba, color);
+                m_draw.quads.push_back(q);
+                return;
+            }
+            // Not resident yet — the console streams. Fall through to the flat
+            // colour below, but NEVER to AcquireTexture: asking the host to
+            // treat a GIF path as a plain texture registers it in the wrong
+            // cache and permanently breaks that GIF for the whole title.
+        }
+
         int textureId = -1;
-        if (!w.texturePath.empty())
+        if (!isGif && !w.texturePath.empty())
             textureId = m_assets->AcquireTexture(w.texturePath.c_str());
 
         if (textureId >= 0)
@@ -810,8 +864,11 @@ namespace gui
             if (!m_draw.batches.empty())
             {
                 Batch& last = m_draw.batches.back();
+                // gifSlice is part of the identity: two widgets on the same GIF
+                // share a texture id on the console but sit on different
+                // frames, and merging them would draw both at one frame.
                 if (last.kind == q.kind && last.textureId == q.textureId &&
-                    SameColor(last.rgba, q.rgba))
+                    last.gifSlice == q.gifSlice && SameColor(last.rgba, q.rgba))
                 {
                     ++last.count;
                     continue;
@@ -822,6 +879,7 @@ namespace gui
             batch.count = 1;
             batch.kind = q.kind;
             batch.textureId = q.textureId;
+            batch.gifSlice = q.gifSlice;
             CopyColor(batch.rgba, q.rgba);
             m_draw.batches.push_back(batch);
         }

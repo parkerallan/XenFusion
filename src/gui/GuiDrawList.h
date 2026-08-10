@@ -26,17 +26,27 @@ namespace gui
         float rgba[4];
         int   kind;      // QuadKind
         int   textureId; // host texture id; -1 when there is nothing to sample
+        // Animated GIF only, and only where the host stores the frames as one
+        // stacked texture (the console): the array slice to fetch, as a
+        // normalized W coordinate. Negative means an ordinary 2D texture —
+        // always the case on PC, where the host binds one texture per frame.
+        // (Unrelated to Widget::slice, which is the 9-slice border width.)
+        float gifSlice;
         Quad()
             : x0(0.0f), y0(0.0f), x1(0.0f), y1(0.0f),
               u0(0.0f), v0(0.0f), u1(1.0f), v1(1.0f),
-              kind(QuadSolid), textureId(-1)
+              kind(QuadSolid), textureId(-1), gifSlice(-1.0f)
         { rgba[0] = rgba[1] = rgba[2] = rgba[3] = 1.0f; }
     };
 
     // A run of consecutive quads a backend may submit in ONE draw call: same
-    // kind, same texture, same color. A whole label collapses into one batch,
-    // which is what keeps a text-heavy menu cheap on the console (where the
-    // GUI pass replays once per tile band).
+    // kind, same texture, same color, same slice. A whole label collapses into
+    // one batch, which is what keeps a text-heavy menu cheap on the console
+    // (where the GUI pass replays once per tile band).
+    //
+    // `gifSlice` is part of the identity, not just cargo: two widgets showing
+    // the same GIF share one texture id but sit on different frames, and
+    // merging them would draw both at whichever frame won.
     struct Batch
     {
         int   first;
@@ -44,7 +54,8 @@ namespace gui
         int   kind;
         int   textureId;
         float rgba[4];
-        Batch() : first(0), count(0), kind(QuadSolid), textureId(-1)
+        float gifSlice;
+        Batch() : first(0), count(0), kind(QuadSolid), textureId(-1), gifSlice(-1.0f)
         { rgba[0] = rgba[1] = rgba[2] = rgba[3] = 1.0f; }
     };
 

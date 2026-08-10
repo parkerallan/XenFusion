@@ -432,6 +432,7 @@ namespace scenedata
                         const JValue* iti = ja.Find("tint");
                         const JValue* ial = ja.Find("alpha");
                         const JValue* ipr = ja.Find("priority");
+                        const JValue* ipm = ja.Find("playMode");
                         if (ipp && ipp->type == JValue::Str)    at.image_path = ipp->str;
                         if (ix  && ix->type  == JValue::Number) at.image_x = (float)ix->num;
                         if (iy  && iy->type  == JValue::Number) at.image_y = (float)iy->num;
@@ -444,6 +445,7 @@ namespace scenedata
                         at.image_tint[2] = NumAt(iti, 2, 1.0f);
                         if (ial && ial->type == JValue::Number) at.image_alpha = (float)ial->num;
                         if (ipr && ipr->type == JValue::Number) at.image_priority = (int)ipr->num;
+                        if (ipm && ipm->type == JValue::Number) at.image_play_mode = (int)ipm->num;
                     }
                     else if (at.type == "Color")
                     {
