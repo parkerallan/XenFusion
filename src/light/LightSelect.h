@@ -86,6 +86,30 @@ namespace lsel
         return distanceFade * distanceFade * coneFade;
     }
 
+    // Walk the beam axis out to its range instead and keep the best sample.
+    inline float SpotBoxAtten(const SpotLight& light, const Aabb& bounds)
+    {
+        float sample[3];
+        ClosestPoint(bounds, light.position, sample);
+        float best = SpotAtten(light, sample);
+        const float range = light.invRange > 1.0e-4f ? 1.0f / light.invRange : 0.0f;
+        const int steps = 8;
+        for (int step = 1; step <= steps; ++step)
+        {
+            const float t = range * (float)step / (float)steps;
+            const float axis[3] = {
+                light.position[0] + light.direction[0] * t,
+                light.position[1] + light.direction[1] * t,
+                light.position[2] + light.direction[2] * t
+            };
+            ClosestPoint(bounds, axis, sample);
+            const float atten = SpotAtten(light, sample);
+            if (atten > best)
+                best = atten;
+        }
+        return best;
+    }
+
     inline void TransformAabb(const float localMin[3], const float localMax[3],
                               const float world[16], Aabb& result)
     {
@@ -160,9 +184,7 @@ namespace lsel
         const SpotLight* selected[2] = { 0, 0 };
         for (size_t index = 0; index < count; ++index)
         {
-            float sample[3];
-            ClosestPoint(bounds, lights[index].position, sample);
-            const float score = Luminance(lights[index].color) * SpotAtten(lights[index], sample);
+            const float score = Luminance(lights[index].color) * SpotBoxAtten(lights[index], bounds);
             if (score <= 0.0f)
                 continue;
             for (int slot = 0; slot < 2; ++slot)
