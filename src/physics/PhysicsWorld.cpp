@@ -159,6 +159,7 @@ namespace phys
 
         // objectIndex -> rigid body (for scripting verbs to find a body by index).
         std::map<int, btRigidBody*> bodyByIndex;
+        std::map<int, char> staticBodyByIndex;
 
         // Last step's contacting body pairs (lowest object index first), for the
         // same enter/exit diffing DrainTriggerEvents does with lastOverlap.
@@ -205,6 +206,7 @@ namespace phys
         s.lastOverlap.clear();
         s.objIndexOf.clear();
         s.bodyByIndex.clear();
+        s.staticBodyByIndex.clear();
         s.lastContacts.clear();
         s.boneColliders.clear();
 
@@ -357,6 +359,8 @@ namespace phys
             s.rigidBodies.push_back(body);
             s.objIndexOf[body] = d.objectIndex;
             s.bodyByIndex[d.objectIndex] = body;
+            if (d.kind == BodyDesc::Static || forceStatic)
+                s.staticBodyByIndex[d.objectIndex] = 1;
             if (d.kind != BodyDesc::Static && !forceStatic)
             {
                 Impl::ReadRec rr; rr.body = body; rr.objectIndex = d.objectIndex;
@@ -390,6 +394,7 @@ namespace phys
                 if (s.readback[i].body == body) { s.readback.erase(s.readback.begin() + i); break; }
             s.objIndexOf.erase(body);
             s.bodyByIndex.erase(bodyIt);
+            s.staticBodyByIndex.erase(objectIndex);
             delete body;
 
             if (motion)
@@ -684,6 +689,30 @@ namespace phys
         // Teleport semantics: drop residual momentum so it appears, not launches.
         body->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
         body->setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
+    }
+
+    void PhysicsWorld::SetHierarchyTransform(int objectIndex, const float pos[3], const float rotDeg[3])
+    {
+        Impl& s = *m_impl;
+        const btTransform xf = MakeTransformPR(pos, rotDeg);
+        if (s.staticBodyByIndex.find(objectIndex) != s.staticBodyByIndex.end())
+        {
+            std::map<int, btRigidBody*>::iterator bodyIt = s.bodyByIndex.find(objectIndex);
+            if (bodyIt != s.bodyByIndex.end() && bodyIt->second)
+            {
+                bodyIt->second->setWorldTransform(xf);
+                if (bodyIt->second->getMotionState())
+                    bodyIt->second->getMotionState()->setWorldTransform(xf);
+                s.world->updateSingleAabb(bodyIt->second);
+            }
+        }
+        for (size_t i = 0; i < s.triggers.size(); ++i)
+        {
+            Impl::TriggerRec& trigger = s.triggers[i];
+            if (trigger.objectIndex != objectIndex || trigger.boneHash != 0) continue;
+            trigger.ghost->setWorldTransform(xf);
+            s.world->updateSingleAabb(trigger.ghost);
+        }
     }
 
     bool PhysicsWorld::GetPosition(int objectIndex, float out[3]) const

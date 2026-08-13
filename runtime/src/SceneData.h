@@ -226,6 +226,7 @@ struct RtAttribute
 struct RtObject
 {
     std::string name;
+    std::string parent;
     float position[3];
     float rotation[3];
     float scale[3];

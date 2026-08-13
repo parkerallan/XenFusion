@@ -11,6 +11,7 @@
 #include "project/ProjectIO.h"
 #include "render/Shader.h"
 #include "render/ShaderCompiler.h"
+#include "scene/Hierarchy.h"
 #include "state/EngineState.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -1261,20 +1262,92 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_sky_rotation = 0.0f;
     m_phys_debug.clear(); // rebuilt from the scene each frame (authoring wireframes)
     int overlay_sequence = 0;
+    std::vector<hier::Resolved> resolved_objects;
+    std::vector<int> object_parents;
     if (SceneFile* scene = state.SelectedScene())
     {
         EnsureLightmaps(*scene);
+        std::vector<SceneObject> frame_objects(scene->objects.size());
+        std::vector<std::string> object_names(scene->objects.size());
+        std::vector<std::string> parent_names(scene->objects.size());
+        std::vector<hier::Node> hierarchy_nodes(scene->objects.size());
+        for (int i = 0; i < (int)scene->objects.size(); ++i)
+        {
+            SceneObject overlaid;
+            frame_objects[i] = ApplyLive(i, scene->objects[i], overlaid) ? overlaid : scene->objects[i];
+            object_names[i] = frame_objects[i].name;
+            parent_names[i] = frame_objects[i].parent;
+        }
+        hier::MapParents(object_names, parent_names, object_parents);
+        for (int i = 0; i < (int)frame_objects.size(); ++i)
+        {
+            const SceneObject& object = frame_objects[i];
+            hier::Node& node = hierarchy_nodes[i];
+            for (int k = 0; k < 3; ++k)
+            {
+                node.pos[k] = object.position[k];
+                node.rot[k] = object.rotation[k];
+                node.scale[k] = object.scale[k];
+            }
+            node.visible = object.visible;
+            node.parent = object_parents[i];
+        }
+        hier::Resolve(hierarchy_nodes, resolved_objects);
+        std::vector<std::array<float, 2>> image_origins(scene->objects.size(), {0.0f, 0.0f});
+        std::vector<bool> image_origin_done(scene->objects.size(), false);
+        for (int pass = 0; pass < (int)frame_objects.size(); ++pass)
+            for (int i = 0; i < (int)frame_objects.size(); ++i)
+            {
+                if (image_origin_done[i] || (object_parents[i] >= 0 && !image_origin_done[object_parents[i]])) continue;
+                if (object_parents[i] >= 0) image_origins[i] = image_origins[object_parents[i]];
+                for (const ObjectAttribute& attribute : frame_objects[i].attributes)
+                    if (attribute.type == "Image")
+                    {
+                        image_origins[i][0] += attribute.image_x;
+                        image_origins[i][1] += attribute.image_y;
+                        break;
+                    }
+                image_origin_done[i] = true;
+            }
+        if (m_phys_on && !m_phys_poses.empty())
+        {
+            std::vector<bool> resolved_visibility(resolved_objects.size());
+            for (size_t i = 0; i < resolved_objects.size(); ++i)
+                resolved_visibility[i] = resolved_objects[i].visible;
+            for (size_t poseIndex = 0; poseIndex < m_phys_poses.size(); ++poseIndex)
+            {
+                const phys::Pose& pose = m_phys_poses[poseIndex];
+                if (pose.objectIndex < 0 || pose.objectIndex >= (int)hierarchy_nodes.size()) continue;
+                hier::Node& node = hierarchy_nodes[pose.objectIndex];
+                float ignoredScale[3];
+                hier::Decompose(pose.matrix, node.pos, node.rot, ignoredScale);
+                for (int axis = 0; axis < 3; ++axis)
+                    node.scale[axis] = resolved_objects[pose.objectIndex].scale[axis];
+                node.parent = -1;
+            }
+            hier::Resolve(hierarchy_nodes, resolved_objects);
+            for (size_t i = 0; i < resolved_objects.size(); ++i)
+                resolved_objects[i].visible = resolved_visibility[i];
+        }
+
         for (int i = 0; i < (int)scene->objects.size(); ++i)
         {
             // Draw the object as a script left it, without touching the project:
             // the authored SceneObject is used directly unless a script wrote to
             // it this Play session, in which case we render an overlaid copy.
-            const SceneObject& authored = scene->objects[i];
-            SceneObject overlaid;
-            const SceneObject& o = ApplyLive(i, authored, overlaid) ? overlaid : authored;
-            if (!o.visible)
+            SceneObject resolved_object = frame_objects[i];
+            for (int k = 0; k < 3; ++k)
+            {
+                resolved_object.position[k] = resolved_objects[i].pos[k];
+                resolved_object.rotation[k] = resolved_objects[i].rot[k];
+                resolved_object.scale[k] = resolved_objects[i].scale[k];
+            }
+            const SceneObject& o = resolved_object;
+            if (!resolved_objects[i].visible)
                 continue;
             const bool selected = (i == state.selected_object);
+            D3DMATRIX resolved_world;
+            std::memcpy(&resolved_world.m[0][0], resolved_objects[i].world, sizeof(resolved_objects[i].world));
 
             std::string model_path, shader_path, animator_path, animator_state;
             float animator_speed = 1.0f;
@@ -1423,6 +1496,11 @@ void SceneRenderer::RenderUi(EngineState& state)
                     ImageItem image;
                     image.path_abs = (state.project_root / a.image_path).string();
                     image.x = a.image_x; image.y = a.image_y;
+                    if (object_parents[i] >= 0)
+                    {
+                        image.x += image_origins[object_parents[i]][0];
+                        image.y += image_origins[object_parents[i]][1];
+                    }
                     image.w = a.image_w; image.h = a.image_h;
                     image.stretch = a.image_stretch;
                     image.lock_aspect = a.image_lock_aspect;
@@ -1541,6 +1619,8 @@ void SceneRenderer::RenderUi(EngineState& state)
                 ShaderItem si;
                 si.shader_path = shader_path;
                 si.model_path  = model_path;
+                si.world = resolved_world;
+                si.object_index = i;
                 si.pos[0] = o.position[0]; si.pos[1] = o.position[1]; si.pos[2] = o.position[2];
                 si.rot[0] = o.rotation[0]; si.rot[1] = o.rotation[1]; si.rot[2] = o.rotation[2];
                 si.scale[0] = o.scale[0]; si.scale[1] = o.scale[1]; si.scale[2] = o.scale[2];
@@ -1552,7 +1632,7 @@ void SceneRenderer::RenderUi(EngineState& state)
             {
                 DrawItem di;
                 di.model_path   = model_path;
-                di.world        = ComposeWorld(o);
+                di.world        = resolved_world;
                 di.selected     = selected;
                 di.object_index = i;
                 di.scale[0] = o.scale[0]; di.scale[1] = o.scale[1]; di.scale[2] = o.scale[2];
@@ -1568,7 +1648,7 @@ void SceneRenderer::RenderUi(EngineState& state)
             {
                 PickItem pick;
                 pick.model_path = model_path;
-                pick.world = ComposeWorld(o);
+                pick.world = resolved_world;
                 pick.object_index = i;
                 m_pick_items.push_back(pick);
             }
@@ -1613,6 +1693,9 @@ void SceneRenderer::RenderUi(EngineState& state)
             StopPhysics();
             state.physics_playing = false;
         }
+        if (m_phys_on)
+            for (int i = 0; i < (int)resolved_objects.size(); ++i)
+                m_phys.SetHierarchyTransform(i, resolved_objects[i].pos, resolved_objects[i].rot);
     }
 
     // While playing, poll the controller, then overlay keyboard/mouse per the
@@ -1651,10 +1734,14 @@ void SceneRenderer::RenderUi(EngineState& state)
     m_has_focus = false;
     if (SceneObject* sel = state.SelectedObject())
     {
-        m_focus_pos[0] = sel->position[0];
-        m_focus_pos[1] = sel->position[1];
-        m_focus_pos[2] = sel->position[2];
-        m_focus_scale  = (std::max)({sel->scale[0], sel->scale[1], sel->scale[2]});
+        const int selected = state.selected_object;
+        const bool resolved = selected >= 0 && selected < (int)resolved_objects.size();
+        m_focus_pos[0] = resolved ? resolved_objects[selected].pos[0] : sel->position[0];
+        m_focus_pos[1] = resolved ? resolved_objects[selected].pos[1] : sel->position[1];
+        m_focus_pos[2] = resolved ? resolved_objects[selected].pos[2] : sel->position[2];
+        m_focus_scale = resolved
+            ? (std::max)({resolved_objects[selected].scale[0], resolved_objects[selected].scale[1], resolved_objects[selected].scale[2]})
+            : (std::max)({sel->scale[0], sel->scale[1], sel->scale[2]});
         m_has_focus = true;
     }
 
@@ -1736,6 +1823,8 @@ void SceneRenderer::RenderUi(EngineState& state)
                     float tpos[3];
                     if (const phys::Pose* tp = find_pose(target))
                     { tpos[0] = tp->matrix[12]; tpos[1] = tp->matrix[13]; tpos[2] = tp->matrix[14]; }
+                    else if (target < (int)resolved_objects.size())
+                        for (int k = 0; k < 3; ++k) tpos[k] = resolved_objects[target].pos[k];
                     else
                         for (int k = 0; k < 3; ++k) tpos[k] = scene->objects[target].position[k];
                     camr::ResolveFollow(cam_pos, cam_rot, tpos,
@@ -1910,13 +1999,24 @@ void SceneRenderer::RenderUi(EngineState& state)
         else if (sel)
         {
             D3DMATRIX model = ComposeWorld(*sel);
+            const int selected = state.selected_object;
+            if (selected >= 0 && selected < (int)resolved_objects.size())
+                std::memcpy(&model.m[0][0], resolved_objects[selected].world, sizeof(resolved_objects[selected].world));
             ImGuizmo::Manipulate(&m_view.m[0][0], &m_proj.m[0][0],
                                  ImGuizmo::TRANSLATE, ImGuizmo::WORLD, &model.m[0][0]);
             if (ImGuizmo::IsUsing())
             {
-                sel->position[0] = model.m[3][0];
-                sel->position[1] = model.m[3][1];
-                sel->position[2] = model.m[3][2];
+                float local[16];
+                std::memcpy(local, &model.m[0][0], sizeof(local));
+                if (selected >= 0 && selected < (int)object_parents.size() && object_parents[selected] >= 0)
+                {
+                    float inverse_parent[16];
+                    hier::AffineInverse(resolved_objects[object_parents[selected]].world, inverse_parent);
+                    hier::Multiply(local, inverse_parent, local);
+                }
+                sel->position[0] = local[12];
+                sel->position[1] = local[13];
+                sel->position[2] = local[14];
                 if (SceneFile* s = state.SelectedScene()) s->dirty = true;
                 m_gizmo_editing = true;
             }
@@ -2206,6 +2306,7 @@ void SceneRenderer::RenderGpu(float dt)
         // on_update has run — removing them mid-loop would edit the lists the
         // update is walking.
         ApplyPendingDestroys();
+        RefreshPlayHierarchy();
         // gui.set_paused(true) freezes the simulation but NOT scripts or
         // rendering, so the menu that raised it stays live. Poses are still
         // read back: the draw items are rebuilt from the scene every frame, so
@@ -2214,19 +2315,7 @@ void SceneRenderer::RenderGpu(float dt)
         if (!m_gui.Paused())
             m_phys.Step(dt);
         m_phys.ReadPoses(m_phys_poses);
-        for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
-        {
-            const phys::Pose& p = m_phys_poses[pi];
-            D3DMATRIX pose;
-            std::memcpy(&pose.m[0][0], p.matrix, sizeof(float) * 16);
-            for (size_t di = 0; di < m_draw_items.size(); ++di)
-            {
-                if (m_draw_items[di].object_index != p.objectIndex)
-                    continue;
-                const float* s = m_draw_items[di].scale;
-                m_draw_items[di].world = Multiply(Scaling(s[0], s[1], s[2]), pose);
-            }
-        }
+        RefreshPlayHierarchy();
 
         // Dispatch trigger enter/stay/exit events to scripts (no automatic engine
         // logging — a script's own on_trigger + log() is the only trigger output).
@@ -3945,13 +4034,7 @@ void SceneRenderer::RenderGui()
 void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& shader, const D3DMATRIX& viewProj)
 {
     const ShaderState& s = shader.state;
-    const float d2r = 3.14159265f / 180.0f;
-
-    const D3DMATRIX rot = Multiply(Multiply(RotationX(item.rot[0] * d2r),
-                                            RotationY(item.rot[1] * d2r)),
-                                   RotationZ(item.rot[2] * d2r));
-    D3DMATRIX w = Multiply(Multiply(Scaling(item.scale[0], item.scale[1], item.scale[2]), rot),
-                           Translation(item.pos[0], item.pos[1], item.pos[2]));
+    const D3DMATRIX w = item.world;
 
     IDirect3DVertexBuffer9* vb = m_quad_vb;
     IDirect3DIndexBuffer9*  ib = m_quad_ib;
@@ -3961,9 +4044,10 @@ void SceneRenderer::DrawShaderItem(const ShaderItem& item, const CustomShader& s
     {
         vb = m_cube_vb; ib = m_cube_ib; verts = 8; prims = 12;
         // Camera in the cube's local space, so the pixel shader can raymarch it.
-        const D3DMATRIX invW =
-            Multiply(Multiply(Translation(-item.pos[0], -item.pos[1], -item.pos[2]), Transpose3(rot)),
-                     Scaling(1.0f / item.scale[0], 1.0f / item.scale[1], 1.0f / item.scale[2]));
+        float inverse_world[16];
+        hier::AffineInverse(&w.m[0][0], inverse_world);
+        D3DMATRIX invW;
+        std::memcpy(&invW.m[0][0], inverse_world, sizeof(inverse_world));
         const Vec3 camObj = TransformPoint({ m_eye[0], m_eye[1], m_eye[2] }, invW);
         const float camObj4[4] = { camObj.x, camObj.y, camObj.z, 0.0f };
         m_device->SetPixelShaderConstantF(4, camObj4, 1); // gCamObj (PS c4)
@@ -4134,6 +4218,30 @@ void SceneRenderer::AppendBodyDescs(const SceneFile& scene, int objectIndex,
     const int i = objectIndex;
     const SceneObject& o = scene.objects[i];
 
+    std::vector<std::string> names(scene.objects.size()), parent_names(scene.objects.size());
+    std::vector<int> parents;
+    std::vector<hier::Node> nodes(scene.objects.size());
+    for (size_t object = 0; object < scene.objects.size(); ++object)
+    {
+        names[object] = scene.objects[object].name;
+        parent_names[object] = scene.objects[object].parent;
+    }
+    hier::MapParents(names, parent_names, parents);
+    for (size_t object = 0; object < scene.objects.size(); ++object)
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            nodes[object].pos[k] = scene.objects[object].position[k];
+            nodes[object].rot[k] = scene.objects[object].rotation[k];
+            nodes[object].scale[k] = scene.objects[object].scale[k];
+        }
+        nodes[object].visible = scene.objects[object].visible;
+        nodes[object].parent = parents[object];
+    }
+    std::vector<hier::Resolved> resolved;
+    hier::Resolve(nodes, resolved);
+    const hier::Resolved& world = resolved[i];
+
     // The object's 3D Model, used by mesh-shape colliders.
     std::string model_path;
     for (const ObjectAttribute& ma : o.attributes)
@@ -4149,7 +4257,7 @@ void SceneRenderer::AppendBodyDescs(const SceneFile& scene, int objectIndex,
 
             phys::BodyDesc d;
             d.objectIndex = i;
-            for (int k = 0; k < 3; ++k) { d.pos[k] = o.position[k]; d.rotEulerDeg[k] = o.rotation[k]; }
+            for (int k = 0; k < 3; ++k) { d.pos[k] = world.pos[k]; d.rotEulerDeg[k] = world.rot[k]; }
             if (rigid)
             {
                 d.isTrigger  = false;
@@ -4188,9 +4296,9 @@ void SceneRenderer::AppendBodyDescs(const SceneFile& scene, int objectIndex,
                     // explicitly instead; the body transform carries no scale).
                     for (std::size_t vi = 0; vi + 2 < pv->size(); vi += 3)
                     {
-                        (*pv)[vi + 0] *= o.scale[0];
-                        (*pv)[vi + 1] *= o.scale[1];
-                        (*pv)[vi + 2] *= o.scale[2];
+                        (*pv)[vi + 0] *= world.scale[0];
+                        (*pv)[vi + 1] *= world.scale[1];
+                        (*pv)[vi + 2] *= world.scale[2];
                     }
                     geomPos.push_back(pv);
                     geomIdx.push_back(iv);
@@ -4308,6 +4416,87 @@ bool SceneRenderer::ApplyLive(int objectIndex, const SceneObject& authored,
             if (out.attributes[a].type == "Camera")
                 out.attributes[a].cam_active = (lo.cam_active != 0);
     return true;
+}
+
+void SceneRenderer::RefreshPlayHierarchy()
+{
+    if (!m_play_scene) return;
+    const std::vector<SceneObject>& authored = m_play_scene->objects;
+    std::vector<SceneObject> objects(authored.size());
+    std::vector<std::string> names(authored.size()), parentNames(authored.size());
+    std::vector<int> parents;
+    std::vector<hier::Node> nodes(authored.size());
+    for (int i = 0; i < (int)authored.size(); ++i)
+    {
+        SceneObject overlaid;
+        objects[i] = ApplyLive(i, authored[i], overlaid) ? overlaid : authored[i];
+        names[i] = objects[i].name;
+        parentNames[i] = objects[i].parent;
+    }
+    hier::MapParents(names, parentNames, parents);
+    for (int i = 0; i < (int)objects.size(); ++i)
+    {
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            nodes[i].pos[axis] = objects[i].position[axis];
+            nodes[i].rot[axis] = objects[i].rotation[axis];
+            nodes[i].scale[axis] = objects[i].scale[axis];
+        }
+        nodes[i].visible = objects[i].visible;
+        nodes[i].parent = parents[i];
+    }
+
+    std::vector<hier::Resolved> resolved;
+    hier::Resolve(nodes, resolved);
+    for (size_t poseIndex = 0; poseIndex < m_phys_poses.size(); ++poseIndex)
+    {
+        const phys::Pose& pose = m_phys_poses[poseIndex];
+        if (pose.objectIndex < 0 || pose.objectIndex >= (int)nodes.size()) continue;
+        hier::Node& node = nodes[pose.objectIndex];
+        float ignoredScale[3];
+        hier::Decompose(pose.matrix, node.pos, node.rot, ignoredScale);
+        for (int axis = 0; axis < 3; ++axis)
+            node.scale[axis] = resolved[pose.objectIndex].scale[axis];
+        node.parent = -1;
+    }
+    hier::Resolve(nodes, resolved);
+
+    for (int i = 0; i < (int)resolved.size(); ++i)
+        m_phys.SetHierarchyTransform(i, resolved[i].pos, resolved[i].rot);
+    for (size_t itemIndex = 0; itemIndex < m_draw_items.size(); ++itemIndex)
+    {
+        DrawItem& item = m_draw_items[itemIndex];
+        if (item.object_index < 0 || item.object_index >= (int)resolved.size()) continue;
+        std::memcpy(&item.world.m[0][0], resolved[item.object_index].world, sizeof(resolved[item.object_index].world));
+        for (int axis = 0; axis < 3; ++axis)
+            item.scale[axis] = resolved[item.object_index].scale[axis];
+    }
+    for (size_t itemIndex = 0; itemIndex < m_pick_items.size(); ++itemIndex)
+    {
+        PickItem& item = m_pick_items[itemIndex];
+        if (item.object_index < 0 || item.object_index >= (int)resolved.size()) continue;
+        std::memcpy(&item.world.m[0][0], resolved[item.object_index].world, sizeof(resolved[item.object_index].world));
+    }
+    for (size_t itemIndex = 0; itemIndex < m_shader_items.size(); ++itemIndex)
+    {
+        ShaderItem& item = m_shader_items[itemIndex];
+        const int objectIndex = item.object_index;
+        if (objectIndex < 0 || objectIndex >= (int)resolved.size()) continue;
+        std::memcpy(&item.world.m[0][0], resolved[objectIndex].world, sizeof(resolved[objectIndex].world));
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            item.pos[axis] = resolved[objectIndex].pos[axis];
+            item.rot[axis] = resolved[objectIndex].rot[axis];
+            item.scale[axis] = resolved[objectIndex].scale[axis];
+        }
+    }
+    for (size_t itemIndex = 0; itemIndex < m_audio_items.size(); ++itemIndex)
+    {
+        AudioItem& item = m_audio_items[itemIndex];
+        if (item.object_index < 0 || item.object_index >= (int)resolved.size()) continue;
+        for (int axis = 0; axis < 3; ++axis)
+            item.pos[axis] = resolved[item.object_index].pos[axis];
+    }
 }
 
 bool SceneRenderer::GetObjectTransform(int objectIndex, float pos[3], float rot[3], float scale[3])
@@ -4435,6 +4624,7 @@ int SceneRenderer::SpawnObject(int sourceObjectIndex, const char* name, const fl
     SceneObject& clone = objects[slot];
     clone = source;
     if (name && *name) clone.name = name;
+    clone.parent.clear();
     for (int k = 0; k < 3; ++k) clone.position[k] = pos[k];
     clone.visible = true; // templates are usually authored hidden
 

@@ -10,6 +10,7 @@
 #include "camera/CameraResolve.h"
 #include "light/LightSelect.h"
 #include "physics/PhysicsWorld.h"
+#include "scene/Hierarchy.h"
 #include "script/ScriptVM.h"
 #include "script/ScriptTypes.h"
 #include "input/InputState.h"
@@ -141,6 +142,7 @@ private:
         std::string model_path;
         int   object_index;
         bool  visible;
+        D3DMATRIX world;
         float pos[3];
         float rot[3];
         float scale[3];
@@ -375,6 +377,7 @@ private:
 
     std::vector<DrawItem>   m_draw_items;
     std::vector<ShaderItem> m_shader_items;
+    std::vector<hier::Resolved> m_resolved_objects;
 
     struct ImageItem
     {

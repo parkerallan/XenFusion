@@ -10,6 +10,10 @@ add_executable(light_basis_test tests/LightBasisTest.cpp)
 target_include_directories(light_basis_test PRIVATE src)
 add_test(NAME light_basis COMMAND light_basis_test)
 
+add_executable(hierarchy_test tests/HierarchyTest.cpp)
+target_include_directories(hierarchy_test PRIVATE src)
+add_test(NAME hierarchy COMMAND hierarchy_test)
+
 add_executable(lightmap_unwrap_test
     tests/LightmapUnwrapTest.cpp
     src/light/LightmapUnwrap.cpp

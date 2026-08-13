@@ -163,9 +163,13 @@ void InspectorPanel::Render(EngineState& state)
     std::strncpy(name_buf, obj->name.c_str(), sizeof(name_buf) - 1);
     name_buf[sizeof(name_buf) - 1] = '\0';
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputText("##name", name_buf, sizeof(name_buf)))
+    if (ImGui::InputText("##name", name_buf, sizeof(name_buf)) && name_buf[0] != '\0' && scene)
     {
-        obj->name = name_buf;
+        const std::string oldName = obj->name;
+        const std::string newName = project::MakeUniqueObjectName(*scene, name_buf, state.selected_object);
+        obj->name = newName;
+        for (SceneObject& object : scene->objects)
+            if (object.parent == oldName) object.parent = newName;
         changed = true;
     }
 

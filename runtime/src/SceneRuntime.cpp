@@ -564,6 +564,7 @@ int SceneRuntime::SpawnObject(int sourceObjectIndex, const char* name, const flo
     RtObject& clone = m_scene.objects[slot];
     clone = source;
     if (name && name[0]) clone.name = name;
+    clone.parent.clear();
     for (int k = 0; k < 3; ++k) clone.position[k] = pos[k];
     clone.visible = true; // templates are usually authored hidden
 
@@ -1251,6 +1252,30 @@ void SceneRuntime::AppendBodyDescs(int objectIndex, std::vector<phys::BodyDesc>&
     {
         const RtObject& o = m_scene.objects[i];
 
+        std::vector<std::string> names(m_scene.objects.size()), parentNames(m_scene.objects.size());
+        std::vector<int> parents;
+        std::vector<hier::Node> nodes(m_scene.objects.size());
+        for (size_t object = 0; object < m_scene.objects.size(); ++object)
+        {
+            names[object] = m_scene.objects[object].name;
+            parentNames[object] = m_scene.objects[object].parent;
+        }
+        hier::MapParents(names, parentNames, parents);
+        for (size_t object = 0; object < m_scene.objects.size(); ++object)
+        {
+            for (int k = 0; k < 3; ++k)
+            {
+                nodes[object].pos[k] = m_scene.objects[object].position[k];
+                nodes[object].rot[k] = m_scene.objects[object].rotation[k];
+                nodes[object].scale[k] = m_scene.objects[object].scale[k];
+            }
+            nodes[object].visible = m_scene.objects[object].visible;
+            nodes[object].parent = parents[object];
+        }
+        std::vector<hier::Resolved> resolved;
+        hier::Resolve(nodes, resolved);
+        const hier::Resolved& world = resolved[i];
+
         // The object's 3D Model, used by mesh-shape colliders.
         std::string model_path;
         for (size_t a = 0; a < o.attributes.size(); ++a)
@@ -1267,7 +1292,7 @@ void SceneRuntime::AppendBodyDescs(int objectIndex, std::vector<phys::BodyDesc>&
 
             phys::BodyDesc d;
             d.objectIndex = (int)i;
-            for (int k = 0; k < 3; ++k) { d.pos[k] = o.position[k]; d.rotEulerDeg[k] = o.rotation[k]; }
+            for (int k = 0; k < 3; ++k) { d.pos[k] = world.pos[k]; d.rotEulerDeg[k] = world.rot[k]; }
             if (rigid)
             {
                 d.isTrigger  = false;
@@ -1304,9 +1329,9 @@ void SceneRuntime::AppendBodyDescs(int objectIndex, std::vector<phys::BodyDesc>&
                     // collider matches the SCALED visual mesh (see the editor path).
                     for (size_t vi = 0; vi + 2 < pv->size(); vi += 3)
                     {
-                        (*pv)[vi + 0] *= o.scale[0];
-                        (*pv)[vi + 1] *= o.scale[1];
-                        (*pv)[vi + 2] *= o.scale[2];
+                        (*pv)[vi + 0] *= world.scale[0];
+                        (*pv)[vi + 1] *= world.scale[1];
+                        (*pv)[vi + 2] *= world.scale[2];
                     }
                     geomPos.push_back(pv);
                     geomIdx.push_back(iv);
@@ -1886,14 +1911,89 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
     m_spot_beam_count = 0;
     int overlay_sequence = 0;
 
+    std::vector<std::string> object_names(m_scene.objects.size());
+    std::vector<std::string> parent_names(m_scene.objects.size());
+    std::vector<int> object_parents;
+    std::vector<hier::Node> hierarchy_nodes(m_scene.objects.size());
     for (size_t i = 0; i < m_scene.objects.size(); ++i)
     {
-        const RtObject& o = m_scene.objects[i];
+        const RtObject& object = m_scene.objects[i];
+        object_names[i] = object.name;
+        parent_names[i] = object.parent;
+    }
+    hier::MapParents(object_names, parent_names, object_parents);
+    for (size_t i = 0; i < m_scene.objects.size(); ++i)
+    {
+        const RtObject& object = m_scene.objects[i];
+        hier::Node& node = hierarchy_nodes[i];
+        for (int k = 0; k < 3; ++k)
+        {
+            node.pos[k] = object.position[k];
+            node.rot[k] = object.rotation[k];
+            node.scale[k] = object.scale[k];
+        }
+        node.visible = object.visible;
+        node.parent = object_parents[i];
+    }
+    hier::Resolve(hierarchy_nodes, m_resolved_objects);
+    std::vector<float> image_origins(m_scene.objects.size() * 2, 0.0f);
+    std::vector<char> image_origin_done(m_scene.objects.size(), 0);
+    for (size_t pass = 0; pass < m_scene.objects.size(); ++pass)
+        for (size_t i = 0; i < m_scene.objects.size(); ++i)
+        {
+            const int parent = object_parents[i];
+            if (image_origin_done[i] || (parent >= 0 && !image_origin_done[parent])) continue;
+            if (parent >= 0)
+            {
+                image_origins[i * 2] = image_origins[(size_t)parent * 2];
+                image_origins[i * 2 + 1] = image_origins[(size_t)parent * 2 + 1];
+            }
+            const RtObject& object = m_scene.objects[i];
+            for (size_t attributeIndex = 0; attributeIndex < object.attributes.size(); ++attributeIndex)
+                if (object.attributes[attributeIndex].type == "Image")
+                {
+                    image_origins[i * 2] += object.attributes[attributeIndex].image_x;
+                    image_origins[i * 2 + 1] += object.attributes[attributeIndex].image_y;
+                    break;
+                }
+            image_origin_done[i] = 1;
+        }
+    if (!m_phys_poses.empty())
+    {
+        std::vector<bool> resolved_visibility(m_resolved_objects.size());
+        for (size_t i = 0; i < m_resolved_objects.size(); ++i)
+            resolved_visibility[i] = m_resolved_objects[i].visible;
+        for (size_t poseIndex = 0; poseIndex < m_phys_poses.size(); ++poseIndex)
+        {
+            const phys::Pose& pose = m_phys_poses[poseIndex];
+            if (pose.objectIndex < 0 || pose.objectIndex >= (int)hierarchy_nodes.size()) continue;
+            hier::Node& node = hierarchy_nodes[pose.objectIndex];
+            float ignoredScale[3];
+            hier::Decompose(pose.matrix, node.pos, node.rot, ignoredScale);
+            for (int axis = 0; axis < 3; ++axis)
+                node.scale[axis] = m_resolved_objects[pose.objectIndex].scale[axis];
+            node.parent = -1;
+        }
+        hier::Resolve(hierarchy_nodes, m_resolved_objects);
+        for (size_t i = 0; i < m_resolved_objects.size(); ++i)
+            m_resolved_objects[i].visible = resolved_visibility[i];
+    }
+
+    for (size_t i = 0; i < m_scene.objects.size(); ++i)
+    {
+        RtObject resolved_object = m_scene.objects[i];
+        for (int k = 0; k < 3; ++k)
+        {
+            resolved_object.position[k] = m_resolved_objects[i].pos[k];
+            resolved_object.rotation[k] = m_resolved_objects[i].rot[k];
+            resolved_object.scale[k] = m_resolved_objects[i].scale[k];
+        }
+        const RtObject& o = resolved_object;
         // A hidden object still gets its DrawItem (marked invisible) so a later
         // obj:show() costs nothing but flipping a flag — no re-stream, and its
         // animation keeps running meanwhile. It contributes no light, camera or
         // overlay though, exactly as when it was skipped outright.
-        const bool visible = o.visible;
+        const bool visible = m_resolved_objects[i].visible;
 
         std::string model_path, shader_path;
         const RtAttribute* animator_attribute = NULL;
@@ -1987,6 +2087,11 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
                 ImageItem image;
                 image.path = at.image_path;
                 image.x = at.image_x; image.y = at.image_y;
+                if (object_parents[i] >= 0)
+                {
+                    image.x += image_origins[(size_t)object_parents[i] * 2];
+                    image.y += image_origins[(size_t)object_parents[i] * 2 + 1];
+                }
                 image.w = at.image_w; image.h = at.image_h;
                 image.stretch = at.image_stretch;
                 image.lock_aspect = at.image_lock_aspect;
@@ -2163,6 +2268,7 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
                 // would disagree about what a script just did.
                 si->shader_path = shader_path;
                 si->model_path  = model_path;
+                memcpy(&si->world.m[0][0], m_resolved_objects[i].world, sizeof(m_resolved_objects[i].world));
                 for (int k = 0; k < 3; ++k)
                 { si->pos[k] = o.position[k]; si->rot[k] = o.rotation[k]; si->scale[k] = o.scale[k]; }
                 si->visible = visible;
@@ -2195,7 +2301,7 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
                 // next draw (the mesh may pop in a frame or two late, as any
                 // streamed asset does). The animator instance is deliberately kept.
                 di->model_path = model_path;
-                di->world = ComposeWorld(o.position, o.rotation, o.scale);
+                memcpy(&di->world.m[0][0], m_resolved_objects[i].world, sizeof(m_resolved_objects[i].world));
                 di->dynamic_lighting = dynamic_lighting;
                 di->cast_shadow = cast_shadow;
                 for (int k = 0; k < 3; ++k) di->scale[k] = o.scale[k];
@@ -2504,22 +2610,15 @@ void SceneRuntime::PrepareFrame(float dt)
     // authored transforms.
     if (!m_phys.Empty())
     {
+        for (size_t object = 0; object < m_resolved_objects.size(); ++object)
+            m_phys.SetHierarchyTransform((int)object, m_resolved_objects[object].pos,
+                                         m_resolved_objects[object].rot);
         if (!m_gui.Paused())
             m_phys.Step(dt);
         m_phys.ReadPoses(m_phys_poses);
-        for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
-        {
-            const phys::Pose& p = m_phys_poses[pi];
-            D3DMATRIX pose;
-            memcpy(&pose.m[0][0], p.matrix, sizeof(float) * 16);
-            for (size_t di = 0; di < m_draw_items.size(); ++di)
-            {
-                if (m_draw_items[di].object_index != p.objectIndex)
-                    continue;
-                const float* s = m_draw_items[di].scale;
-                m_draw_items[di].world = Multiply(Scaling(s[0], s[1], s[2]), pose);
-            }
-        }
+        // Physics-owned objects are world-space roots. Re-resolve now so every
+        // child follows the current solver pose before cameras, audio and draw.
+        RefreshSceneDerived();
 
         // Dispatch trigger enter/stay/exit events to scripts (no automatic logging).
         std::vector<phys::TriggerEvent> events;
@@ -2618,7 +2717,10 @@ void SceneRuntime::Render(float dt)
             v.up[0]  = pm[4];  v.up[1]  = pm[5];  v.up[2]  = pm[6];
         }
         else
-            camr::ResolveFixed(co.position, co.rotation, v);
+        {
+            const hier::Resolved& resolved = m_resolved_objects[m_cam_object];
+            camr::ResolveFixed(resolved.pos, resolved.rot, v);
+        }
 
         if (ca.cam_type == camr::CamFollow && m_cam_target >= 0)
         {
@@ -2626,8 +2728,9 @@ void SceneRuntime::Render(float dt)
             if (tgt_pose)
             { tpos[0] = tgt_pose->matrix[12]; tpos[1] = tgt_pose->matrix[13]; tpos[2] = tgt_pose->matrix[14]; }
             else
-                for (int k = 0; k < 3; ++k) tpos[k] = m_scene.objects[m_cam_target].position[k];
-            camr::ResolveFollow(co.position, co.rotation, tpos,
+                for (int k = 0; k < 3; ++k) tpos[k] = m_resolved_objects[m_cam_target].pos[k];
+            const hier::Resolved& resolved = m_resolved_objects[m_cam_object];
+            camr::ResolveFollow(resolved.pos, resolved.rot, tpos,
                                 ca.cam_follow_offset, ca.cam_follow_orbit,
                                 ca.cam_follow_rot_offset, ca.cam_follow_lock, v);
             camr::SmoothFollow(v, m_follow_smooth, ca.cam_follow_smoothing, frameDt);
@@ -3023,9 +3126,9 @@ void SceneRuntime::UpdateAudio(float dt, const D3DMATRIX& view)
         w.minDist = item.min_dist;
         w.maxDist = item.max_dist;
         w.doppler = item.doppler;
-        if (item.object_index >= 0 && item.object_index < (int)m_scene.objects.size())
+        if (item.object_index >= 0 && item.object_index < (int)m_resolved_objects.size())
             for (int k = 0; k < 3; ++k)
-                w.pos[k] = m_scene.objects[item.object_index].position[k];
+            w.pos[k] = m_resolved_objects[item.object_index].pos[k];
         for (size_t pi = 0; pi < m_phys_poses.size(); ++pi)
             if (m_phys_poses[pi].objectIndex == item.object_index)
             {
@@ -3750,13 +3853,7 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
 void SceneRuntime::DrawShaderItem(const ShaderItem& item, RtShader& shader, const D3DMATRIX& viewProj)
 {
     const RtShaderState& s = shader.state;
-    const float d2r = kPi / 180.0f;
-
-    const D3DMATRIX rot = Multiply(Multiply(RotationX(item.rot[0] * d2r),
-                                            RotationY(item.rot[1] * d2r)),
-                                   RotationZ(item.rot[2] * d2r));
-    D3DMATRIX w = Multiply(Multiply(Scaling(item.scale[0], item.scale[1], item.scale[2]), rot),
-                           Translation(item.pos[0], item.pos[1], item.pos[2]));
+    const D3DMATRIX w = item.world;
 
     IDirect3DVertexBuffer9* vb = m_quad_vb;
     IDirect3DIndexBuffer9*  ib = m_quad_ib;
@@ -3766,9 +3863,10 @@ void SceneRuntime::DrawShaderItem(const ShaderItem& item, RtShader& shader, cons
     {
         vb = m_cube_vb; ib = m_cube_ib; verts = 8; prims = 12;
         // Camera in the cube's local space, so the pixel shader can raymarch it.
-        const D3DMATRIX invW =
-            Multiply(Multiply(Translation(-item.pos[0], -item.pos[1], -item.pos[2]), Transpose3(rot)),
-                     Scaling(1.0f / item.scale[0], 1.0f / item.scale[1], 1.0f / item.scale[2]));
+        float inverse_world[16];
+        hier::AffineInverse(&w.m[0][0], inverse_world);
+        D3DMATRIX invW;
+        memcpy(&invW.m[0][0], inverse_world, sizeof(inverse_world));
         const Vec3 e = { m_eye[0], m_eye[1], m_eye[2] };
         const Vec3 camObj = TransformPoint(e, invW);
         const float camObj4[4] = { camObj.x, camObj.y, camObj.z, 0.0f };

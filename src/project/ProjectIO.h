@@ -32,6 +32,8 @@ namespace project
 
     // Adds a default object to `scene`, saves it, and returns the new index.
     int NewObject(EngineState& state, SceneFile& scene, const std::string& name);
+    std::string MakeUniqueObjectName(const SceneFile& scene, const std::string& name,
+                                     int ignore_index = -1);
 
     // Scene file operations (rename/copy/delete on disk + in state.scenes).
     bool RenameScene(EngineState& state, int index, const std::string& new_name);

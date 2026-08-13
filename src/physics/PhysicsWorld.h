@@ -69,6 +69,9 @@ namespace phys
         // Teleport / drive: set world position + rotation (degrees, X*Y*Z). For a
         // Kinematic body this is how a script moves it each frame.
         void SetTransform(int objectIndex, const float pos[3], const float rotDeg[3]);
+        // Hierarchy refresh: move authored static bodies and trigger ghosts only.
+        // Dynamic/kinematic bodies remain owned by simulation or scripts.
+        void SetHierarchyTransform(int objectIndex, const float pos[3], const float rotDeg[3]);
         // Current world position / rotation (degrees, X*Y*Z) of the body.
         // GetRotation returns the CANONICAL triple for the orientation: Y is
         // recovered through asin, so it always lands in [-90, 90]. An object

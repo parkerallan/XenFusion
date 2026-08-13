@@ -179,9 +179,11 @@ private:
     {
         std::string shader_path;
         std::string model_path; // the object's 3D Model, for "model" geometry
+        D3DMATRIX   world = {};
         float       pos[3]   = {0, 0, 0};
         float       rot[3]   = {0, 0, 0};
         float       scale[3] = {1, 1, 1};
+        int         object_index = -1;
         bool        selected = false;
     };
 
@@ -676,6 +678,7 @@ private:
     // Overlay `authored` with this object's live state, if a script changed it.
     // Returns false when nothing was overridden and `authored` can be used as is.
     bool ApplyLive(int objectIndex, const SceneObject& authored, SceneObject& out) const;
+    void RefreshPlayHierarchy();
 
     std::string AudioKeyFor(const AudioItem& item) const;
     std::map<std::string, AudioOverride> m_audio_overrides;

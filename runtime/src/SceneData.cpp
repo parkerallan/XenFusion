@@ -259,6 +259,9 @@ namespace scenedata
             const JValue* vis = jo.Find("visible");
             o.visible = (vis && vis->type == JValue::Bool) ? vis->b : true;
 
+            const JValue* parent = jo.Find("parent");
+            if (parent && parent->type == JValue::Str) o.parent = parent->str;
+
             // "tags" is absent from scenes authored before tags existed.
             const JValue* tags = jo.Find("tags");
             if (tags && tags->type == JValue::Array)

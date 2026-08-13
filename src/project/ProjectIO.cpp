@@ -23,6 +23,24 @@ namespace
 
 namespace project
 {
+    std::string MakeUniqueObjectName(const SceneFile& scene, const std::string& name, int ignore_index)
+    {
+        std::string candidate = name;
+        int suffix = 2;
+        for (;;)
+        {
+            bool used = false;
+            for (int i = 0; i < (int)scene.objects.size(); ++i)
+                if (i != ignore_index && scene.objects[i].name == candidate)
+                {
+                    used = true;
+                    break;
+                }
+            if (!used) return candidate;
+            candidate = name + " " + std::to_string(suffix++);
+        }
+    }
+
     bool CreateProject(const fs::path& root, EngineState& state)
     {
         std::error_code ec;
@@ -177,7 +195,7 @@ namespace project
     int NewObject(EngineState& state, SceneFile& scene, const std::string& name)
     {
         SceneObject obj;
-        obj.name = name + " " + std::to_string(scene.objects.size() + 1);
+        obj.name = MakeUniqueObjectName(scene, name + " " + std::to_string(scene.objects.size() + 1));
         scene.objects.push_back(obj);
         SaveScene(scene);
         state.AddLog("Created object: " + obj.name);
