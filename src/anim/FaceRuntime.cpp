@@ -29,6 +29,11 @@ namespace face
         memset(m_poseCurrent, 0, sizeof(m_poseCurrent));
         memset(m_poseTarget, 0, sizeof(m_poseTarget));
         m_poseSpeed = 0.0f;
+        memset(m_clipTouched, 0, sizeof(m_clipTouched));
+        m_clip = ClipView();
+        m_clipPlaying = false;
+        m_clipLoop = false;
+        m_clipTime = 0.0f;
         m_blinkEnabled = true;
         m_blinkTimer = NextBlinkInterval();
         m_blinkPhase = -1.0f;
@@ -74,6 +79,24 @@ namespace face
         m_active = true;
     }
 
+
+    void Layer::PlayClip(const ClipView& clip, bool loop)
+    {
+        if (!clip.Valid())
+            return;
+        m_clip = clip;
+        m_clipPlaying = true;
+        m_clipLoop = loop;
+        m_clipTime = 0.0f;
+        m_active = true;
+    }
+
+    void Layer::StopClip()
+    {
+        m_clipPlaying = false;
+        m_clipTime = 0.0f;
+        memset(m_clipTouched, 0, sizeof(m_clipTouched));
+    }
 
     void Layer::SetGaze(float yaw, float pitch)
     {
@@ -137,11 +160,13 @@ namespace face
             closed = 1.0f - (m_blinkPhase - kBlinkCloseSeconds - kBlinkHoldSeconds) / kBlinkOpenSeconds;
         closed = Clamp01(closed);
 
+        // A captured performance blinks on its own; where the clip drives the
+        // lids, leave them alone rather than adding a second blink on top.
         static const char* const kLids[2] = {"eyeBlinkLeft", "eyeBlinkRight"};
         for (int side = 0; side < 2; ++side)
         {
             const int shape = ShapeIndex(kLids[side]);
-            if (shape == kShapeNone)
+            if (shape == kShapeNone || m_clipTouched[shape])
                 continue;
             if (closed > m_weights[shape])
                 m_weights[shape] = closed;
@@ -188,7 +213,7 @@ namespace face
         m_active = true;
     }
 
-    void Layer::Update(float deltaSeconds)
+    void Layer::Update(float deltaSeconds, float audioSeconds)
     {
         if (deltaSeconds < 0.0f)
             deltaSeconds = 0.0f;
@@ -201,6 +226,20 @@ namespace face
         }
 
         ApplyPose();
+        memset(m_clipTouched, 0, sizeof(m_clipTouched));
+
+        if (m_clipPlaying)
+        {
+            if (audioSeconds >= 0.0f)
+                m_clipTime = audioSeconds;
+            else
+                m_clipTime += deltaSeconds;
+
+            SampleClip(m_clip, m_clipTime, m_clipLoop, m_weights, kShapeCount, m_clipTouched);
+            if (!m_clipLoop && m_clipTime >= m_clip.Duration())
+                StopClip();
+        }
+
         ApplyBlink(deltaSeconds);
         ApplyGaze(deltaSeconds);
     }

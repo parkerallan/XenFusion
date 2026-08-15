@@ -44,6 +44,9 @@ namespace spak
                                                 // reads the entry's byte window directly
     const unsigned int kTypeAnim  = 0x414E494D; // 'ANIM' — raw cooked controller +
                                                 // independently addressable clip blocks
+    const unsigned int kTypeFace  = 0x46414345; // 'FACE' — cooked facial performance
+                                                // (anim/FaceClip.h). Raw like 'ANIM'
+                                                // so a ranged read can sample it in place.
     const unsigned int kTypeFont  = 0x464F4E54; // 'FONT' — cooked glyph metrics +
                                                 // reference to a TX2D SDF atlas
     const unsigned int kTypeLmap  = 0x4C4D4150; // 'LMAP' — raw little-endian LMP0 metadata

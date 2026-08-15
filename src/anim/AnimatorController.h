@@ -44,7 +44,9 @@ struct AnimatorFaceConfig
 {
     std::string default_pose;                  // applied when a script sets none
     std::vector<FaceExpressionPose> poses;
-    bool IsEmpty() const { return poses.empty(); }
+    // Project-relative .faceclip recordings this character can play.
+    std::vector<std::string> clips;
+    bool IsEmpty() const { return poses.empty() && clips.empty(); }
 };
 
 struct AnimatorController

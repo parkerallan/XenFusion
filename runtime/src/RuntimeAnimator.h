@@ -50,6 +50,8 @@ public:
     // by name hash.
     const face::Pose* FindPose(unsigned int nameHash) const;
     const face::Pose* DefaultPose() const { return FindPose(m_resource ? m_resource->defaultPose : 0); }
+    // Project-relative path of a recorded clip by stem hash, or NULL.
+    const char* FindFaceClipPath(unsigned int stemHash) const;
     bool HasFace() const;
 
 private:
@@ -84,6 +86,12 @@ private:
              frameMajor(false), mappedSkeletonFingerprint(0),
                  mappedJointCount(0) {}
     };
+    struct FaceClipRef
+    {
+        unsigned int stemHash;
+        std::string  path;
+        FaceClipRef() : stemHash(0) {}
+    };
     struct Resource
     {
         unsigned int defaultState;
@@ -93,6 +101,7 @@ private:
         std::vector<RuntimeBoneModifier> modifiers;
         unsigned int defaultPose;
         std::vector<face::Pose> poses;
+        std::vector<FaceClipRef> faceClips;
         Resource() : defaultState(0), defaultPose(0) {}
     };
     struct FrameCache

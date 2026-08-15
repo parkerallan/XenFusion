@@ -20,6 +20,8 @@ public:
     void Render(EngineState& state);
     void RenderSceneGpuPass(float dt)   { scene_renderer_.RenderGpu(dt); }
     void InvalidateAnimator(const std::string& path) { scene_renderer_.InvalidateAnimator(path); }
+    void SetFacePreviewWeights(int objectIndex, const float* weights)
+    { scene_renderer_.SetFacePreviewWeights(objectIndex, weights); }
 
 private:
     SceneRenderer scene_renderer_;

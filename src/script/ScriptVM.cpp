@@ -914,6 +914,27 @@ namespace
                                           pose, weight, speed) ? 1 : 0);
         return 1;
     }
+    int l_animator_play_face_clip(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (!h) { lua_pushboolean(L, 0); return 1; }
+        lua_pushboolean(L, h->FacePlayClip(h->FindObject(luaL_checkstring(L, 1)),
+                                           luaL_checkstring(L, 2),
+                                           lua_toboolean(L, 3) != 0) ? 1 : 0);
+        return 1;
+    }
+    int l_animator_stop_face_clip(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->FaceStopClip(h->FindObject(luaL_checkstring(L, 1)));
+        return 0;
+    }
+    int l_animator_is_face_clip_playing(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        lua_pushboolean(L, h && h->FaceClipPlaying(h->FindObject(luaL_checkstring(L, 1))) ? 1 : 0);
+        return 1;
+    }
     int l_animator_set_eye_target(lua_State* L)
     {
         script::ScriptHost* h = getHost(L);
@@ -1584,6 +1605,9 @@ namespace script
         lua_pushcfunction(L, l_animator_set_trigger); lua_setfield(L, -2, "SetTrigger");
         lua_pushcfunction(L, l_animator_set_state);   lua_setfield(L, -2, "SetState");
         lua_pushcfunction(L, l_animator_set_face_pose);       lua_setfield(L, -2, "SetFacePose");
+        lua_pushcfunction(L, l_animator_play_face_clip);      lua_setfield(L, -2, "PlayFaceClip");
+        lua_pushcfunction(L, l_animator_stop_face_clip);      lua_setfield(L, -2, "StopFaceClip");
+        lua_pushcfunction(L, l_animator_is_face_clip_playing);lua_setfield(L, -2, "IsFaceClipPlaying");
         lua_pushcfunction(L, l_animator_set_eye_target);      lua_setfield(L, -2, "SetEyeTarget");
         // LookAt is the same call under the name the Vulkan engine's API uses.
         lua_pushcfunction(L, l_animator_set_eye_target);      lua_setfield(L, -2, "LookAt");

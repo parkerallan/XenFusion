@@ -196,6 +196,9 @@ namespace animator
         if (face != root.end() && face->is_object())
         {
             loaded.face.default_pose = face->value("default_pose", std::string());
+            for (const json& value : face->value("clips", json::array()))
+                if (value.is_string())
+                    loaded.face.clips.push_back(value.get<std::string>());
             for (const json& value : face->value("poses", json::array()))
             {
                 if (!value.is_object()) continue;
@@ -272,6 +275,7 @@ namespace animator
                     weights[target] = weight;
                 face["poses"].push_back({{"name", pose.name}, {"weights", std::move(weights)}});
             }
+            face["clips"] = controller.face.clips;
             root["face"] = std::move(face);
         }
 

@@ -30,6 +30,7 @@
 #include <math.h>
 
 #include "SpakFormat.h"
+#include "anim/FaceClip.h" // shared magic, so the cook cannot drift
 #include "image/GifAnim.h" // shared .gif detection, so routing matches both renderers
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -1151,6 +1152,26 @@ bool AddAnimation(std::vector<Entry>& entries, const std::string& source,
     return true;
 }
 
+// Add a cooked face clip (facec output). Raw like an animation: the runtime
+// reads it with a ranged read and samples the frames where they lie.
+bool AddFaceClip(std::vector<Entry>& entries, const std::string& source,
+                 const std::string& logicalName)
+{
+    Entry e;
+    if (!ReadFileBytes(source, e.payload) || e.payload.size() < 8)
+    { fprintf(stderr, "spakc: cannot read face clip %s\n", source.c_str()); return false; }
+    if (ReadU32BE(&e.payload[0]) != face::kClipMagic)
+    { fprintf(stderr, "spakc: bad face clip magic %s\n", source.c_str()); return false; }
+    e.hash = spak::NameHash(logicalName.c_str());
+    e.type = spak::kTypeFace;
+    e.noCompress = true;
+    e.sysMemSize = (unsigned int)e.payload.size();
+    entries.push_back(e);
+    printf("spakc: face clip %s <- %s — %u bytes (raw)\n", logicalName.c_str(),
+           source.c_str(), (unsigned int)e.payload.size());
+    return true;
+}
+
 bool WriteSpak(const std::string& outPath, std::vector<Entry>& entries, bool compress)
 {
     if (entries.empty()) { fprintf(stderr, "spakc: nothing to write\n"); return false; }
@@ -1366,6 +1387,7 @@ int main(int argc, char** argv)
         std::vector<std::string> lmuvs;
         struct AnimationArg { std::string source, logical; };
         std::vector<AnimationArg> animations;
+        std::vector<AnimationArg> faceClips;
         for (int i = 4; i < argc; ++i)
         {
             const std::string arg = argv[i];
@@ -1378,6 +1400,16 @@ int main(int argc, char** argv)
                 animation.source = argv[++i];
                 animation.logical = argv[++i];
                 animations.push_back(animation);
+                continue;
+            }
+            if (arg == "--face")
+            {
+                if (i + 2 >= argc)
+                { fprintf(stderr, "spakc: --face requires <source> <logical-name>\n"); return 2; }
+                AnimationArg clip;
+                clip.source = argv[++i];
+                clip.logical = argv[++i];
+                faceClips.push_back(clip);
                 continue;
             }
             if (arg == "--image")
@@ -1409,7 +1441,7 @@ int main(int argc, char** argv)
             else if (ext == ".mp2") audios.push_back(arg);
             else                    meshes.push_back(arg);
         }
-        if (meshes.empty() && images.empty() && videos.empty() && audios.empty() && fonts.empty() && animations.empty() && lmaps.empty() && lmuvs.empty())
+        if (meshes.empty() && images.empty() && videos.empty() && audios.empty() && fonts.empty() && animations.empty() && faceClips.empty() && lmaps.empty() && lmuvs.empty())
         { fprintf(stderr, "spakc: no assets given\n"); return 2; }
         if (!ResolveBundler()) return 1;
         g_tmpBase = outSpak;
@@ -1417,7 +1449,7 @@ int main(int argc, char** argv)
         const std::string rootAbs = AbsPath(root);
         std::vector<Entry> entries;
         std::set<unsigned int> seenTex;
-        int okMeshes = 0, okImages = 0, okVideos = 0, okAudios = 0, okFonts = 0, okAnimations = 0;
+        int okMeshes = 0, okImages = 0, okVideos = 0, okAudios = 0, okFonts = 0, okAnimations = 0, okFaceClips = 0;
         for (size_t i = 0; i < meshes.size(); ++i)
             if (AddMesh(entries, seenTex, rootAbs, meshes[i])) ++okMeshes;
         // deploy.ps1 sends every image path through --image, so route by
@@ -1435,12 +1467,14 @@ int main(int argc, char** argv)
             if (AddFont(entries, seenTex, rootAbs, fonts[i])) ++okFonts;
         for (size_t i = 0; i < animations.size(); ++i)
             if (AddAnimation(entries, animations[i].source, animations[i].logical)) ++okAnimations;
+        for (size_t i = 0; i < faceClips.size(); ++i)
+            if (AddFaceClip(entries, faceClips[i].source, faceClips[i].logical)) ++okFaceClips;
         for (size_t i = 0; i < lmaps.size(); ++i)
             AddLightmapSidecar(entries, rootAbs, lmaps[i], spak::kTypeLmap);
         for (size_t i = 0; i < lmuvs.size(); ++i)
             AddLightmapSidecar(entries, rootAbs, lmuvs[i], spak::kTypeLmuv);
         if (okMeshes == 0 && okImages == 0 && okVideos == 0 && okAudios == 0 && okFonts == 0 &&
-            okAnimations == 0)
+            okAnimations == 0 && okFaceClips == 0)
         { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;
     }

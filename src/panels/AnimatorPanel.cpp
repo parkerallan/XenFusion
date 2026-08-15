@@ -87,6 +87,14 @@ namespace
         return true;
     }
 
+    // Enumerated once; adapters do not come and go inside a session often
+    // enough to pay for this every frame.
+    const std::vector<std::string>& LocalAddressList()
+    {
+        static std::vector<std::string> addresses = livelink::LocalAddresses();
+        return addresses;
+    }
+
     std::string UniqueName(const std::string& requested,
                            const std::unordered_set<std::string>& used)
     {
@@ -486,10 +494,13 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
         (std::max)(viewport_min.y + 1.0f, viewport_max.y - toolbar_height));
 
     // Resolve the active clip (source model + name) from the toolbar selection.
-    if (preview_clip_index_ >= (int)controller_.clips.size())
+    // The toolbar lists body clips first, then recorded face clips; selecting a
+    // face clip leaves the body clip unset, so the skeleton holds its pose.
+    const int body_clip_count = (int)controller_.clips.size();
+    if (preview_clip_index_ >= body_clip_count + (int)controller_.face.clips.size())
         preview_clip_index_ = 0;
     std::string clip_source, clip_name;
-    if (preview_clip_index_ >= 0 && preview_clip_index_ < (int)controller_.clips.size())
+    if (preview_clip_index_ >= 0 && preview_clip_index_ < body_clip_count)
     {
         clip_source = controller_.clips[preview_clip_index_].source_model_path;
         clip_name   = controller_.clips[preview_clip_index_].clip_name;
@@ -528,15 +539,38 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
     if (ImGui::Button(ICON_FA_ROTATE)) { preview_time_ = 0.0f; preview_.SetTimeNormalized(0.0f); }
     ImGui::SameLine();
 
+    // Built in full before any c_str() is taken: the labels must not move.
+    std::vector<std::string> face_labels;
+    for (const std::string& clip : controller_.face.clips)
+        face_labels.push_back(std::filesystem::path(clip).stem().string() + "  (face)");
+
     std::vector<const char*> clip_names;
     for (const AnimatorClipReference& clip : controller_.clips)
         clip_names.push_back(clip.clip_name.empty() ? clip.id.c_str() : clip.clip_name.c_str());
+    for (const std::string& label : face_labels)
+        clip_names.push_back(label.c_str());
+
     if (preview_clip_index_ >= (int)clip_names.size()) preview_clip_index_ = 0;
     ImGui::SetNextItemWidth(160.0f);
     if (!clip_names.empty())
-        ImGui::Combo("##AnimatorPreviewClip", &preview_clip_index_, clip_names.data(), (int)clip_names.size());
+    {
+        if (ImGui::Combo("##AnimatorPreviewClip", &preview_clip_index_,
+                         clip_names.data(), (int)clip_names.size()))
+        {
+            if (preview_clip_index_ >= body_clip_count)
+                PlayFaceClipPreview(state,
+                    controller_.face.clips[preview_clip_index_ - body_clip_count]);
+            else
+                StopFaceClipPreview();
+        }
+    }
     else
         ImGui::TextDisabled("(no clips)");
+    if (face_clip_playing_)
+    {
+        ImGui::SameLine();
+        ImGui::Text("%.2f / %.2fs", face_clip_time_, face_clip_view_.Duration());
+    }
 
     ImGui::SameLine();
     ImGui::Checkbox("Skeleton", &preview_skeleton_);
@@ -558,8 +592,216 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
 
 // --- Face tab: expression poses, previewed live on the previewed character.
 
+const float* AnimatorPanel::LiveWeights()
+{
+    return (live_link_preview_ && have_live_weights_) ? live_weights_ : nullptr;
+}
+
+void AnimatorPanel::TickTracking(EngineState& state)
+{
+    const double now = ImGui::GetTime();
+    if (live_link_.IsOpen())
+    {
+        live_link_.Poll(now);
+        // Only puppet the face while packets are actually arriving. The last
+        // received frame otherwise sticks forever and silently outranks a
+        // playing clip, which reads as the clip not animating at all.
+        have_live_weights_ = live_link_.Weights(live_weights_, face::kShapeCount) &&
+                             live_link_.Receiving(now);
+
+        if (calibrating_ && now >= calibrate_until_)
+        {
+            calibrating_ = false;
+            const unsigned int samples = live_link_.Calibration().SampleCount();
+            if (live_link_.Calibration().End())
+                state.AddLog("Neutral calibrated on " + std::to_string(samples) + " frames");
+            else
+                state.AddLog("Calibration got no frames - is anything streaming?",
+                             LogLevel::Warning);
+        }
+    }
+    else
+    {
+        have_live_weights_ = false;
+    }
+
+    // Sampling lives here too, so a take survives switching tabs mid-record.
+    if (recorder_.Recording() && have_live_weights_)
+        recorder_.Sample(now, live_weights_, face::kShapeCount);
+
+    TickFaceClipPreview(ImGui::GetIO().DeltaTime);
+}
+
+void AnimatorPanel::RenderLiveLink(EngineState& state)
+{
+    ImGui::SeparatorText("Live Link Face");
+
+    const double now = ImGui::GetTime();
+    const bool receiving = live_link_.IsOpen() && live_link_.Receiving(now);
+    if (!live_link_.IsOpen())
+    {
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputInt("Port", &live_link_port_, 0);
+        ImGui::SameLine();
+        if (ImGui::Button("Connect"))
+        {
+            if (!live_link_.Open((unsigned short)live_link_port_))
+                state.AddLog("Live Link: " + live_link_.Error(), LogLevel::Error);
+        }
+        if (live_link_.Error().empty())
+            ImGui::TextDisabled("Not listening");
+        else
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s",
+                               live_link_.Error().c_str());
+    }
+    else
+    {
+        if (ImGui::Button("Disconnect")) { live_link_.Close(); have_live_weights_ = false; }
+        ImGui::SameLine();
+        if (receiving)
+            ImGui::Text("%s  %.0f/s  from %s", live_link_.Subject().c_str(),
+                        live_link_.PacketsPerSecond(), live_link_.LastSender().c_str());
+        else if (live_link_.RejectedCount() > 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                "%u packets from %s rejected (%u bytes, not Live Link format)",
+                live_link_.RejectedCount(), live_link_.LastSender().c_str(),
+                live_link_.LastRejectSize());
+        else if (live_link_.DatagramCount() > 0)
+            ImGui::TextDisabled("Stalled - last packet from %s",
+                                live_link_.LastSender().c_str());
+        else
+            ImGui::TextDisabled("Listening on %d, nothing arriving",
+                                live_link_port_);
+
+        // Nothing at all means the phone is aimed somewhere else, so say where
+        // it should be aimed instead of leaving it to be guessed.
+        if (live_link_.DatagramCount() == 0)
+        {
+            const std::vector<std::string>& addresses = LocalAddressList();
+            if (addresses.empty())
+                ImGui::TextDisabled("This PC has no network adapter with a gateway");
+            else
+                for (const std::string& address : addresses)
+                    ImGui::TextDisabled("Point the phone at  %s : %d",
+                                        address.c_str(), live_link_port_);
+        }
+    }
+
+    if (!receiving) ImGui::BeginDisabled();
+    if (calibrating_)
+    {
+        ImGui::Text("Hold still... %.1fs", calibrate_until_ - now);
+    }
+    else if (ImGui::Button("Calibrate Neutral"))
+    {
+        live_link_.Calibration().Begin();
+        calibrating_ = true;
+        calibrate_until_ = now + 1.5;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled(live_link_.Calibration().Valid() ? "(calibrated)" : "(not calibrated)");
+
+    ImGui::Checkbox("Preview", &live_link_preview_);
+    ImGui::SameLine();
+    ImGui::Checkbox("On selected object", &live_link_on_character_);
+    if (!receiving) ImGui::EndDisabled();
+}
+
+bool AnimatorPanel::PlayFaceClipPreview(EngineState& state, const std::string& relative_path)
+{
+    StopFaceClipPreview();
+
+    FaceClipAsset asset;
+    std::string error;
+    if (!faceclip::Load(state.project_root / relative_path, asset, error) ||
+        !faceclip::CookBE(asset, face_clip_bytes_, error))
+    {
+        state.AddLog("Face clip '" + relative_path + "': " + error, LogLevel::Error);
+        face_clip_bytes_.clear();
+        return false;
+    }
+    if (!face::ParseClip(face_clip_bytes_.data(), (unsigned)face_clip_bytes_.size(),
+                         face_clip_view_))
+    {
+        state.AddLog("Face clip '" + relative_path + "' did not parse", LogLevel::Error);
+        face_clip_bytes_.clear();
+        return false;
+    }
+
+    face_clip_path_ = relative_path;
+    face_clip_audio_abs_.clear();
+    if (face_clip_view_.audioPathBytes > 0)
+        face_clip_audio_abs_ = (state.project_root /
+            std::string(face_clip_view_.audioPath,
+                        face_clip_view_.audioPathBytes)).string();
+    face_clip_playing_ = true;
+    face_clip_time_ = 0.0f;
+    return true;
+}
+
+void AnimatorPanel::StopFaceClipPreview()
+{
+    face_clip_playing_ = false;
+    face_clip_time_ = 0.0f;
+    face_clip_path_.clear();
+    face_clip_audio_abs_.clear();
+    face_clip_bytes_.clear();
+    // A want list of nothing is a stop, so this releases the voice.
+    face_clip_audio_.Update(nullptr, 0, 0.0f, nullptr);
+}
+
+void AnimatorPanel::TickFaceClipPreview(float dt)
+{
+    if (!face_clip_playing_)
+    {
+        face_clip_audio_.Update(nullptr, 0, dt, nullptr);
+        return;
+    }
+
+    // The clip carries its own audio path; without one the clock is just dt.
+    const std::string key = "facepreview";
+    float audio_seconds = -1.0f;
+    if (!face_clip_audio_abs_.empty())
+    {
+        aud::Want want;
+        want.key  = key;
+        want.path = face_clip_audio_abs_;
+        face_clip_audio_.Update(&want, 1, dt, nullptr);
+        audio_seconds = face_clip_audio_.PlaybackSeconds(key);
+    }
+    else
+    {
+        face_clip_audio_.Update(nullptr, 0, dt, nullptr);
+    }
+
+    if (audio_seconds >= 0.0f)
+        face_clip_time_ = audio_seconds;
+    else
+        face_clip_time_ += dt;
+
+    unsigned char touched[face::kShapeCount] = {};
+    memset(face_clip_weights_, 0, sizeof(face_clip_weights_));
+    face::SampleClip(face_clip_view_, face_clip_time_, false,
+                     face_clip_weights_, face::kShapeCount, touched);
+
+    if (face_clip_time_ >= face_clip_view_.Duration())
+        StopFaceClipPreview();
+}
+
 void AnimatorPanel::UpdateFacePreview()
 {
+    // Tracking, when it is running, outranks everything; a playing clip then
+    // outranks a pose being scrubbed.
+    if (const float* live = LiveWeights())
+    {
+        preview_.SetFaceWeights(live);
+        return;
+    }
+    if (face_clip_playing_)
+    {
+        preview_.SetFaceWeights(face_clip_weights_);
+        return;
+    }
     if (face_pose_preview_ < 0 ||
         face_pose_preview_ >= (int)controller_.face.poses.size())
     {
@@ -675,9 +917,137 @@ void AnimatorPanel::RenderFacePoses()
         ImGui::TextDisabled("None");
 }
 
+void AnimatorPanel::RenderRecord(EngineState& state)
+{
+    ImGui::SeparatorText("Record");
+
+    if (!audio_devices_scanned_)
+    {
+        audio_devices_ = facerec::AudioDevices(audio_device_error_);
+        audio_devices_scanned_ = true;
+        // Default to a real microphone. Leaving this on "(no audio)" produces a
+        // silent take that only reveals itself on playback.
+        if (!audio_devices_.empty() && audio_device_index_ == 0)
+            audio_device_index_ = 1;
+    }
+
+    std::vector<const char*> names;
+    names.push_back("(no audio)");
+    for (const std::string& device : audio_devices_) names.push_back(device.c_str());
+    ImGui::SetNextItemWidth(280.0f);
+    ImGui::Combo("Microphone", &audio_device_index_, names.data(), (int)names.size());
+    if (!audio_device_error_.empty())
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", audio_device_error_.c_str());
+    }
+
+    if (audio_device_index_ == 0)
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                           "No microphone selected - this take will be silent");
+
+    ImGui::SetNextItemWidth(280.0f);
+    ImGui::InputText("Take name", take_name_, sizeof(take_name_));
+
+    const double now = ImGui::GetTime();
+    if (recorder_.Recording())
+    {
+        if (ImGui::Button("Stop"))
+        {
+            std::string error;
+            if (recorder_.Stop(now, error))
+            {
+                const std::string relative =
+                    std::string("assets/face/") + take_name_ + ".faceclip";
+                auto& clips = controller_.face.clips;
+                if (std::find(clips.begin(), clips.end(), relative) == clips.end())
+                {
+                    clips.push_back(relative);
+                    dirty_ = true;
+                }
+                state.AddLog("Recorded " + relative);
+            }
+            else
+            {
+                state.AddLog("Recording failed: " + error, LogLevel::Error);
+            }
+        }
+        ImGui::SameLine();
+        if (recorder_.WaitingForAudio())
+            ImGui::TextDisabled("waiting for the microphone...");
+        else
+            ImGui::Text("%.1fs  %u frames", recorder_.Elapsed(now), recorder_.FrameCount());
+    }
+    else
+    {
+        const bool ready = live_link_.IsOpen() && live_link_.Receiving(now) && take_name_[0];
+        if (!ready) ImGui::BeginDisabled();
+        if (ImGui::Button("Record"))
+        {
+            const std::string relative = std::string("assets/face/") + take_name_;
+            const std::string device = audio_device_index_ > 0
+                ? audio_devices_[(std::size_t)audio_device_index_ - 1] : std::string();
+            std::string error;
+            if (!recorder_.Start(state.project_root / (relative + ".faceclip"),
+                                 state.project_root / (relative + ".mp2"),
+                                 relative + ".mp2", device, 30.0f, error))
+                state.AddLog("Could not start recording: " + error, LogLevel::Error);
+        }
+        if (!ready) ImGui::EndDisabled();
+        if (!live_link_.Receiving(now))
+        {
+            ImGui::SameLine();
+            ImGui::TextDisabled("needs tracking");
+        }
+    }
+
+}
+
+void AnimatorPanel::RenderFaceClips(EngineState& state)
+{
+    ImGui::SeparatorText("Clips");
+    auto& clips = controller_.face.clips;
+    for (std::size_t index = 0; index < clips.size(); ++index)
+    {
+        ImGui::PushID((int)(2000 + index));
+        if (ImGui::SmallButton("X"))
+        {
+            clips.erase(clips.begin() + (std::ptrdiff_t)index);
+            dirty_ = true;
+            ImGui::PopID();
+            break;
+        }
+        ImGui::SameLine();
+        const std::filesystem::path path(clips[index]);
+        const bool exists = std::filesystem::exists(state.project_root / path);
+        const bool playing = face_clip_playing_ && face_clip_path_ == clips[index];
+        if (!exists) ImGui::BeginDisabled();
+        if (ImGui::SmallButton(playing ? "Stop" : "Play"))
+        {
+            if (playing) StopFaceClipPreview();
+            else         PlayFaceClipPreview(state, clips[index]);
+        }
+        if (!exists) ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (!exists) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.35f, 1.0f));
+        ImGui::TextUnformatted(path.stem().string().c_str());
+        if (!exists)
+        {
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::TextDisabled("missing");
+        }
+        ImGui::PopID();
+    }
+    if (clips.empty())
+        ImGui::TextDisabled("None");
+}
+
 void AnimatorPanel::RenderFace(EngineState& state)
 {
-    (void)state;
+    RenderLiveLink(state);
+    RenderRecord(state);
+    RenderFaceClips(state);
     RenderFacePoses();
     UpdateFacePreview();
 }
@@ -800,6 +1170,7 @@ void AnimatorPanel::Render(EngineState& state)
     if (ImGui::Button(ICON_FA_PLAY)) state.physics_playing = true;
 
     if (!loaded_) NewController();
+    TickTracking(state);
     ImGui::Separator();
     RenderControllerEditor(state);
     ImGui::End();

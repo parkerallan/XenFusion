@@ -92,6 +92,11 @@ namespace aud
         bool IsPlaying(const std::string& key) const;
         bool HasStream(const std::string& key) const;
 
+        // How far into the clip the voice has actually played, or -1 with no
+        // open voice. A facial performance follows this rather than a local
+        // timer, because a timer and a voice drift apart over a long line.
+        float PlaybackSeconds(const std::string& key) const;
+
         void Shutdown();
 
         enum

@@ -966,6 +966,60 @@ bool SceneRuntime::FaceSetPose(int objectIndex, const char* pose, float weight, 
 }
 
 
+bool SceneRuntime::FacePlayClip(int objectIndex, const char* clip, bool loop)
+{
+    DrawItem* item = FaceItem(objectIndex);
+    if (!item || !clip || !clip[0] || !item->animator.IsValid())
+        return false;
+
+    // A script names a clip by its stem; a project-relative path also works.
+    const char* path = item->animator.FindFaceClipPath(spak::NameHash(clip));
+    const std::string resolved = path ? path : clip;
+    const SpakEntry* entry = m_pak.IsOpen()
+        ? m_pak.Find(spak::NameHash(resolved.c_str())) : NULL;
+    if (!entry || entry->type != spak::kTypeFace ||
+        spak::CodecOf(entry->flags) != spak::kCodecNone)
+        return false;
+
+    item->face_clip_bytes.resize(entry->uncompressedSize);
+    if (item->face_clip_bytes.empty() ||
+        !m_pak.ReadRawRange(entry, 0, &item->face_clip_bytes[0], entry->uncompressedSize))
+        return false;
+    face::ClipView view;
+    if (!face::ParseClip(&item->face_clip_bytes[0],
+                         (unsigned int)item->face_clip_bytes.size(), view))
+        return false;
+
+    item->face.PlayClip(view, loop);
+    item->face_started = true;
+    // The clip owns its audio: the mouth follows that voice's position.
+    item->face_audio.assign(view.audioPath ? view.audioPath : "", view.audioPathBytes);
+    ++item->face_audio_gen;
+    return true;
+}
+
+void SceneRuntime::FaceStopClip(int objectIndex)
+{
+    DrawItem* item = FaceItem(objectIndex);
+    if (!item) return;
+    item->face.StopClip();
+    item->face_audio.clear();
+}
+
+bool SceneRuntime::FaceClipPlaying(int objectIndex)
+{
+    DrawItem* item = FaceItem(objectIndex);
+    return item && item->face.ClipPlaying();
+}
+
+std::string SceneRuntime::FaceAudioKey(const DrawItem& item)
+{
+    char suffix[32];
+    sprintf_s(suffix, sizeof(suffix), "#face%u", item.face_audio_gen);
+    const char* name = ObjectName(item.object_index);
+    return std::string(name ? name : "") + suffix;
+}
+
 bool SceneRuntime::FaceLookAt(int objectIndex, float x, float y, float z)
 {
     DrawItem* item = FaceItem(objectIndex);
@@ -1026,7 +1080,15 @@ void SceneRuntime::UpdateFaceLayers(float dt)
             item.face_started = true;
         }
 
-        item.face.Update(dt);
+        // Follow the voice while a clip plays; before it opens, or with no
+        // audio at all, the layer runs on its own clock.
+        float audioSeconds = -1.0f;
+        if (item.face.ClipPlaying() && !item.face_audio.empty())
+            audioSeconds = m_audio.PlaybackSeconds(FaceAudioKey(item));
+
+        item.face.Update(dt, audioSeconds);
+        if (!item.face.ClipPlaying())
+            item.face_audio.clear();
         item.face_weights.assign(item.face.Weights(),
                                  item.face.Weights() + face::kShapeCount);
     }
@@ -3366,6 +3428,39 @@ void SceneRuntime::UpdateAudio(float dt, const D3DMATRIX& view)
         }
         else
             w.path = m_content.Resolve(item.path);
+        wants.push_back(w);
+    }
+
+    // Voices for playing face clips. Not authored attributes -- a script starts
+    // them -- but ordinary spatial streams once running, at the speaker.
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+    {
+        const DrawItem& item = m_draw_items[index];
+        if (!item.face.ClipPlaying() || item.face_audio.empty())
+            continue;
+        aud::Want w;
+        w.key      = FaceAudioKey(item);
+        w.loop     = false;
+        w.volume   = 1.0f;
+        w.pitch    = 1.0f;
+        w.audioClass = aud::AudioDialogue;
+        w.priority = 1;
+        w.loadMode = aud::AudioLoadAuto;
+        w.spatial  = true;
+        w.minDist  = 1.0f;
+        w.maxDist  = 50.0f;
+        w.doppler  = 1.0f;
+        w.pos[0] = item.world._41; w.pos[1] = item.world._42; w.pos[2] = item.world._43;
+        const SpakEntry* e = m_pak.IsOpen()
+            ? m_pak.Find(spak::NameHash(item.face_audio.c_str())) : NULL;
+        if (e && e->type == spak::kTypeAudio && spak::CodecOf(e->flags) == spak::kCodecNone)
+        {
+            w.path   = m_content.Resolve("game.spak");
+            w.offset = e->diskOffset;
+            w.length = e->compressedSize;
+        }
+        else
+            w.path = m_content.Resolve(item.face_audio);
         wants.push_back(w);
     }
 

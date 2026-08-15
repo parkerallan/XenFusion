@@ -8,7 +8,7 @@ namespace animcook
     const unsigned int kVersion = 3;        // adds the face block
     const unsigned int kHeaderBytesV1 = 40;
     const unsigned int kHeaderBytesV2 = 56;
-    const unsigned int kHeaderBytes = 72;
+    const unsigned int kHeaderBytes = 80;
     const unsigned int kStateBytes = 20;
     const unsigned int kTransitionBytes = 36;
     const unsigned int kClipBytes = 16;
@@ -19,7 +19,11 @@ namespace animcook
     // pose points into it.
     const unsigned int kPoseBytes       = 12; // nameHash | firstTarget | targetCount
     const unsigned int kPoseTargetBytes = 4;  // u8 shape | u8 weight | u16 pad
+    // A clip record carries the stem a script names it by and the project path
+    // the pak is keyed under, through the shared string table.
+    const unsigned int kFaceClipBytes   = 12; // stemHash | pathOffset | pathBytes
     const unsigned int kMaxPoses        = 256;
+    const unsigned int kMaxFaceClips    = 512;
 
     enum ModifierType
     {

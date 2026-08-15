@@ -20,7 +20,7 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 12. [Input](#12-input) — `input.button`, `input.pressed`, `input.released`, `input.axis`, name reference
 13. [Video](#13-video) — `video.play`, `video.stop`, `video.is_playing`
 14. [Audio](#14-audio) — `audio.play`, `audio.stop`, `audio.is_playing`, `audio.set_volume`, `audio.set_pitch`, `audio.set_loop`
-15. [Animator](#15-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`, `Animator.SetFacePose`, `Animator.LookAt`
+15. [Animator](#15-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`, `Animator.SetFacePose`, `Animator.PlayFaceClip`, `Animator.LookAt`
 16. [Utility](#16-utility) — `log`
 17. [Text](#17-text) — `text.set`
 18. [GUI](#18-gui) — `gui.panel`, `gui.label`, `gui.image`, `gui.button`, `gui.root`, `gui.set_focus`, `gui.set_play_mode`, `gui.focus`, `gui.set_paused`, `gui.is_paused`, `gui.clear`
@@ -1018,16 +1018,22 @@ angry while walking, running or standing still. Three things stack, in this
 order, each overriding only the blendshapes it drives:
 
 1. **Expression pose** — the mood, eased in and out.
-2. **Blink** — procedural, and automatic.
-3. **Gaze** — drives the `eyeLook*` shapes.
+2. **Recorded clip** — overrides the shapes it drives.
+3. **Blink** — procedural, and skipped on any shape the clip already drives, so
+   a captured performance's own blinks are not doubled.
+4. **Gaze** — drives the `eyeLook*` shapes.
 
-Poses are authored on the Animator panel's **Face** tab; the model needs ARKit
+Poses are authored on the Animator panel's **Face** tab, where performances are
+also recorded from an iPhone running Live Link Face; the model needs ARKit
 blendshapes for any of it to show. Objects whose mesh has no blendshapes ignore
 these calls.
 
 | Function | Effect |
 |---|---|
 | `Animator.SetFacePose(object, pose [, weight] [, speed])` | blend toward an expression |
+| `Animator.PlayFaceClip(object, clip [, loop])` | play a recorded performance **and its audio** |
+| `Animator.StopFaceClip(object)` | stop it |
+| `Animator.IsFaceClipPlaying(object)` | `true` while one is running |
 | `Animator.LookAt(object, x, y, z)` | track a world-space point with the eyes |
 | `Animator.SetEyeTarget(object, x, y, z)` | the same call under the other name |
 | `Animator.ClearEyeTarget(object)` | ease the eyes back to centre |
@@ -1044,6 +1050,22 @@ default. Returns `true` on success.
 Animator.SetFacePose("Npc", "Angry")          -- full strength, instant
 Animator.SetFacePose("Npc", "Angry", 0.5, 6)  -- half strength, eased in
 Animator.SetFacePose("Npc", "", 1.0, 6)       -- ease back to default
+```
+
+#### `Animator.PlayFaceClip(object, clip [, loop])`
+
+Plays a recorded facial performance. This **also plays the audio it was recorded
+against**, 3D-positioned at the object, and drives the face from that audio's
+playback position — so speech and lips cannot drift apart over a long line. Do
+not start the same audio separately.
+
+`clip` is the file stem as listed on the Face tab (`"take01"`), or its
+project-relative path. Returns `true` if the clip was found and started.
+
+```lua
+if not Animator.IsFaceClipPlaying("Npc") then
+    Animator.PlayFaceClip("Npc", "line01")
+end
 ```
 
 #### `Animator.LookAt(object, x, y, z)`

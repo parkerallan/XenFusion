@@ -432,6 +432,21 @@ namespace aud
         return playing;
     }
 
+    float AudioPlayer::PlaybackSeconds(const std::string& key) const
+    {
+        EnterCriticalSection(&m_lock);
+        AudioStream* s = Find(key);
+        float seconds = -1.0f;
+        // Before the worker opens the voice there is no clock yet; report 0 so
+        // a just-started clip holds its first frame rather than reading absent.
+        if (s && !s->failed && !s->remove)
+            seconds = (s->voice.IsOpen() && s->sampleRate > 0)
+                ? (float)((double)s->voice.SamplesPlayed() / (double)s->sampleRate)
+                : 0.0f;
+        LeaveCriticalSection(&m_lock);
+        return seconds;
+    }
+
     bool AudioPlayer::HasStream(const std::string& key) const
     {
         EnterCriticalSection(&m_lock);

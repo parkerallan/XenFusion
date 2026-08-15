@@ -2,6 +2,7 @@
 // gaze all want the same shape. Same code on both targets, so getting it wrong
 // here is wrong everywhere.
 
+#include "anim/FaceClip.h"
 #include "anim/FaceRuntime.h"
 #include "anim/FaceShapes.h"
 
@@ -21,6 +22,31 @@ namespace
     bool Near(float a, float b, float tolerance = 0.01f)
     {
         return std::fabs(a - b) <= tolerance;
+    }
+
+    void PushU32BE(std::vector<unsigned char>& out, unsigned int v)
+    {
+        out.push_back((unsigned char)(v >> 24)); out.push_back((unsigned char)(v >> 16));
+        out.push_back((unsigned char)(v >> 8));  out.push_back((unsigned char)v);
+    }
+
+    // A one-second clip at 10 Hz holding every listed shape wide open.
+    std::vector<unsigned char> BuildClip(const std::vector<int>& shapes)
+    {
+        const unsigned int frames = 11;
+        std::vector<unsigned char> p;
+        PushU32BE(p, face::kClipMagic);
+        PushU32BE(p, face::kClipVersion);
+        PushU32BE(p, frames);
+        PushU32BE(p, (unsigned int)shapes.size());
+        PushU32BE(p, 10000u);   // 10 Hz
+        PushU32BE(p, 0u);       // audio offset
+        PushU32BE(p, 0u);       // no audio path
+        for (int shape : shapes) p.push_back((unsigned char)shape);
+        while ((p.size() - face::kClipHeaderBytes) % 4 != 0) p.push_back(0);
+        for (unsigned int f = 0; f < frames; ++f)
+            for (std::size_t i = 0; i < shapes.size(); ++i) p.push_back(255);
+        return p;
     }
 
 }
@@ -80,6 +106,55 @@ int main()
         layer.Update(1.0f / 60.0f);
         if (!Near(layer.Weights()[smile], 0.5f))
             return Fail("a half-weight pose did not hold half open");
+    }
+
+    // A clip overrides the shapes it drives and leaves the expression alone --
+    // an angry character can still deliver a line.
+    const std::vector<unsigned char> mouthClip = BuildClip({jaw});
+    face::ClipView view;
+    if (!face::ParseClip(mouthClip.data(), (unsigned)mouthClip.size(), view))
+        return Fail("the hand-built clip did not parse");
+    {
+        face::Layer layer;
+        layer.SetBlinkEnabled(false);
+        layer.SetPose(&happy, 1.0f, 0.0f);
+        layer.PlayClip(view, false);
+        layer.Update(1.0f / 60.0f, 0.5f);
+        if (!Near(layer.Weights()[jaw], 1.0f))
+            return Fail("the clip did not drive its own shape");
+        if (!Near(layer.Weights()[smile], 1.0f))
+            return Fail("the clip erased the expression it should layer over");
+    }
+
+    // The audio clock drives the clip, and a non-looping one stops itself.
+    {
+        face::Layer layer;
+        layer.SetBlinkEnabled(false);
+        layer.PlayClip(view, false);
+        layer.Update(1.0f / 60.0f, 0.2f);
+        if (!layer.ClipPlaying())
+            return Fail("the clip stopped early while its audio was still going");
+        layer.Update(1.0f / 60.0f, 5.0f);
+        if (layer.ClipPlaying())
+            return Fail("a non-looping clip did not stop at its end");
+    }
+
+    // Blink must never stack on a lid the clip already drives, or a captured
+    // performance blinks twice.
+    const std::vector<unsigned char> blinkClip = BuildClip({blinkL});
+    face::ClipView blinkView;
+    if (!face::ParseClip(blinkClip.data(), (unsigned)blinkClip.size(), blinkView))
+        return Fail("the blink clip did not parse");
+    {
+        face::Layer layer;
+        layer.SetSeed(12345);
+        layer.PlayClip(blinkView, true);
+        for (int frame = 0; frame < 60 * 15; ++frame)
+        {
+            layer.Update(1.0f / 60.0f, -1.0f);
+            if (layer.Weights()[blinkL] > 1.0f + 0.001f)
+                return Fail("procedural blink stacked on a clip-driven lid");
+        }
     }
 
     // Procedural blink drives the lids.

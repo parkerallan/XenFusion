@@ -4,6 +4,7 @@
 #include <assimp/quaternion.h>
 #include <assimp/vector3.h>
 
+#include "anim/FaceClipAsset.h"
 #include "anim/FaceShapes.h"
 #include "camera/EnvCubeViews.h"
 #include "camera/SkyView.h"
@@ -1096,6 +1097,89 @@ bool SceneRenderer::FaceSetPose(int objectIndex, const char* pose, float weight,
 }
 
 
+const std::vector<unsigned char>* SceneRenderer::GetFaceClip(const std::string& relative_path)
+{
+    // Re-cook when the file changes on disk: a clip is edited far more often
+    // than the engine is restarted, and a stale cache looks like the edit
+    // silently did nothing.
+    std::error_code time_error;
+    const auto written = std::filesystem::last_write_time(m_project_root / relative_path, time_error);
+    const auto cached = m_face_clips.find(relative_path);
+    if (cached != m_face_clips.end())
+    {
+        const auto stamp = m_face_clip_times.find(relative_path);
+        if (time_error || (stamp != m_face_clip_times.end() && stamp->second == written))
+            return cached->second.empty() ? nullptr : &cached->second;
+    }
+    if (!time_error)
+        m_face_clip_times[relative_path] = written;
+
+    std::vector<unsigned char>& payload = m_face_clips[relative_path];
+    payload.clear();
+    FaceClipAsset asset;
+    std::string error;
+    if (!faceclip::Load(m_project_root / relative_path, asset, error) ||
+        !faceclip::CookBE(asset, payload, error))
+    {
+        applog::Error("Face clip '" + relative_path + "': " + error);
+        payload.clear();
+        return nullptr;
+    }
+    return &payload;
+}
+
+std::string SceneRenderer::FaceAudioKey(int object_index, unsigned int generation) const
+{
+    return "face#" + std::to_string(object_index) + "#" + std::to_string(generation);
+}
+
+bool SceneRenderer::FacePlayClip(int objectIndex, const char* clip, bool loop)
+{
+    if (objectIndex < 0 || !clip || !clip[0]) return false;
+
+    // A script names a clip by its stem; the controller holds the paths.
+    std::string path;
+    for (const DrawItem& item : m_draw_items)
+    {
+        if (item.object_index != objectIndex) continue;
+        if (const AnimatorController* c = GetController(item.animator_controller_path))
+            for (const std::string& candidate : c->face.clips)
+                if (std::filesystem::path(candidate).stem().string() == clip ||
+                    candidate == clip)
+                { path = candidate; break; }
+        break;
+    }
+    if (path.empty()) path = clip;
+
+    const std::vector<unsigned char>* payload = GetFaceClip(path);
+    if (!payload) return false;
+
+    FaceInstance& instance = m_face_instances[objectIndex];
+    instance.clip_bytes = *payload;   // the layer views these, so own them here
+    face::ClipView view;
+    if (!face::ParseClip(instance.clip_bytes.data(), (unsigned)instance.clip_bytes.size(), view))
+        return false;
+    instance.layer.PlayClip(view, loop);
+    instance.started = true;
+    instance.audio_path.assign(view.audioPath ? view.audioPath : "", view.audioPathBytes);
+    ++instance.audio_gen;
+    return true;
+}
+
+void SceneRenderer::FaceStopClip(int objectIndex)
+{
+    const auto instance = m_face_instances.find(objectIndex);
+    if (instance == m_face_instances.end()) return;
+    instance->second.layer.StopClip();
+    instance->second.audio_path.clear();
+}
+
+bool SceneRenderer::FaceClipPlaying(int objectIndex)
+{
+    const auto instance = m_face_instances.find(objectIndex);
+    return instance != m_face_instances.end() && instance->second.layer.ClipPlaying();
+}
+
 bool SceneRenderer::FaceLookAt(int objectIndex, float x, float y, float z)
 {
     const DrawItem* item = nullptr;
@@ -1170,7 +1254,14 @@ void SceneRenderer::UpdateFaceLayers(float dt)
             instance.started = true;
         }
 
-        instance.layer.Update(dt);
+        float audio_seconds = -1.0f;
+        if (instance.layer.ClipPlaying() && !instance.audio_path.empty())
+            audio_seconds = m_audio.PlaybackSeconds(
+                FaceAudioKey(item.object_index, instance.audio_gen));
+
+        instance.layer.Update(dt, audio_seconds);
+        if (!instance.layer.ClipPlaying())
+            instance.audio_path.clear();
         item.face_weights.assign(instance.layer.Weights(),
                                  instance.layer.Weights() + face::kShapeCount);
     }
@@ -3779,6 +3870,27 @@ void SceneRenderer::UpdateAudio(float dt)
                 }
             wants.push_back(w);
         }
+    }
+
+    // A face clip carries its own dialogue, and the layer clocks itself off
+    // that stream's position -- so the stream has to be wanted for as long as
+    // the clip plays, independently of any authored Audio attribute.
+    for (const DrawItem& item : m_draw_items)
+    {
+        const auto entry = m_face_instances.find(item.object_index);
+        if (entry == m_face_instances.end())
+            continue;
+        const FaceInstance& instance = entry->second;
+        if (!instance.layer.ClipPlaying() || instance.audio_path.empty())
+            continue;
+        aud::Want w;
+        w.key      = FaceAudioKey(item.object_index, instance.audio_gen);
+        w.path     = (m_project_root / instance.audio_path).string();
+        w.audioClass = aud::AudioDialogue;
+        w.priority = 1;
+        w.spatial  = true;
+        w.pos[0] = item.world._41; w.pos[1] = item.world._42; w.pos[2] = item.world._43;
+        wants.push_back(w);
     }
 
     // Listener = the current view: LookAtLH's basis lives in the view matrix

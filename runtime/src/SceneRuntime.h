@@ -94,6 +94,9 @@ public:
     void  AnimatorSetState(int objectIndex, const char* name);
     // Lua face.*; anim/FaceRuntime.h owns the layering order.
     bool  FaceSetPose(int objectIndex, const char* pose, float weight, float speed);
+    bool  FacePlayClip(int objectIndex, const char* clip, bool loop);
+    void  FaceStopClip(int objectIndex);
+    bool  FaceClipPlaying(int objectIndex);
     bool  FaceLookAt(int objectIndex, float x, float y, float z);
     void  FaceClearGaze(int objectIndex);
     void  FaceSetBlink(int objectIndex, bool enabled);
@@ -162,10 +165,14 @@ private:
         MorphClone         morph;
         face::Layer face;
         bool        face_started;   // default pose applied
+        // The layer holds a view over these, so the bytes live here.
+        std::vector<unsigned char> face_clip_bytes;
+        std::string  face_audio;      // scene-relative .mp2 while a clip plays
+        unsigned int face_audio_gen;  // a replayed clip restarts its voice
         std::vector<int> bone_collider_handles;
         std::vector<RuntimeAnimator::BoneColliderPose> bone_collider_poses;
         DrawItem() : object_index(-1), dynamic_lighting(false), cast_shadow(false),
-                     visible(true), face_started(false)
+                     visible(true), face_started(false), face_audio_gen(0)
         { scale[0] = scale[1] = scale[2] = 1.0f; }
     };
     struct ShaderItem
@@ -252,6 +259,9 @@ private:
                   int objectIndex = -1);
     void UpdateFaceLayers(float dt);
     DrawItem* FaceItem(int objectIndex);
+    // Stream key for an object's clip voice, distinct from its Audio attribute
+    // so a speaking character can still play its own ambience.
+    std::string FaceAudioKey(const DrawItem& item);
     // Runs once before any pass, so shadow and main draw the same face.
     void UpdateFaces();
     IDirect3DVertexBuffer9* MorphBufferFor(int objectIndex) const;

@@ -246,8 +246,11 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
         const unsigned int poseCount        = endian::LoadU32BE(header + 60);
         const unsigned int poseOffset       = endian::LoadU32BE(header + 64);
         const unsigned int poseTargetOffset = endian::LoadU32BE(header + 68);
-        if (poseCount > animcook::kMaxPoses ||
-            poseOffset + poseCount * animcook::kPoseBytes > m_entry->uncompressedSize)
+        const unsigned int faceClipCount    = endian::LoadU32BE(header + 72);
+        const unsigned int faceClipOffset   = endian::LoadU32BE(header + 76);
+        if (poseCount > animcook::kMaxPoses || faceClipCount > animcook::kMaxFaceClips ||
+            poseOffset + poseCount * animcook::kPoseBytes > m_entry->uncompressedSize ||
+            faceClipOffset + faceClipCount * animcook::kFaceClipBytes > m_entry->uncompressedSize)
             return FailResourceLoad();
 
         if (poseCount)
@@ -291,6 +294,25 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
             }
         }
 
+        if (faceClipCount)
+        {
+            records.resize(faceClipCount * animcook::kFaceClipBytes);
+            if (!m_pak->ReadRawRange(m_entry, faceClipOffset, &records[0],
+                                     (unsigned int)records.size()))
+                return FailResourceLoad();
+            for (unsigned int index = 0; index < faceClipCount; ++index)
+            {
+                const unsigned char* record = &records[index * animcook::kFaceClipBytes];
+                FaceClipRef clip;
+                clip.stemHash = endian::LoadU32BE(record);
+                const unsigned int pathOffset = endian::LoadU32BE(record + 4);
+                const unsigned int pathBytes  = endian::LoadU32BE(record + 8);
+                if (pathOffset > stringBytes || pathBytes > stringBytes - pathOffset)
+                    return FailResourceLoad();
+                if (pathBytes) clip.path.assign((const char*)&strings[pathOffset], pathBytes);
+                m_resource->faceClips.push_back(clip);
+            }
+        }
     }
 
     m_resource->defaultState = endian::LoadU32BE(header + 8);
@@ -346,9 +368,18 @@ const face::Pose* RuntimeAnimator::FindPose(unsigned int nameHash) const
 }
 
 
+const char* RuntimeAnimator::FindFaceClipPath(unsigned int stemHash) const
+{
+    if (!m_resource) return NULL;
+    for (size_t index = 0; index < m_resource->faceClips.size(); ++index)
+        if (m_resource->faceClips[index].stemHash == stemHash)
+            return m_resource->faceClips[index].path.c_str();
+    return NULL;
+}
+
 bool RuntimeAnimator::HasFace() const
 {
-    return m_resource && !m_resource->poses.empty();
+    return m_resource && (!m_resource->poses.empty() || !m_resource->faceClips.empty());
 }
 
 RuntimeAnimator::Clip* RuntimeAnimator::FindClip(unsigned int hash)

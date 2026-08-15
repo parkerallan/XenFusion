@@ -181,6 +181,12 @@ namespace script
         // gaze are separate layers: setting one leaves the others alone.
         virtual bool FaceSetPose(int objectIndex, const char* pose, float weight, float speed)
         { (void)objectIndex; (void)pose; (void)weight; (void)speed; return false; }
+        virtual bool FacePlayClip(int objectIndex, const char* clip, bool loop)
+        { (void)objectIndex; (void)clip; (void)loop; return false; }
+        virtual void FaceStopClip(int objectIndex)
+        { (void)objectIndex; }
+        virtual bool FaceClipPlaying(int objectIndex)
+        { (void)objectIndex; return false; }
         virtual bool FaceLookAt(int objectIndex, float x, float y, float z)
         { (void)objectIndex; (void)x; (void)y; (void)z; return false; }
         virtual void FaceClearGaze(int objectIndex)

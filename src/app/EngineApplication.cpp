@@ -370,6 +370,11 @@ void EngineApplication::RenderUI()
     performance_panel_.Render(state_);
     mapper_panel_.Render(state_);
     animator_panel_.Render(state_);
+    // Face tracking puppets the selected object in the viewport, not just the
+    // Animator panel's own preview.
+    if (state_.selected_object >= 0)
+        viewport_panel_.SetFacePreviewWeights(state_.selected_object,
+                                              animator_panel_.LiveFaceWeights());
     if (!state_.saved_animator_path.empty())
     {
         viewport_panel_.InvalidateAnimator(state_.saved_animator_path.generic_string());

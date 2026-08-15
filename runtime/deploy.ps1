@@ -188,12 +188,36 @@ Get-ChildItem $Project -Filter *.lua -Recurse -ErrorAction SilentlyContinue | Fo
     }
 }
 
+# Face clips are declared on the animator controller's Face tab. Each also names
+# the audio it was recorded against, which playback starts and follows.
+$faceClips = @()
+foreach ($animator in @($animators | Select-Object -Unique)) {
+    $animPath = Join-Path $Project $animator
+    if (-not (Test-Path $animPath)) { continue }
+    try { $controller = Get-Content $animPath -Raw | ConvertFrom-Json } catch { continue }
+    if (-not $controller.face) { continue }
+    foreach ($clipRel in @($controller.face.clips)) {
+        if (-not $clipRel) { continue }
+        $clipPath = Join-Path $Project $clipRel
+        if (-not (Test-Path $clipPath)) {
+            Write-Warning "$animator : face clip not found, not cooked - $clipRel"
+            continue
+        }
+        $faceClips += $clipRel
+        try { $clip = Get-Content $clipPath -Raw | ConvertFrom-Json } catch { continue }
+        if ($clip.source_audio -and (Test-Path (Join-Path $Project $clip.source_audio))) {
+            $audios += $clip.source_audio
+        }
+    }
+}
+
 $meshes = @($meshes | Select-Object -Unique)
 $images = @($images | Select-Object -Unique)
 $videos = @($videos | Select-Object -Unique)
 $audios = @($audios | Select-Object -Unique)
 $fonts = @($fonts | Select-Object -Unique)
 $animators = @($animators | Select-Object -Unique)
+$faceClips = @($faceClips | Select-Object -Unique)
 
 # Animator controllers are PC-cooked from JSON + Assimp source clips into one
 # big-endian ANC1 payload each. The temporary files are fed to spakc with their
@@ -215,6 +239,26 @@ if ($animators.Count -gt 0) {
         & $animc $Project $source $cooked
         if ($LASTEXITCODE -ne 0) { throw "animc failed for $logical" }
         $animArgs += @("--anim", $cooked, $logical)
+    }
+}
+
+# Face clips cook the same way controllers do: JSON in, one big-endian FCL1
+# payload out, fed to spakc under the clip's own logical path.
+$faceArgs = @()
+if ($faceClips.Count -gt 0) {
+    $engineRoot = Split-Path -Parent $root
+    $hostBuild = Join-Path $engineRoot "build"
+    & cmake --build $hostBuild --config Release --target facec | Out-Null
+    $facec = Join-Path $hostBuild "Release\facec.exe"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $facec)) { throw "facec build failed" }
+    $faceCookDir = Join-Path $out ".facecook"
+    New-Item -ItemType Directory -Force $faceCookDir | Out-Null
+    for ($index = 0; $index -lt $faceClips.Count; ++$index) {
+        $logical = [string]$faceClips[$index]
+        $cooked = Join-Path $faceCookDir ("clip_{0}.fcl" -f $index)
+        & $facec (Join-Path $Project $logical) $cooked
+        if ($LASTEXITCODE -ne 0) { throw "facec failed for $logical" }
+        $faceArgs += @("--face", $cooked, $logical)
     }
 }
 
@@ -242,7 +286,7 @@ if ($anyLightmap) {
 }
 $fontArgs = @()
 foreach ($font in $fonts) { $fontArgs += @("--font", [string]$font) }
-$cookArgs = @($meshes) + @($imageArgs) + @($lightmapArgs) + @($fontArgs) + @($videos) + @($audios) + @($animArgs)
+$cookArgs = @($meshes) + @($imageArgs) + @($lightmapArgs) + @($fontArgs) + @($videos) + @($audios) + @($animArgs) + @($faceArgs)
 if ($cookArgs.Count -gt 0) {
     & $spakcExe build (Join-Path $out "game.spak") $Project @cookArgs
     if ($LASTEXITCODE -ne 0) { throw "spakc cook failed (exit $LASTEXITCODE)" }
@@ -250,6 +294,7 @@ if ($cookArgs.Count -gt 0) {
     Write-Output "Note: startup scene references no packaged assets; no game.spak written (shader-only scene)"
 }
 if (Test-Path $animCookDir) { Remove-Item -Recurse -Force $animCookDir }
+if ($faceCookDir -and (Test-Path $faceCookDir)) { Remove-Item -Recurse -Force $faceCookDir }
 
 Write-Output "Deployed to $out"
 Write-Output "Launch in Xenia:  <xenia.exe> `"$($out)\default.xex`""

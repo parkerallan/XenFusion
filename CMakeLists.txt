@@ -161,6 +161,9 @@ add_executable(XenFusion
     src/anim/AnimationClip.cpp
     src/anim/AnimatorRuntime.cpp
     src/anim/FaceRuntime.cpp
+    src/anim/FaceClipAsset.cpp
+    src/anim/FaceRecorder.cpp
+    src/anim/LiveLinkFace.cpp
     src/physics/PhysicsWorld.cpp
     src/scene/AttrFieldsEditor.cpp
     src/script/ScriptVM.cpp
@@ -198,6 +201,13 @@ add_executable(animc
 )
 target_include_directories(animc PRIVATE src runtime/src)
 target_link_libraries(animc PRIVATE assimp nlohmann_json::nlohmann_json)
+
+add_executable(facec
+    tools/facec.cpp
+    src/anim/FaceClipAsset.cpp
+)
+target_include_directories(facec PRIVATE src runtime/src)
+target_link_libraries(facec PRIVATE nlohmann_json::nlohmann_json)
 
 add_executable(lightc
     tools/lightc.cpp

@@ -139,6 +139,11 @@ namespace animator
                     std::to_string(animcook::kMaxPoses);
             return false;
         }
+        if (controller.face.clips.size() > animcook::kMaxFaceClips)
+        {
+            error = "controller references too many face clips";
+            return false;
+        }
         unsigned int pose_target_total = 0;
         for (const CookedPose& pose : poses)
             pose_target_total += (unsigned int)pose.targets.size();
@@ -147,11 +152,15 @@ namespace animator
             (unsigned int)controller.bone_modifiers.size() * animcook::kModifierBytes;
         const unsigned int pose_target_offset = pose_offset +
             (unsigned int)poses.size() * animcook::kPoseBytes;
-        const unsigned int string_offset = pose_target_offset +
+        const unsigned int face_clip_offset = pose_target_offset +
             pose_target_total * animcook::kPoseTargetBytes;
+        const unsigned int string_offset = face_clip_offset +
+            (unsigned int)controller.face.clips.size() * animcook::kFaceClipBytes;
         unsigned int string_bytes = 0;
         for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
             string_bytes += (unsigned int)modifier.bone_name.size();
+        for (const std::string& clip : controller.face.clips)
+            string_bytes += (unsigned int)clip.size();
         const unsigned int data_offset = string_offset + string_bytes;
 
         output.clear();
@@ -173,6 +182,8 @@ namespace animator
         PushU32(output, (unsigned int)poses.size());
         PushU32(output, pose_offset);
         PushU32(output, pose_target_offset);
+        PushU32(output, (unsigned int)controller.face.clips.size());
+        PushU32(output, face_clip_offset);
 
         for (const AnimatorStateDefinition& state : controller.states)
         {
@@ -251,8 +262,23 @@ namespace animator
                 output.push_back(0);
                 output.push_back(0);
             }
+        // Clip paths continue the same string table the bone names started.
+        unsigned int clip_path_offset = 0;
+        for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
+            clip_path_offset += (unsigned int)modifier.bone_name.size();
+        for (const std::string& clip : controller.face.clips)
+        {
+            // A script names a clip by its file stem; the path is the pak key.
+            const std::string stem = std::filesystem::path(clip).stem().string();
+            PushU32(output, animation::NameHash(stem.c_str()));
+            PushU32(output, clip_path_offset);
+            PushU32(output, (unsigned int)clip.size());
+            clip_path_offset += (unsigned int)clip.size();
+        }
         for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
             output.insert(output.end(), modifier.bone_name.begin(), modifier.bone_name.end());
+        for (const std::string& clip : controller.face.clips)
+            output.insert(output.end(), clip.begin(), clip.end());
         for (const CookedClip& clip : clips)
             output.insert(output.end(), clip.payload.begin(), clip.payload.end());
         return true;

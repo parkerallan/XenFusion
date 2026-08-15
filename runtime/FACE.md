@@ -1,11 +1,11 @@
 # Facial animation
 
-Blendshape-driven faces on both targets: expression poses, procedural blinking
-and eye gaze, from the same data and the same code.
+Blendshape-driven faces on both targets: recorded performances, expression
+poses, procedural blinking and eye gaze, from the same data and the same code.
 
-The organising principle is that **the console never solves anything**. Poses are
-authored offline and cooked to ARKit indices; the Xbox 360 adds vertex deltas and
-nothing else.
+The organising principle is that **the console never solves anything**. A
+performance is captured on a PC from an iPhone and cooked to frames; the Xbox 360
+samples those frames and adds vertex deltas.
 
 ## The pipeline
 
@@ -15,7 +15,10 @@ character.gltf ──► MeshBaker ──► .mesh v10 ──► spakc ──►
                     quantise
                     reorder
 
-.anim controller ──► animc ──► 'ANC1' v3 (expression poses)
+.anim controller ──► animc ──► 'ANC1' v3 (poses + clip paths)
+
+iPhone (Live Link Face) ──► UDP 11111 ──► recorder ──► .faceclip ──► facec ──► 'FACE'
+                                             + mic ──► ffmpeg ────► .mp2 ──► 'AUDI'
 ```
 
 At run time: the face layer resolves 52 ARKit weights → the deformer adds sparse
@@ -56,7 +59,13 @@ pose the palette expects. Morph first, then skin.
 |---|---|
 | `src/anim/FaceShapes.h` | the ARKit-52 vocabulary; name → index folding |
 | `src/anim/FaceDeform.h` | sparse delta application (shared, header-only) |
-| `src/anim/FaceRuntime.{h,cpp}` | the layer: pose, blink, gaze (shared) |
+| `src/anim/FaceRuntime.{h,cpp}` | the layer: pose, clip, blink, gaze (shared) |
+| `src/anim/FaceClip.h` | cooked clip format + sampler (shared) |
+| `src/anim/FaceClipAsset.{h,cpp}` | `.faceclip` JSON + the cook |
+| `src/anim/LiveLinkFace.{h,cpp}` | the iPhone UDP receiver (engine only) |
+| `src/anim/FaceRecorder.{h,cpp}` | take capture + the mic subprocess (engine only) |
+| `tools/facec.cpp` | `.faceclip` → big-endian `FCL1` |
+| `tools/livelinkreplay.py` | synthetic packets, so the path works with no phone |
 
 ## Formats
 
@@ -71,9 +80,37 @@ is byte-identical to before, and so morph data only loads for meshes that have
 it. Requested after the mesh is resident, so the deltas always have vertices to
 validate against.
 
-**`'ANC1'` v3.** The controller gained a face block: the default pose and the
-expression poses, resolved to ARKit indices at cook so the console never compares
-a name.
+**`'FACE'` clip.** Uniform frames of `u8` weights over the clip's own shape list,
+plus the project-relative path of the audio it was recorded against and an
+`audio_offset_ms`. Sampling is two array reads and a lerp with no search. Storing
+the audio path *in the clip* is what lets playback own its own sound and stay
+locked to it.
+
+**`'ANC1'` v3.** The controller gained a face block: the default pose, the
+expression poses (resolved to ARKit indices at cook, so the console never
+compares a name), and the clip paths, whose strings continue the table the bone
+names started.
+
+## Capture
+
+Epic's free **Live Link Face** app streams ARKit blendshapes over UDP 11111 —
+version little-endian, everything after it big-endian, 61 big-endian floats.
+Values 0–51 are the 52 shapes in **Apple's** order, which is not ours, so the
+remap is built by running Apple's name list through `face::ShapeIndex` rather
+than hand-maintaining indices. Values 52–60 are head yaw/pitch/roll and per-eye
+yaw/pitch/roll; the head is deliberately ignored because the skeletal animator
+owns it.
+
+Recording timestamps weights as packets land and resamples to a uniform grid on
+stop — WiFi jitters and drops. The mic goes through ffmpeg straight to `.mp2`.
+The clock starts when the capture file first has bytes, and whatever offset
+remains is carried per clip.
+
+## Sync
+
+Playback follows `AudioPlayer::PlaybackSeconds` — the XAudio2 voice's own
+`SamplesPlayed`, the same master clock the video system uses. A local timer and a
+voice drift apart over a line of dialogue.
 
 ## Budget
 
@@ -107,5 +144,7 @@ budget when the companion attaches, so a face is not invisible to it.
 | Test | Covers |
 |---|---|
 | `face_morph_bake` | name folding, dropped non-ARKit targets, region contiguity, permutation validity, deform linearity, cook byte order |
-| `face_layer` | pose snap/ease/weight, blink firing, gaze mapping and ease-back |
+| `face_layer` | pose snap/ease/weight, clip override without erasing the expression, audio-clock drive, blink *not* stacking on clip-driven lids, gaze mapping and ease-back |
+| `livelink_face` | packet decode, the Apple→canonical remap, malformed packets, neutral calibration |
+| `face_clip_codec` | frames → JSON → cooked `FCL1` → sampler, clamp/loop, audio path survival |
 | `animator_cooker` | the v3 face block: poses and their ARKit indices |

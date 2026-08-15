@@ -117,6 +117,9 @@ public:
     void  SetFacePreviewWeights(int objectIndex, const float* weights);
     // Lua face layer (Animator.SetFacePose / LookAt / ...).
     bool  FaceSetPose(int objectIndex, const char* pose, float weight, float speed) override;
+    bool  FacePlayClip(int objectIndex, const char* clip, bool loop) override;
+    void  FaceStopClip(int objectIndex) override;
+    bool  FaceClipPlaying(int objectIndex) override;
     bool  FaceLookAt(int objectIndex, float x, float y, float z) override;
     void  FaceClearGaze(int objectIndex) override;
     void  FaceSetBlink(int objectIndex, bool enabled) override;
@@ -523,14 +526,16 @@ private:
         bool         started = false;
     };
     std::map<int, FaceInstance> m_face_instances;
-    // Cooked face clips by project-relative path. Cooked, not sampled from the
-    // curves directly, so the viewport plays the EXACT bytes the console will.
-    std::map<std::string, std::vector<unsigned char>> m_face_clips;
     // Loaded and cached on first use; null when missing or unparseable.
     const AnimatorController* GetController(const std::string& controller_path);
     // Null when the object's controller has no such pose.
     const face::Pose* FindFacePose(int object_index, const std::string& pose_name);
     std::map<std::string, face::Pose> m_face_poses; // controller path + '#' + pose
+    // Cooked clips by project-relative path. Cooked, not read from the JSON
+    // directly, so the viewport plays the exact bytes the console will.
+    std::map<std::string, std::vector<unsigned char>> m_face_clips;
+    std::map<std::string, std::filesystem::file_time_type> m_face_clip_times;
+    const std::vector<unsigned char>* GetFaceClip(const std::string& relative_path);
     std::string FaceAudioKey(int object_index, unsigned int generation) const;
     void UpdateFaceLayers(float dt);
     void UpdateAnimations(float dt);

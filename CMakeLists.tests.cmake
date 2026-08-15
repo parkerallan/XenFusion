@@ -33,6 +33,22 @@ add_test(NAME mesh_skin_bake_fox
     COMMAND mesh_skin_bake_test
         "${CMAKE_SOURCE_DIR}/../360proj/assets/models/Fox.gltf")
 
+add_executable(face_clip_codec_test
+    tests/FaceClipCodecTest.cpp
+    src/anim/FaceClipAsset.cpp
+)
+target_include_directories(face_clip_codec_test PRIVATE src)
+target_link_libraries(face_clip_codec_test PRIVATE nlohmann_json::nlohmann_json)
+add_test(NAME face_clip_codec COMMAND face_clip_codec_test)
+
+add_executable(livelink_face_test
+    tests/LiveLinkFaceTest.cpp
+    src/anim/LiveLinkFace.cpp
+)
+target_include_directories(livelink_face_test PRIVATE src)
+target_link_libraries(livelink_face_test PRIVATE Ws2_32)
+add_test(NAME livelink_face COMMAND livelink_face_test)
+
 add_executable(face_layer_test
     tests/FaceLayerTest.cpp
     src/anim/FaceRuntime.cpp
