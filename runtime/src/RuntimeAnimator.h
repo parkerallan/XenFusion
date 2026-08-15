@@ -4,6 +4,8 @@
 #include "RuntimeBoneModifiers.h"
 #include "StreamPak.h"
 
+#include "anim/FaceRuntime.h"
+
 #include <map>
 #include <set>
 #include <string>
@@ -42,6 +44,13 @@ public:
     void SetState(const char* name);
     bool IsValid() const { return m_entry != NULL && m_resource != NULL; }
     static void ClearSharedResources();
+
+    // --- Face layer -----------------------------------------------------
+    // The controller's Face tab, resolved at load: expression poses looked up
+    // by name hash.
+    const face::Pose* FindPose(unsigned int nameHash) const;
+    const face::Pose* DefaultPose() const { return FindPose(m_resource ? m_resource->defaultPose : 0); }
+    bool HasFace() const;
 
 private:
     struct State
@@ -82,7 +91,9 @@ private:
         std::vector<Transition> transitions;
         std::vector<Clip> clips;
         std::vector<RuntimeBoneModifier> modifiers;
-        Resource() : defaultState(0) {}
+        unsigned int defaultPose;
+        std::vector<face::Pose> poses;
+        Resource() : defaultState(0), defaultPose(0) {}
     };
     struct FrameCache
     {

@@ -4,6 +4,7 @@
 #include <assimp/quaternion.h>
 #include <assimp/vector3.h>
 
+#include "anim/FaceShapes.h"
 #include "camera/EnvCubeViews.h"
 #include "camera/SkyView.h"
 #include "core/Log.h"
@@ -704,18 +705,20 @@ void SceneRenderer::Shutdown()
     if (m_vs)         { m_vs->Release();         m_vs = nullptr; }
     m_shaders.Shutdown();
     ClearLightmaps();
+    ReleaseMorphInstances();
     m_meshes.Shutdown();
     OnDeviceLost();
     m_device = nullptr;
 }
 
-void SceneRenderer::BindMeshForDraw(GpuMesh* mesh, const std::vector<float>* live_palette)
+void SceneRenderer::BindMeshForDraw(GpuMesh* mesh, const std::vector<float>* live_palette,
+                                    IDirect3DVertexBuffer9* morph_vb)
 {
     const bool use_skin = mesh && mesh->skinVb && mesh->skeleton.IsSkinned() &&
                           m_skin_mesh_decl && m_skin_vs;
     m_device->SetVertexDeclaration(use_skin ? m_skin_mesh_decl : m_mesh_decl);
     m_device->SetVertexShader(use_skin ? m_skin_vs : m_vs);
-    m_device->SetStreamSource(0, mesh->vb, 0, sizeof(MeshVertex));
+    m_device->SetStreamSource(0, morph_vb ? morph_vb : mesh->vb, 0, sizeof(MeshVertex));
     m_device->SetStreamSource(1, use_skin ? mesh->skinVb : nullptr, 0,
                               use_skin ? sizeof(MeshSkinInfluence) : 0);
     m_device->SetIndices(mesh->ib);
@@ -743,6 +746,75 @@ void SceneRenderer::BindMeshForDraw(GpuMesh* mesh, const std::vector<float>* liv
         m_device->SetVertexShaderConstantF(8, palette,
             (UINT)mesh->skeleton.joints.size() * 3);
     }
+}
+
+IDirect3DVertexBuffer9* SceneRenderer::UpdateMorph(int object_index, const std::string& model_path,
+                                                   GpuMesh& mesh, const std::vector<float>& weights)
+{
+    face::MorphView view;
+    std::vector<face::MorphTarget> targets;
+    if (!mesh.morph.HasMorph() || mesh.morphBase.empty() || weights.size() != face::kShapeCount)
+        return nullptr;
+
+    targets.resize(mesh.morph.targets.size());
+    for (size_t t = 0; t < mesh.morph.targets.size(); ++t)
+    {
+        const MeshMorphTarget& source = mesh.morph.targets[t];
+        targets[t].deltas        = source.deltas.data();
+        targets[t].deltaCount    = (unsigned)source.deltas.size();
+        targets[t].positionScale = source.positionScale;
+        targets[t].shape         = source.shape;
+    }
+    view.targets     = targets.data();
+    view.targetCount = (unsigned)targets.size();
+    view.firstVertex = mesh.morph.firstVertex;
+    view.vertexCount = mesh.morph.vertexCount;
+
+    if (!face::AnyActive(view, weights.data(), face::kShapeCount))
+        return nullptr;
+
+    MorphInstance& instance = m_morph_instances[object_index];
+    if (instance.model_path != model_path || instance.vertexCount != mesh.vertexCount)
+    {
+        instance.Release();
+        const UINT bytes = (UINT)(mesh.vertexCount * sizeof(MeshVertex));
+        for (int i = 0; i < 2; ++i)
+        {
+            if (FAILED(m_device->CreateVertexBuffer(bytes, 0, 0, D3DPOOL_MANAGED,
+                                                    &instance.vb[i], nullptr)))
+            {
+                instance.Release();
+                return nullptr;
+            }
+            // Seeded whole; only the morph region is refreshed per frame.
+            void* dst = nullptr;
+            instance.vb[i]->Lock(0, 0, &dst, 0);
+            std::memcpy(dst, mesh.morphBase.data(), bytes);
+            instance.vb[i]->Unlock();
+        }
+        instance.model_path  = model_path;
+        instance.vertexCount = mesh.vertexCount;
+    }
+
+    instance.write ^= 1;
+    IDirect3DVertexBuffer9* target = instance.vb[instance.write];
+    const std::size_t offset = (std::size_t)view.firstVertex * sizeof(MeshVertex);
+    // Lock the whole buffer and index in here: whether a partial lock returns a
+    // region-relative or base pointer is platform behaviour (see the console).
+    void* dst = nullptr;
+    if (FAILED(target->Lock(0, 0, &dst, 0)))
+        return nullptr;
+    face::Deform(mesh.morphBase.data() + offset, (unsigned)sizeof(MeshVertex), view,
+                 weights.data(), face::kShapeCount, (unsigned char*)dst + offset);
+    target->Unlock();
+    return target;
+}
+
+void SceneRenderer::ReleaseMorphInstances()
+{
+    for (auto& entry : m_morph_instances)
+        entry.second.Release();
+    m_morph_instances.clear();
 }
 
 void SceneRenderer::ClearLightmaps()
@@ -928,6 +1000,219 @@ void SceneRenderer::EnsureLightmaps(const SceneFile& scene)
     m_lightmap0 = color;
     m_lightmap1 = direction;
     applog::Info("Loaded directional lightmap: " + metadata.filename().string());
+}
+
+void SceneRenderer::SetFacePreviewWeights(int object_index, const float* weights)
+{
+    if (weights == nullptr)
+    {
+        m_face_preview.erase(object_index);
+        return;
+    }
+    m_face_preview[object_index].assign(weights, weights + face::kShapeCount);
+}
+
+
+const AnimatorController* SceneRenderer::GetController(const std::string& controller_path)
+{
+    if (controller_path.empty())
+        return nullptr;
+    ControllerCacheEntry& entry = m_animator_controllers[controller_path];
+    if (!entry.attempted)
+    {
+        entry.attempted = true;
+        std::string error;
+        entry.valid = animator::LoadController(m_project_root / controller_path,
+                                               entry.controller, error);
+        if (!entry.valid)
+            applog::Error("Animator '" + controller_path + "': " + error);
+    }
+    return entry.valid ? &entry.controller : nullptr;
+}
+
+const face::Pose* SceneRenderer::FindFacePose(int object_index, const std::string& pose_name)
+{
+    std::string controller_path;
+    for (const DrawItem& item : m_draw_items)
+        if (item.object_index == object_index) { controller_path = item.animator_controller_path; break; }
+    if (controller_path.empty() || pose_name.empty())
+        return nullptr;
+
+    const std::string key = controller_path + "#" + pose_name;
+    const auto cached = m_face_poses.find(key);
+    if (cached != m_face_poses.end())
+        return &cached->second;
+
+    const AnimatorController* controller = GetController(controller_path);
+    if (!controller)
+        return nullptr;
+
+    // A pose that drives nothing is still a real pose: an authored "Neutral"
+    // means everything at zero. Only an unknown name is a miss.
+    const FaceExpressionPose* authored = nullptr;
+    for (const FaceExpressionPose& candidate : controller->face.poses)
+        if (candidate.name == pose_name) { authored = &candidate; break; }
+    if (!authored)
+        return nullptr;
+
+    face::Pose& pose = m_face_poses[key];
+    pose.nameHash = animation::NameHash(pose_name.c_str());
+    for (const auto& [target, weight] : authored->weights)
+    {
+        const int shape = face::ShapeIndex(target.c_str());
+        if (shape == face::kShapeNone) continue;
+        const float clamped = std::clamp(weight, 0.0f, 1.0f);
+        pose.targets.push_back({(unsigned char)shape,
+                                (unsigned char)std::lround(clamped * 255.0f)});
+    }
+    return &pose;
+}
+
+
+bool SceneRenderer::FaceSetPose(int objectIndex, const char* pose, float weight, float speed)
+{
+    if (objectIndex < 0) return false;
+    FaceInstance& instance = m_face_instances[objectIndex];
+
+    std::string name = pose ? pose : "";
+    if (name.empty())
+    {
+        // Ease back to the controller's own default, which is what clearing a
+        // pose means.
+        for (const DrawItem& item : m_draw_items)
+            if (item.object_index == objectIndex)
+            {
+                if (const AnimatorController* c = GetController(item.animator_controller_path))
+                    name = c->face.default_pose;
+                break;
+            }
+    }
+    const face::Pose* resolved = name.empty() ? nullptr : FindFacePose(objectIndex, name);
+    if (pose && pose[0] && !resolved)
+        return false;
+    instance.layer.SetPose(resolved, weight, speed);
+    instance.started = true;
+    return true;
+}
+
+
+bool SceneRenderer::FaceLookAt(int objectIndex, float x, float y, float z)
+{
+    const DrawItem* item = nullptr;
+    for (const DrawItem& candidate : m_draw_items)
+        if (candidate.object_index == objectIndex) { item = &candidate; break; }
+    if (!item) return false;
+
+    // Into the character's own space: a rigid world matrix inverts by transpose.
+    const D3DMATRIX& world = item->world;
+    const float local[3] = {x - world._41, y - world._42, z - world._43};
+    float dir[3] = {
+        local[0] * world._11 + local[1] * world._12 + local[2] * world._13,
+        local[0] * world._21 + local[1] * world._22 + local[2] * world._23,
+        local[0] * world._31 + local[1] * world._32 + local[2] * world._33};
+    const float length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (length <= 0.0001f)
+        return false;
+    for (float& axis : dir) axis /= length;
+
+    // Eyes rotate about 35 degrees before a head would follow; treat that as a
+    // full look. +X is the character's right, and the layer takes yaw positive
+    // toward its LEFT.
+    const auto axisWeight = [](float component) {
+        return std::clamp(component / 0.6f, -1.0f, 1.0f);
+    };
+    m_face_instances[objectIndex].layer.SetGaze(axisWeight(-dir[0]), axisWeight(dir[1]));
+    m_face_instances[objectIndex].started = true;
+    return true;
+}
+
+void SceneRenderer::FaceClearGaze(int objectIndex)
+{
+    const auto instance = m_face_instances.find(objectIndex);
+    if (instance != m_face_instances.end()) instance->second.layer.ClearGaze();
+}
+
+void SceneRenderer::FaceSetBlink(int objectIndex, bool enabled)
+{
+    if (objectIndex < 0) return;
+    m_face_instances[objectIndex].layer.SetBlinkEnabled(enabled);
+    m_face_instances[objectIndex].started = true;
+}
+
+void SceneRenderer::UpdateFaceLayers(float dt)
+{
+    // Faces run on Play only; in edit mode the Face tab's override drives them.
+    if (!m_phys_on)
+    {
+        m_face_instances.clear();
+        return;
+    }
+
+    for (DrawItem& item : m_draw_items)
+    {
+        if (item.object_index < 0)
+            continue;
+        GpuMesh* mesh = m_meshes.Get(item.model_path);
+        if (!mesh || !mesh->morph.HasMorph())
+        {
+            item.face_weights.clear();
+            continue;
+        }
+        FaceInstance& instance = m_face_instances[item.object_index];
+        if (!instance.started)
+        {
+            instance.layer.SetSeed(animation::NameHash(item.model_path.c_str()) ^
+                                   (unsigned)(item.object_index * 2654435761u));
+            if (const AnimatorController* c = GetController(item.animator_controller_path))
+                if (!c->face.default_pose.empty())
+                    instance.layer.SetPose(FindFacePose(item.object_index, c->face.default_pose),
+                                           1.0f, 0.0f);
+            instance.started = true;
+        }
+
+        instance.layer.Update(dt);
+        item.face_weights.assign(instance.layer.Weights(),
+                                 instance.layer.Weights() + face::kShapeCount);
+    }
+}
+
+void SceneRenderer::UpdateFaces()
+{
+    std::set<int> live;   // objects that stopped morphing give their clones back
+
+    for (DrawItem& item : m_draw_items)
+    {
+        item.morph_vb = nullptr;
+        if (item.object_index < 0)
+            continue;
+
+        // The panel's preview override wins over the running face layer.
+        const std::vector<float>* weights = &item.face_weights;
+        const auto preview = m_face_preview.find(item.object_index);
+        if (preview != m_face_preview.end())
+            weights = &preview->second;
+        if (weights->size() != face::kShapeCount)
+            continue;
+
+        GpuMesh* mesh = m_meshes.Get(item.model_path);
+        if (!mesh || !mesh->morph.HasMorph())
+            continue;
+
+        item.morph_vb = UpdateMorph(item.object_index, item.model_path, *mesh, *weights);
+        if (item.morph_vb)
+            live.insert(item.object_index);
+    }
+
+    for (auto entry = m_morph_instances.begin(); entry != m_morph_instances.end();)
+    {
+        if (live.count(entry->first))
+        {
+            ++entry;
+            continue;
+        }
+        entry->second.Release();
+        entry = m_morph_instances.erase(entry);
+    }
 }
 
 void SceneRenderer::UpdateAnimations(float dt)
@@ -2262,7 +2547,7 @@ void SceneRenderer::RenderShadowMap()
             const D3DMATRIX wvp = Multiply(item.world, m_shadow_matrix);
             m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
             m_device->SetVertexShaderConstantF(4, &item.world.m[0][0], 4);
-            BindMeshForDraw(mesh, &item.skin_palette);
+            BindMeshForDraw(mesh, &item.skin_palette, item.morph_vb);
             m_device->SetPixelShader(m_shadow_ps);
             for (const GpuSubset& subset : mesh->subsets)
             {
@@ -2334,6 +2619,9 @@ void SceneRenderer::RenderGpu(float dt)
     }
 
     UpdateAnimations(m_gui.Paused() ? 0.0f : dt);
+    // The deform pass runs in edit mode too, for the Face tab's preview.
+    UpdateFaceLayers(m_gui.Paused() ? 0.0f : dt);
+    UpdateFaces();
 
     // Redirect rendering to the offscreen target, remembering the back buffer.
     IDirect3DSurface9* prevRt    = nullptr;
@@ -2574,7 +2862,7 @@ void SceneRenderer::RenderGpu(float dt)
                     m_device->SetIndices(lightmap->second.ib);
                     return lightmap->second.vertexCount;
                 }
-                BindMeshForDraw(gm, &item.skin_palette);
+                BindMeshForDraw(gm, &item.skin_palette, item.morph_vb);
                 return gm->vertexCount;
             };
             // Bump-offset strength: max UV shift across the height field packed
@@ -2935,7 +3223,7 @@ void SceneRenderer::DrawSceneForEnv(const D3DMATRIX& view, const D3DMATRIX& proj
                     const D3DMATRIX wvp = Multiply(item.world, vp);
                     m_device->SetVertexShaderConstantF(0, &wvp.m[0][0], 4);
                     m_device->SetVertexShaderConstantF(4, &item.world.m[0][0], 4);
-                    BindMeshForDraw(gm, &item.skin_palette);
+                    BindMeshForDraw(gm, &item.skin_palette, item.morph_vb);
                     bound = true;
                 }
                 if (!blendPass)

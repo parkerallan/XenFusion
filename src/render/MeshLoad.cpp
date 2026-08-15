@@ -50,7 +50,7 @@ namespace mesh
         in.read(reinterpret_cast<char*>(&h), sizeof(h));
         if (!in || std::memcmp(h.magic, "M360", 4) != 0 || h.version != MESH_VERSION ||
             h.vertexCount == 0 || h.indexCount == 0 ||
-            (h.flags & ~MESH_FLAG_SKINNED) != 0 ||
+            (h.flags & ~(MESH_FLAG_SKINNED | MESH_FLAG_MORPH)) != 0 ||
             h.jointCount > MAX_SKIN_JOINTS ||
             ((h.flags & MESH_FLAG_SKINNED) == 0 && h.jointCount != 0) ||
             ((h.flags & MESH_FLAG_SKINNED) != 0 && h.jointCount == 0))
@@ -122,6 +122,47 @@ namespace mesh
                     return false;
                 }
             }
+        }
+
+        if ((h.flags & MESH_FLAG_MORPH) != 0)
+        {
+            uint32_t target_count = 0;
+            in.read(reinterpret_cast<char*>(&target_count), sizeof(target_count));
+            in.read(reinterpret_cast<char*>(&out.morph.firstVertex), sizeof(out.morph.firstVertex));
+            in.read(reinterpret_cast<char*>(&out.morph.vertexCount), sizeof(out.morph.vertexCount));
+            if (!in || target_count == 0 || target_count > MAX_MORPH_TARGETS ||
+                out.morph.vertexCount == 0 || out.morph.vertexCount > 65536 ||
+                (uint64_t)out.morph.firstVertex + out.morph.vertexCount > h.vertexCount)
+            {
+                out.Release();
+                return false;
+            }
+            out.morph.targets.resize(target_count);
+            for (MeshMorphTarget& target : out.morph.targets)
+            {
+                uint32_t delta_count = 0;
+                ReadStr(in, target.name);
+                in.read(reinterpret_cast<char*>(&target.shape), sizeof(target.shape));
+                in.read(reinterpret_cast<char*>(&target.positionScale), sizeof(target.positionScale));
+                in.read(reinterpret_cast<char*>(&delta_count), sizeof(delta_count));
+                if (!in || delta_count == 0 || delta_count > out.morph.vertexCount)
+                {
+                    out.Release();
+                    return false;
+                }
+                target.deltas.resize(delta_count);
+                in.read(reinterpret_cast<char*>(target.deltas.data()),
+                        (std::streamsize)(target.deltas.size() * sizeof(face::MorphDelta)));
+                if (!in)
+                {
+                    out.Release();
+                    return false;
+                }
+            }
+
+            const size_t bytes = vertices.size() * sizeof(MeshVertex);
+            out.morphBase.resize(bytes);
+            std::memcpy(out.morphBase.data(), vertices.data(), bytes);
         }
 
         const UINT vb_bytes = (UINT)(vertices.size() * sizeof(MeshVertex));

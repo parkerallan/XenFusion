@@ -1,9 +1,12 @@
 #include "anim/AnimationCodec.h"
 #include "anim/AnimatorController.h"
 #include "anim/AnimatorCooker.h"
+#include "anim/FaceShapes.h"
 #include "AnimatorCookFormat.h"
 
+#include <filesystem>
 #include <iostream>
+#include <string>
 
 namespace
 {
@@ -30,6 +33,14 @@ int main(int argc, char** argv)
     collision.type = AnimatorBoneModifierType::Collision;
     collision.bone_name = "CollisionTestBone";
     controller.bone_modifiers.push_back(collision);
+
+    FaceExpressionPose angry;
+    angry.name = "Angry";
+    angry.weights.push_back({"browDownLeft", 1.0f});
+    angry.weights.push_back({"browDownRight", 1.0f});
+    angry.weights.push_back({"notAnArkitShape", 1.0f}); // dropped at cook
+    controller.face.poses.push_back(angry);
+    controller.face.default_pose = "Angry";
     std::vector<unsigned char> payload;
     if (!animator::CookControllerBE(argv[1], controller, payload, error)) return 3;
     if (payload.size() < animcook::kHeaderBytes || ReadU32(payload.data()) != animcook::kMagic ||
@@ -63,6 +74,29 @@ int main(int argc, char** argv)
         if ((size_t)offset + size > payload.size() ||
             !animation::DecodeClipBE(payload.data() + offset, size, decoded, error)) return 5;
     }
-    std::cout << "ANC2 controller: " << payload.size() << " bytes, 3 clips\n";
+    // Face block. Poses resolve to ARKit indices at cook, so the console never
+    // compares a name.
+    const unsigned int pose_count       = ReadU32(payload.data() + 60);
+    const unsigned int pose_table       = ReadU32(payload.data() + 64);
+    const unsigned int pose_target_table = ReadU32(payload.data() + 68);
+    if (pose_count != controller.face.poses.size()) return 6;
+    if (ReadU32(payload.data() + 56) !=
+        animation::NameHash(controller.face.default_pose.c_str())) return 6;
+    for (unsigned int pose = 0; pose < pose_count; ++pose)
+    {
+        const unsigned char* record = payload.data() + pose_table + pose * animcook::kPoseBytes;
+        if (ReadU32(record) != animation::NameHash(controller.face.poses[pose].name.c_str())) return 6;
+        const unsigned int first = ReadU32(record + 4);
+        const unsigned int count = ReadU32(record + 8);
+        if (pose_target_table + (first + count) * animcook::kPoseTargetBytes > payload.size()) return 6;
+        for (unsigned int t = 0; t < count; ++t)
+        {
+            const unsigned char* target =
+                payload.data() + pose_target_table + (first + t) * animcook::kPoseTargetBytes;
+            if (target[0] >= face::kShapeCount) return 6;
+        }
+    }
+    std::cout << "ANC3 controller: " << payload.size() << " bytes, 3 clips, "
+              << pose_count << " face poses\n";
     return 0;
 }

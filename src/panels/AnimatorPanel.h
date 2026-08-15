@@ -34,6 +34,9 @@ private:
     void RenderStates();
     void RenderTransitions();
     void RenderBoneModifiers(EngineState& state);
+    void RenderFace(EngineState& state);
+    void RenderFacePoses();
+    void UpdateFacePreview();
     void RenderControllerEditor(EngineState& state);
     void RenderPreviewViewport(EngineState& state);
 
@@ -50,5 +53,8 @@ private:
     bool preview_texture_ = true;
     int preview_clip_index_ = 0;
     float preview_time_ = 0.0f;
+
+    int face_pose_preview_ = -1;   // -1 = preview nothing
+
     AnimatorPreviewRenderer preview_;
 };

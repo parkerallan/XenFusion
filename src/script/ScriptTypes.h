@@ -176,5 +176,16 @@ namespace script
         { (void)objectIndex; (void)name; }
         virtual void AnimatorSetState(int objectIndex, const char* name)
         { (void)objectIndex; (void)name; }
+
+        // Facial animation. The expression pose, a playing lip-sync clip and
+        // gaze are separate layers: setting one leaves the others alone.
+        virtual bool FaceSetPose(int objectIndex, const char* pose, float weight, float speed)
+        { (void)objectIndex; (void)pose; (void)weight; (void)speed; return false; }
+        virtual bool FaceLookAt(int objectIndex, float x, float y, float z)
+        { (void)objectIndex; (void)x; (void)y; (void)z; return false; }
+        virtual void FaceClearGaze(int objectIndex)
+        { (void)objectIndex; }
+        virtual void FaceSetBlink(int objectIndex, bool enabled)
+        { (void)objectIndex; (void)enabled; }
     };
 }

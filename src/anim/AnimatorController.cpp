@@ -191,6 +191,26 @@ namespace animator
             loaded.bone_modifiers.push_back(modifier);
         }
 
+        // Absent in controllers authored before facial animation existed.
+        const json::const_iterator face = root.find("face");
+        if (face != root.end() && face->is_object())
+        {
+            loaded.face.default_pose = face->value("default_pose", std::string());
+            for (const json& value : face->value("poses", json::array()))
+            {
+                if (!value.is_object()) continue;
+                FaceExpressionPose pose;
+                pose.name = value.value("name", std::string());
+                if (pose.name.empty()) continue;
+                const json::const_iterator weights = value.find("weights");
+                if (weights != value.end() && weights->is_object())
+                    for (json::const_iterator entry = weights->begin(); entry != weights->end(); ++entry)
+                        if (entry->is_number())
+                            pose.weights.push_back({entry.key(), entry->get<float>()});
+                loaded.face.poses.push_back(std::move(pose));
+            }
+        }
+
         if (!ValidateController(loaded, error))
             return false;
         output = std::move(loaded);
@@ -237,6 +257,22 @@ namespace animator
                 {"affects_children", modifier.affects_children},
                 {"box_half_extents", modifier.box_half_extents}, {"box_center", modifier.box_center}
             });
+        }
+
+        // Controllers that never opened the Face tab keep their existing shape.
+        if (!controller.face.IsEmpty() || !controller.face.default_pose.empty())
+        {
+            json face;
+            face["default_pose"] = controller.face.default_pose;
+            face["poses"] = json::array();
+            for (const FaceExpressionPose& pose : controller.face.poses)
+            {
+                json weights = json::object();
+                for (const auto& [target, weight] : pose.weights)
+                    weights[target] = weight;
+                face["poses"].push_back({{"name", pose.name}, {"weights", std::move(weights)}});
+            }
+            root["face"] = std::move(face);
         }
 
         std::ofstream output(path, std::ios::binary | std::ios::trunc);

@@ -20,7 +20,7 @@ editor's **Play** preview and on the **Xbox 360** runtime, so behavior matches.
 12. [Input](#12-input) — `input.button`, `input.pressed`, `input.released`, `input.axis`, name reference
 13. [Video](#13-video) — `video.play`, `video.stop`, `video.is_playing`
 14. [Audio](#14-audio) — `audio.play`, `audio.stop`, `audio.is_playing`, `audio.set_volume`, `audio.set_pitch`, `audio.set_loop`
-15. [Animator](#15-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`
+15. [Animator](#15-animator) — `Animator.SetFloat`, `Animator.SetBool`, `Animator.SetTrigger`, `Animator.SetState`, `Animator.SetFacePose`, `Animator.LookAt`
 16. [Utility](#16-utility) — `log`
 17. [Text](#17-text) — `text.set`
 18. [GUI](#18-gui) — `gui.panel`, `gui.label`, `gui.image`, `gui.button`, `gui.root`, `gui.set_focus`, `gui.set_play_mode`, `gui.focus`, `gui.set_paused`, `gui.is_paused`, `gui.clear`
@@ -1010,6 +1010,51 @@ Animator parameters written by `on_update` are evaluated on the next animation
 update. This keeps behavior consistent between editor Play preview and the Xbox
 360 runtime. Animator calls are transient and do not modify the saved controller
 or scene.
+
+### Facial animation
+
+A face is a separate layer from the skeletal state machine: a character can be
+angry while walking, running or standing still. Three things stack, in this
+order, each overriding only the blendshapes it drives:
+
+1. **Expression pose** — the mood, eased in and out.
+2. **Blink** — procedural, and automatic.
+3. **Gaze** — drives the `eyeLook*` shapes.
+
+Poses are authored on the Animator panel's **Face** tab; the model needs ARKit
+blendshapes for any of it to show. Objects whose mesh has no blendshapes ignore
+these calls.
+
+| Function | Effect |
+|---|---|
+| `Animator.SetFacePose(object, pose [, weight] [, speed])` | blend toward an expression |
+| `Animator.LookAt(object, x, y, z)` | track a world-space point with the eyes |
+| `Animator.SetEyeTarget(object, x, y, z)` | the same call under the other name |
+| `Animator.ClearEyeTarget(object)` | ease the eyes back to centre |
+| `Animator.SetBlink(object, enabled)` | turn procedural blinking off or on |
+
+#### `Animator.SetFacePose(object, pose [, weight] [, speed])`
+
+`weight` (0-1, default `1`) is the intensity, so a pose can be held partly open.
+`speed` (default `0` = snap) eases the transition - higher is faster - so poses
+cross-fade instead of popping. An empty `pose` blends back to the controller's
+default. Returns `true` on success.
+
+```lua
+Animator.SetFacePose("Npc", "Angry")          -- full strength, instant
+Animator.SetFacePose("Npc", "Angry", 0.5, 6)  -- half strength, eased in
+Animator.SetFacePose("Npc", "", 1.0, 6)       -- ease back to default
+```
+
+#### `Animator.LookAt(object, x, y, z)`
+
+Makes the eyes track a world-space point, driving the `eyeLook*` shapes. The
+gaze is smoothed and holds until changed or cleared.
+
+```lua
+local px, py, pz = find("Player"):position()
+Animator.LookAt("Npc", px, py + 1.6, pz)   -- meet the player's eyeline
+```
 
 ---
 

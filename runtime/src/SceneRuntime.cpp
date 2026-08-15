@@ -3,6 +3,7 @@
 #include "RtMath.h"
 #include "SpakFormat.h"
 #include "XboxRenderer.h"
+#include "anim/FaceShapes.h"
 #include "camera/EnvCubeViews.h"
 #include "camera/SkyView.h"
 #include "input/XInputPoll.h" // XInput is available via xtl.h (included by the header)
@@ -798,6 +799,8 @@ void SceneRuntime::ApplyPendingScene()
     m_gui.Clear();
     m_phys.Clear();
     m_phys_poses.clear();
+    for (size_t i = 0; i < m_draw_items.size(); ++i)
+        m_draw_items[i].morph.Release();
     m_draw_items.clear();
     m_shader_items.clear();
     m_image_items.clear();
@@ -923,6 +926,112 @@ void SceneRuntime::AnimatorSetState(int objectIndex, const char* name)
         if (m_draw_items[index].object_index == objectIndex)
             m_draw_items[index].animator.SetState(name);
 }
+
+// --- Lua face.* -----------------------------------------------------------
+// Poses are declared on the object's animator, so an object with no Animator
+// attribute has no expression to drive.
+namespace
+{
+    float FaceGazeAxis(float component)
+    {
+        // Eyes rotate about 35 degrees before a head would follow.
+        const float full = 0.6f;
+        const float scaled = component / full;
+        return scaled < -1.0f ? -1.0f : (scaled > 1.0f ? 1.0f : scaled);
+    }
+}
+
+SceneRuntime::DrawItem* SceneRuntime::FaceItem(int objectIndex)
+{
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+        if (m_draw_items[index].object_index == objectIndex)
+            return &m_draw_items[index];
+    return NULL;
+}
+
+bool SceneRuntime::FaceSetPose(int objectIndex, const char* pose, float weight, float speed)
+{
+    DrawItem* item = FaceItem(objectIndex);
+    if (!item || !item->animator.IsValid())
+        return false;
+    // An empty name eases back to the controller's default.
+    const face::Pose* target = (pose && pose[0])
+        ? item->animator.FindPose(spak::NameHash(pose))
+        : item->animator.DefaultPose();
+    if (pose && pose[0] && !target)
+        return false;
+    item->face.SetPose(target, weight, speed);
+    item->face_started = true;
+    return true;
+}
+
+
+bool SceneRuntime::FaceLookAt(int objectIndex, float x, float y, float z)
+{
+    DrawItem* item = FaceItem(objectIndex);
+    if (!item) return false;
+
+    // Into character space; a rigid world matrix inverts by transpose.
+    const D3DMATRIX& world = item->world;
+    const float local[3] = {x - world._41, y - world._42, z - world._43};
+    float dir[3];
+    dir[0] = local[0] * world._11 + local[1] * world._12 + local[2] * world._13;
+    dir[1] = local[0] * world._21 + local[1] * world._22 + local[2] * world._23;
+    dir[2] = local[0] * world._31 + local[1] * world._32 + local[2] * world._33;
+    const float length = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (length <= 0.0001f)
+        return false;
+    for (int axis = 0; axis < 3; ++axis) dir[axis] /= length;
+
+    // +X is the character's right; the layer takes yaw positive toward its LEFT.
+    item->face.SetGaze(FaceGazeAxis(-dir[0]), FaceGazeAxis(dir[1]));
+    item->face_started = true;
+    return true;
+}
+
+void SceneRuntime::FaceClearGaze(int objectIndex)
+{
+    DrawItem* item = FaceItem(objectIndex);
+    if (item) item->face.ClearGaze();
+}
+
+void SceneRuntime::FaceSetBlink(int objectIndex, bool enabled)
+{
+    DrawItem* item = FaceItem(objectIndex);
+    if (item)
+    {
+        item->face.SetBlinkEnabled(enabled);
+        item->face_started = true;
+    }
+}
+
+void SceneRuntime::UpdateFaceLayers(float dt)
+{
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+    {
+        DrawItem& item = m_draw_items[index];
+        RtMesh* mesh = item.visible ? ResolveMesh(item.model_path) : NULL;
+        if (!mesh || !mesh->HasMorph())
+        {
+            item.face_weights.clear();
+            continue;
+        }
+
+        if (!item.face_started)
+        {
+            item.face.SetSeed(spak::NameHash(item.model_path.c_str()) ^
+                              (unsigned int)(item.object_index * 2654435761u));
+            if (item.animator.IsValid() && item.animator.HasFace())
+                item.face.SetPose(item.animator.DefaultPose(), 1.0f, 0.0f);
+            item.face_started = true;
+        }
+
+        item.face.Update(dt);
+        item.face_weights.assign(item.face.Weights(),
+                                 item.face.Weights() + face::kShapeCount);
+    }
+}
+
 
 // Lua audio.*: transient overrides on the object's Audio attribute (the
 // parsed scene keeps its authored values).
@@ -1726,6 +1835,8 @@ void SceneRuntime::Shutdown()
     m_bloom_blur.Release();
     m_bloom_bright.Release();
     m_beam.Release();
+    for (size_t i = 0; i < m_draw_items.size(); ++i)
+        m_draw_items[i].morph.Release();
     RuntimeAnimator::ClearSharedResources();
     m_cache.Shutdown();
     m_pak.Close();
@@ -1868,6 +1979,9 @@ void SceneRuntime::RebuildSceneLists(bool createItems)
 {
     if (createItems)
     {
+        // Raw COM pointers on a value type: give them back before the items go.
+        for (size_t i = 0; i < m_draw_items.size(); ++i)
+            m_draw_items[i].morph.Release();
         m_draw_items.clear();
         m_shader_items.clear();
     }
@@ -2507,7 +2621,8 @@ void SceneRuntime::RenderDirectionalShadow()
 
         m_device->SetVertexDeclaration(useSkin ? m_skin_mesh_decl : m_mesh_decl);
         m_device->SetVertexShader(useSkin ? mat->skinVs : mat->vs);
-        m_device->SetStreamSource(0, gm->vb, 0, 44);
+        // Same deformed clone the main pass draws.
+        m_device->SetStreamSource(0, item.morph.bound ? item.morph.bound : gm->vb, 0, 44);
         m_device->SetStreamSource(1, useSkin ? gm->skinVb : NULL, 0,
                                   useSkin ? spak::kSkinInfluenceBytes : 0);
         m_device->SetIndices(gm->ib);
@@ -2676,6 +2791,111 @@ void SceneRuntime::PrepareFrame(float dt)
             m_phys.UpdateBoneCollider(item.bone_collider_handles[colliderIndex],
                                       &colliderWorld.m[0][0]);
         }
+    }
+
+    // After the skeleton, before anything draws.
+    UpdateFaceLayers(animDt);
+    UpdateFaces();
+}
+
+IDirect3DVertexBuffer9* SceneRuntime::MorphBufferFor(int objectIndex) const
+{
+    if (objectIndex < 0)
+        return NULL;
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+        if (m_draw_items[index].object_index == objectIndex)
+            return m_draw_items[index].morph.bound;
+    return NULL;
+}
+
+void SceneRuntime::UpdateFaces()
+{
+    // Each morphing object costs a private copy of its whole vertex buffer,
+    // twice; past the cap an object falls back to the shared base-pose one.
+    const int kMaxMorphingObjects = 4;
+    int morphing = 0;
+
+    for (size_t index = 0; index < m_draw_items.size(); ++index)
+    {
+        DrawItem& item = m_draw_items[index];
+        item.morph.bound = NULL;
+        if (!item.visible || item.face_weights.size() != face::kShapeCount)
+        {
+            item.morph.Release();
+            continue;
+        }
+        RtMesh* mesh = ResolveMesh(item.model_path);
+        if (!mesh || !mesh->HasMorph())
+        {
+            item.morph.Release();
+            continue;
+        }
+
+        std::vector<face::MorphTarget> targets(mesh->morph.targets.size());
+        for (size_t t = 0; t < mesh->morph.targets.size(); ++t)
+        {
+            const RtMorphTarget& source = mesh->morph.targets[t];
+            targets[t].deltas        = source.deltas.empty() ? NULL : &source.deltas[0];
+            targets[t].deltaCount    = (unsigned int)source.deltas.size();
+            targets[t].positionScale = source.positionScale;
+            targets[t].shape         = source.shape;
+        }
+        face::MorphView view;
+        view.targets     = targets.empty() ? NULL : &targets[0];
+        view.targetCount = (unsigned int)targets.size();
+        view.firstVertex = mesh->morph.firstVertex;
+        view.vertexCount = mesh->morph.vertexCount;
+
+        if (!face::AnyActive(view, &item.face_weights[0], face::kShapeCount) ||
+            morphing >= kMaxMorphingObjects)
+        {
+            item.morph.Release();
+            continue;
+        }
+        ++morphing;
+
+        if (item.morph.model_path != item.model_path ||
+            item.morph.vertexCount != mesh->vertexCount)
+        {
+            item.morph.Release();
+            const UINT bytes = (UINT)(mesh->vertexCount * 44);
+            bool ok = true;
+            for (int buffer = 0; buffer < 2 && ok; ++buffer)
+            {
+                if (FAILED(m_device->CreateVertexBuffer(bytes, 0, 0, D3DPOOL_MANAGED,
+                                                        &item.morph.vb[buffer], NULL)))
+                {
+                    ok = false;
+                    break;
+                }
+                // Seeded whole; only the morph region is refreshed per frame.
+                void* dst = NULL;
+                item.morph.vb[buffer]->Lock(0, 0, &dst, 0);
+                memcpy(dst, &mesh->morphBase[0], bytes);
+                item.morph.vb[buffer]->Unlock();
+            }
+            if (!ok)
+            {
+                item.morph.Release();
+                continue;
+            }
+            item.morph.model_path  = item.model_path;
+            item.morph.vertexCount = mesh->vertexCount;
+        }
+
+        item.morph.write ^= 1;
+        IDirect3DVertexBuffer9* target = item.morph.vb[item.morph.write];
+        const size_t offset = (size_t)view.firstVertex * 44;
+        // Lock the WHOLE buffer and index in here: a partial lock's pointer is
+        // platform behaviour, and getting it wrong writes the face's vertices
+        // over some other part of the character.
+        void* dst = NULL;
+        if (FAILED(target->Lock(0, 0, &dst, 0)))
+            continue;
+        face::Deform(&mesh->morphBase[offset], 44, view, &item.face_weights[0],
+                     face::kShapeCount, (unsigned char*)dst + offset);
+        target->Unlock();
+        item.morph.bound = target;
     }
 }
 
@@ -3148,6 +3368,7 @@ void SceneRuntime::UpdateAudio(float dt, const D3DMATRIX& view)
             w.path = m_content.Resolve(item.path);
         wants.push_back(w);
     }
+
 
     // Listener = the resolved camera: LookAtLH's basis lives in the view
     // matrix columns (col 2 = forward, col 1 = up); position is m_eye.
@@ -3746,7 +3967,10 @@ void SceneRuntime::DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX&
     m_device->SetVertexDeclaration(useLightmap ? m_lightmap_mesh_decl :
                                    useSkin ? m_skin_mesh_decl : m_mesh_decl);
     m_device->SetVertexShader(useLightmap ? mat->lightmapVs : useSkin ? mat->skinVs : mat->vs);
-    m_device->SetStreamSource(0, useLightmap ? lightmap->second.vb : gm->vb, 0,
+    // Lightmapped objects never morph: baked lighting means a static mesh, and
+    // its geometry lives in a different (52-byte) buffer.
+    IDirect3DVertexBuffer9* morphVb = useLightmap ? NULL : MorphBufferFor(objectIndex);
+    m_device->SetStreamSource(0, useLightmap ? lightmap->second.vb : (morphVb ? morphVb : gm->vb), 0,
                               useLightmap ? 52 : 44);
     m_device->SetStreamSource(1, useSkin ? gm->skinVb : NULL, 0,
                               useSkin ? spak::kSkinInfluenceBytes : 0);

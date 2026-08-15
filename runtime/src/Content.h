@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anim/FaceDeform.h"
+
 #include <xtl.h>
 #include <d3dx9.h>
 
@@ -51,6 +53,29 @@ struct RtJoint
     }
 };
 
+// Mirrors the editor's MeshMorphTarget; `shape` is its ARKit index.
+struct RtMorphTarget
+{
+    std::vector<face::MorphDelta> deltas;
+    float                         positionScale;
+    int                           shape;
+
+    RtMorphTarget() : positionScale(0.0f), shape(face::kShapeNone) {}
+};
+
+// Baking permuted every blendshape-driven vertex into the contiguous range
+// [firstVertex, firstVertex + vertexCount).
+struct RtMorph
+{
+    std::vector<RtMorphTarget> targets;
+    unsigned int               firstVertex;
+    unsigned int               vertexCount;
+
+    RtMorph() : firstVertex(0), vertexCount(0) {}
+    bool HasMorph() const { return !targets.empty() && vertexCount != 0; }
+    void Clear() { targets.clear(); firstVertex = 0; vertexCount = 0; }
+};
+
 // A mesh resident in GPU memory. Vertex layout matches the editor's MeshVertex
 // (pos/normal/tangent/uv, 44 bytes), drawn through a vertex declaration. One
 // shared VB/IB; each material subset draws its own index range.
@@ -61,6 +86,10 @@ struct RtMesh
     IDirect3DIndexBuffer9*  ib;
     std::vector<RtSubset>   subsets;
     std::vector<RtJoint>    joints;
+    RtMorph                 morph;
+    // Undeformed vertices, native-endian, morph meshes only: deformation
+    // accumulates onto the base pose and vertex memory is write-combined.
+    std::vector<unsigned char> morphBase;
     unsigned int            skeletonFingerprint;
     unsigned int            vertexCount;
     unsigned int            indexCount;
@@ -74,6 +103,7 @@ struct RtMesh
         memset(boundsMax, 0, sizeof(boundsMax));
     }
     bool IsSkinned() const { return skinVb != NULL && !joints.empty(); }
+    bool HasMorph() const { return morph.HasMorph() && !morphBase.empty(); }
     void Release(); // frees buffers + subset textures (Content-owned meshes only)
 };
 

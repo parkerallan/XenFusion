@@ -79,6 +79,8 @@ void RtMesh::Release()
     }
     subsets.clear();
     joints.clear();
+    morph.Clear();
+    morphBase.clear();
     skeletonFingerprint = 0;
     if (ib) { ib->Release(); ib = NULL; }
     if (skinVb) { skinVb->Release(); skinVb = NULL; }
@@ -109,7 +111,7 @@ void RtShader::Release()
 // ---------------------------------------------------------------------------
 namespace
 {
-    const unsigned int kMeshVersion = 9;   // must match the editor's MESH_VERSION
+    const unsigned int kMeshVersion = 10;  // must match the editor's MESH_VERSION
     const unsigned int kVertexBytes = 44;  // MeshVertex
 
     // Advance a cursor over a length-prefixed (u32 LE) string.
@@ -275,6 +277,12 @@ RtMesh* Content::GetMesh(const std::string& relPath)
         endian::StoreNativeFromLE32(dst, p + off, vbytes);
         mesh.vb->Unlock();
     }
+    // Kept in system memory: deltas accumulate onto the base pose each frame.
+    if ((flags & 2u) != 0)
+    {
+        mesh.morphBase.resize(vbytes);
+        endian::StoreNativeFromLE32(&mesh.morphBase[0], p + off, vbytes);
+    }
     off += vbytes;
 
     if (FAILED(m_device->CreateIndexBuffer((UINT)ibytes, 0, D3DFMT_INDEX32, D3DPOOL_MANAGED, &mesh.ib, NULL)))
@@ -387,6 +395,66 @@ RtMesh* Content::GetMesh(const std::string& relPath)
             mesh.joints.push_back(joint);
         }
         mesh.skeletonFingerprint = skeletonFingerprint;
+    }
+
+    if ((flags & 2u) != 0)
+    {
+        unsigned int targetCount = 0;
+        if (off + 12 <= size)
+        {
+            targetCount            = endian::LoadU32LE(p + off); off += 4;
+            mesh.morph.firstVertex = endian::LoadU32LE(p + off); off += 4;
+            mesh.morph.vertexCount = endian::LoadU32LE(p + off); off += 4;
+        }
+        if (targetCount == 0 || targetCount > spak::kMaxMorphTargets ||
+            mesh.morph.vertexCount == 0 ||
+            mesh.morph.firstVertex + mesh.morph.vertexCount > vcount)
+        {
+            Log("mesh: bad morph block ", relPath);
+            mesh.Release();
+            m_meshes[relPath] = mesh;
+            return NULL;
+        }
+        for (unsigned int t = 0; t < targetCount; ++t)
+        {
+            RtMorphTarget target;
+            const std::string name = ReadStr(p, size, off); // skipped
+            (void)name;
+            if (off + 12 > size)
+            {
+                Log("mesh: morph target truncated ", relPath);
+                mesh.Release();
+                m_meshes[relPath] = mesh;
+                return NULL;
+            }
+            target.shape         = (int)endian::LoadU32LE(p + off); off += 4;
+            target.positionScale = endian::LoadF32LE(p + off);      off += 4;
+            const unsigned int deltaCount = endian::LoadU32LE(p + off); off += 4;
+            if (deltaCount == 0 || deltaCount > mesh.morph.vertexCount ||
+                off + (size_t)deltaCount * sizeof(face::MorphDelta) > size)
+            {
+                Log("mesh: morph deltas truncated ", relPath);
+                mesh.Release();
+                m_meshes[relPath] = mesh;
+                return NULL;
+            }
+            target.deltas.resize(deltaCount);
+            for (unsigned int d = 0; d < deltaCount; ++d)
+            {
+                const unsigned char* record = p + off + (size_t)d * sizeof(face::MorphDelta);
+                face::MorphDelta& delta = target.deltas[d];
+                delta.vertex = endian::LoadU16LE(record);
+                delta.px = (short)endian::LoadU16LE(record + 2);
+                delta.py = (short)endian::LoadU16LE(record + 4);
+                delta.pz = (short)endian::LoadU16LE(record + 6);
+                delta.nx = (signed char)record[8];
+                delta.ny = (signed char)record[9];
+                delta.nz = (signed char)record[10];
+                delta.pad = 0;
+            }
+            off += (size_t)deltaCount * sizeof(face::MorphDelta);
+            mesh.morph.targets.push_back(target);
+        }
     }
 
     m_meshes[relPath] = mesh;

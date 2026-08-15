@@ -2,6 +2,7 @@
 
 #include "anim/AnimationClip.h"
 #include "anim/AnimationCodec.h"
+#include "anim/FaceShapes.h"
 #include "AnimatorCookFormat.h"
 
 #include <algorithm>
@@ -110,8 +111,44 @@ namespace animator
             (unsigned int)controller.transitions.size() * animcook::kTransitionBytes;
         const unsigned int modifier_offset = clip_offset +
             (unsigned int)clips.size() * animcook::kClipBytes;
-        const unsigned int string_offset = modifier_offset +
+        // Resolved to ARKit indices here so the console never compares a name.
+        struct CookedPose
+        {
+            unsigned int name_hash;
+            std::vector<std::pair<unsigned char, unsigned char>> targets;
+        };
+        std::vector<CookedPose> poses;
+        for (const FaceExpressionPose& pose : controller.face.poses)
+        {
+            if (pose.name.empty()) continue;
+            CookedPose cooked;
+            cooked.name_hash = animation::NameHash(pose.name.c_str());
+            for (const auto& [target, weight] : pose.weights)
+            {
+                const int shape = face::ShapeIndex(target.c_str());
+                if (shape == face::kShapeNone) continue;
+                const float clamped = weight < 0.0f ? 0.0f : (weight > 1.0f ? 1.0f : weight);
+                cooked.targets.push_back({(unsigned char)shape,
+                                          (unsigned char)std::lround(clamped * 255.0f)});
+            }
+            poses.push_back(std::move(cooked));
+        }
+        if (poses.size() > animcook::kMaxPoses)
+        {
+            error = "controller has " + std::to_string(poses.size()) + " face poses; limit is " +
+                    std::to_string(animcook::kMaxPoses);
+            return false;
+        }
+        unsigned int pose_target_total = 0;
+        for (const CookedPose& pose : poses)
+            pose_target_total += (unsigned int)pose.targets.size();
+
+        const unsigned int pose_offset = modifier_offset +
             (unsigned int)controller.bone_modifiers.size() * animcook::kModifierBytes;
+        const unsigned int pose_target_offset = pose_offset +
+            (unsigned int)poses.size() * animcook::kPoseBytes;
+        const unsigned int string_offset = pose_target_offset +
+            pose_target_total * animcook::kPoseTargetBytes;
         unsigned int string_bytes = 0;
         for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
             string_bytes += (unsigned int)modifier.bone_name.size();
@@ -132,6 +169,10 @@ namespace animator
         PushU32(output, modifier_offset);
         PushU32(output, string_offset);
         PushU32(output, string_bytes);
+        PushU32(output, animation::NameHash(controller.face.default_pose.c_str()));
+        PushU32(output, (unsigned int)poses.size());
+        PushU32(output, pose_offset);
+        PushU32(output, pose_target_offset);
 
         for (const AnimatorStateDefinition& state : controller.states)
         {
@@ -194,6 +235,22 @@ namespace animator
             PushU32(output, (unsigned int)modifier.bone_name.size());
             bone_name_offset += (unsigned int)modifier.bone_name.size();
         }
+        unsigned int pose_target_cursor = 0;
+        for (const CookedPose& pose : poses)
+        {
+            PushU32(output, pose.name_hash);
+            PushU32(output, pose_target_cursor);
+            PushU32(output, (unsigned int)pose.targets.size());
+            pose_target_cursor += (unsigned int)pose.targets.size();
+        }
+        for (const CookedPose& pose : poses)
+            for (const auto& [shape, weight] : pose.targets)
+            {
+                output.push_back(shape);
+                output.push_back(weight);
+                output.push_back(0);
+                output.push_back(0);
+            }
         for (const AnimatorBoneModifier& modifier : controller.bone_modifiers)
             output.insert(output.end(), modifier.bone_name.begin(), modifier.bone_name.end());
         for (const CookedClip& clip : clips)

@@ -251,14 +251,8 @@ void InspectorPanel::Render(EngineState& state)
             ImGui::InputText("##model_path", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
             ImGui::PopStyleColor();
 
-            if (ImGui::Checkbox("Cast Shadow", &attr.cast_shadow))
-            {
-                save();
-            }
-
-            if (video_import_)
-                ImGui::TextDisabled("Importing %s...", video_import_->source_name.c_str());
-
+            // ImGui binds the target to the LAST submitted item, so anything
+            // drawn between this and the path field steals the drop zone.
             if (!video_import_ && ImGui::BeginDragDropTarget())
             {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
@@ -296,6 +290,14 @@ void InspectorPanel::Render(EngineState& state)
                 }
                 ImGui::EndDragDropTarget();
             }
+
+            if (ImGui::Checkbox("Cast Shadow", &attr.cast_shadow))
+            {
+                save();
+            }
+
+            if (video_import_)
+                ImGui::TextDisabled("Importing %s...", video_import_->source_name.c_str());
             // Transparency (blend vs. cutout) is derived from the diffuse's alpha
             // channel at load time — no toggle, same as the rest of the material.
         }

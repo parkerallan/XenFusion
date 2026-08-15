@@ -110,9 +110,12 @@ private:
         std::vector<unsigned int> texHash; // 6 per subset (diffuse/normal/spec/emissive/metallic/clearcoat)
         int              state;
         const SpakEntry* entry;
+        // The mesh's 'MRPH' companion, NULL when it has no blendshapes;
+        // requested only once the mesh itself is built.
+        const SpakEntry* morphEntry;
         unsigned int     bytes;   // resident size, for the budget
         unsigned int     lastUse; // frame last requested (LRU)
-        CacheMesh() : state(StLoading), entry(NULL), bytes(0), lastUse(0) {}
+        CacheMesh() : state(StLoading), entry(NULL), morphEntry(NULL), bytes(0), lastUse(0) {}
     };
     struct CacheTex
     {
@@ -179,6 +182,8 @@ private:
     void  Enqueue(unsigned int hash, const SpakEntry* entry, bool hi = false);
     void  EnqueueRange(const RangeKey& key, const SpakEntry* entry);
     void  BuildMeshFromPayload(const std::vector<BYTE>& payload, CacheMesh& cm);
+    // Failure leaves the mesh drawable with no face.
+    void  AttachMorphPayload(const std::vector<BYTE>& payload, CacheMesh& cm);
     void  RefreshMeshTextures(CacheMesh& cm);
     void  EvictIfOverBudget();
     void  WorkerLoop();

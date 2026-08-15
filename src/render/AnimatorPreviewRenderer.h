@@ -55,6 +55,8 @@ public:
     void SetShowMesh(bool show)     { show_mesh_ = show; }
     void SetShowTexture(bool show)  { show_texture_ = show; }
     void SetPlaying(bool playing)   { playing_ = playing; }
+    // ARKit-52 weights applied to the previewed mesh; null clears them.
+    void SetFaceWeights(const float* weights);
     void SetBoneModifiers(const std::vector<AnimatorBoneModifier>& modifiers)
     { bone_modifiers_ = modifiers; }
 
@@ -101,6 +103,15 @@ private:
 
     std::filesystem::path m_project_root; // compiled shaders live in <root>/shaders
     MeshCache             m_meshes;
+
+    // One mesh on screen, so one clone, rewritten when the weights change.
+    std::vector<float>      m_face_weights;    // 52, empty = no face set
+    IDirect3DVertexBuffer9* m_face_vb = nullptr;
+    std::string             m_face_vb_model;   // the clone is sized for one mesh
+    uint32_t                m_face_vb_vertices = 0;
+    bool                    m_face_dirty = false;
+    // The buffer to draw, or null for the mesh's shared one.
+    IDirect3DVertexBuffer9* FaceVertexBuffer(GpuMesh& mesh);
 
     struct ClipCacheEntry
     {

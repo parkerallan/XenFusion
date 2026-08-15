@@ -1,5 +1,6 @@
 #include "render/Mesh.h"
 
+#include "anim/FaceShapes.h"
 #include "render/TextureSetResolve.h"
 
 #include <assimp/Importer.hpp>
@@ -280,6 +281,175 @@ namespace
         return hash;
     }
 
+    // One vertex moved by one blendshape, pre-quantisation. Vertex ids are
+    // merged-mesh ids.
+    struct RawMorphDelta
+    {
+        uint32_t vertex;
+        float    dp[3];
+        float    dn[3];
+    };
+
+    // std::map so a rebake produces byte-identical output.
+    using RawMorphTargets = std::map<std::string, std::vector<RawMorphDelta>>;
+
+    bool HasMorphTargets(const aiScene* scene)
+    {
+        for (unsigned m = 0; m < scene->mNumMeshes; ++m)
+            if (scene->mMeshes[m]->mNumAnimMeshes > 0)
+                return true;
+        return false;
+    }
+
+    // Assimp keeps mAnimMeshes in step through JoinIdenticalVertices and the
+    // left-handed conversion, so deltas line up with the vertices appended at
+    // `base`. Same-named targets across meshes merge into one.
+    void CollectMorphTargets(const aiMesh* am, uint32_t base, float epsilon,
+                             RawMorphTargets& out)
+    {
+        for (unsigned t = 0; t < am->mNumAnimMeshes; ++t)
+        {
+            const aiAnimMesh* anim = am->mAnimMeshes[t];
+            if (!anim || !anim->HasPositions() || anim->mNumVertices != am->mNumVertices)
+                continue;
+
+            std::string name = anim->mName.C_Str();
+            if (name.empty())
+                name = "morph_" + std::to_string(t);
+
+            std::vector<RawMorphDelta>& deltas = out[name];
+            const bool normals = anim->HasNormals() && am->mNormals != nullptr;
+            for (unsigned v = 0; v < am->mNumVertices; ++v)
+            {
+                const aiVector3D dp = anim->mVertices[v] - am->mVertices[v];
+                // Exporters write a delta per vertex; a jaw shape genuinely
+                // moves a fraction of a head.
+                if (std::fabs(dp.x) < epsilon && std::fabs(dp.y) < epsilon && std::fabs(dp.z) < epsilon)
+                    continue;
+
+                RawMorphDelta delta{};
+                delta.vertex = base + v;
+                delta.dp[0] = dp.x; delta.dp[1] = dp.y; delta.dp[2] = dp.z;
+                if (normals)
+                {
+                    const aiVector3D dn = anim->mNormals[v] - am->mNormals[v];
+                    delta.dn[0] = dn.x; delta.dn[1] = dn.y; delta.dn[2] = dn.z;
+                }
+                deltas.push_back(delta);
+            }
+        }
+    }
+
+    int8_t QuantizeNormalDelta(float value)
+    {
+        const float scaled = value * face::kNormalDeltaQuant;
+        const long rounded = std::lround(scaled);
+        return (int8_t)(std::max)((long)-127, (std::min)((long)127, rounded));
+    }
+
+    // Permutes every blendshape-driven vertex into one contiguous range at the
+    // tail, so a frame of facial animation rewrites one slice instead of
+    // scattering writes. Subsets are index RANGES and so are undisturbed; only
+    // index values, the influence stream and delta vertex ids move.
+    bool BuildMorphBlock(RawMorphTargets& raw,
+                         std::vector<MeshVertex>& vertices,
+                         std::vector<uint32_t>& indices,
+                         std::vector<std::vector<std::pair<uint32_t, float>>>& influences,
+                         MeshMorph& out, std::string& error)
+    {
+        // A target the face layer cannot drive is pure payload.
+        for (RawMorphTargets::iterator it = raw.begin(); it != raw.end(); )
+        {
+            if (it->second.empty() || face::ShapeIndex(it->first.c_str()) == face::kShapeNone)
+                raw.erase(it++);
+            else
+                ++it;
+        }
+        if (raw.empty())
+            return true;
+        if (raw.size() > MAX_MORPH_TARGETS)
+        {
+            error = "model has " + std::to_string(raw.size()) + " ARKit blendshapes; limit is " +
+                    std::to_string(MAX_MORPH_TARGETS);
+            return false;
+        }
+
+        std::set<uint32_t> affected;
+        for (const auto& [name, deltas] : raw)
+            for (const RawMorphDelta& delta : deltas)
+                affected.insert(delta.vertex);
+        if (affected.size() > 65536)
+        {
+            error = "blendshapes move " + std::to_string(affected.size()) +
+                    " vertices; the morph region holds at most 65536";
+            return false;
+        }
+
+        const uint32_t total = (uint32_t)vertices.size();
+        const uint32_t first = total - (uint32_t)affected.size();
+
+        // old -> new; both groups keep their relative order.
+        std::vector<uint32_t> remap(total, 0);
+        uint32_t head = 0;
+        uint32_t tail = first;
+        for (uint32_t v = 0; v < total; ++v)
+            remap[v] = affected.count(v) ? tail++ : head++;
+        if (head != first || tail != total)
+        {
+            error = "internal error: morph vertex permutation is not a bijection";
+            return false;
+        }
+
+        std::vector<MeshVertex> permuted(total);
+        for (uint32_t v = 0; v < total; ++v)
+            permuted[remap[v]] = vertices[v];
+        vertices.swap(permuted);
+
+        if (!influences.empty())
+        {
+            influences.resize(total);
+            std::vector<std::vector<std::pair<uint32_t, float>>> permutedInfluences(total);
+            for (uint32_t v = 0; v < total; ++v)
+                permutedInfluences[remap[v]] = std::move(influences[v]);
+            influences.swap(permutedInfluences);
+        }
+
+        for (uint32_t& index : indices)
+            index = remap[index];
+
+        out.firstVertex = first;
+        out.vertexCount = (uint32_t)affected.size();
+        for (const auto& [name, deltas] : raw)
+        {
+            MeshMorphTarget target;
+            target.name  = name;
+            target.shape = face::ShapeIndex(name.c_str());
+
+            float largest = 0.0f;
+            for (const RawMorphDelta& delta : deltas)
+                for (int axis = 0; axis < 3; ++axis)
+                    largest = (std::max)(largest, std::fabs(delta.dp[axis]));
+            target.positionScale = largest / 32767.0f;
+            const float inverse = target.positionScale > 0.0f ? 1.0f / target.positionScale : 0.0f;
+
+            target.deltas.reserve(deltas.size());
+            for (const RawMorphDelta& delta : deltas)
+            {
+                face::MorphDelta packed{};
+                packed.vertex = (unsigned short)(remap[delta.vertex] - first);
+                packed.px = (short)std::lround(delta.dp[0] * inverse);
+                packed.py = (short)std::lround(delta.dp[1] * inverse);
+                packed.pz = (short)std::lround(delta.dp[2] * inverse);
+                packed.nx = QuantizeNormalDelta(delta.dn[0]);
+                packed.ny = QuantizeNormalDelta(delta.dn[1]);
+                packed.nz = QuantizeNormalDelta(delta.dn[2]);
+                target.deltas.push_back(packed);
+            }
+            out.targets.push_back(std::move(target));
+        }
+        return true;
+    }
+
     MeshSkinInfluence PackInfluence(std::vector<std::pair<uint32_t, float>> values)
     {
         MeshSkinInfluence packed{};
@@ -397,10 +567,31 @@ namespace mesh
         map_index.AddDir(source.parent_path(), "");
         map_index.AddDir(source.parent_path(), "textures/");
 
+        // Skinned path only: the static path re-imports with
+        // aiProcess_PreTransformVertices, which discards anim meshes. The
+        // epsilon is relative to model size because exporters disagree about
+        // units (metres for glTF, centimetres for much FBX).
+        float morph_epsilon = 0.0f;
+        if (skinned && HasMorphTargets(scene))
+        {
+            aiVector3D lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
+            for (unsigned m = 0; m < scene->mNumMeshes; ++m)
+                for (unsigned v = 0; v < scene->mMeshes[m]->mNumVertices; ++v)
+                {
+                    const aiVector3D& p = scene->mMeshes[m]->mVertices[v];
+                    lo.x = (std::min)(lo.x, p.x); hi.x = (std::max)(hi.x, p.x);
+                    lo.y = (std::min)(lo.y, p.y); hi.y = (std::max)(hi.y, p.y);
+                    lo.z = (std::min)(lo.z, p.z); hi.z = (std::max)(hi.z, p.z);
+                }
+            const aiVector3D span = hi - lo;
+            morph_epsilon = span.Length() * 1e-4f;
+        }
+
         std::vector<MeshVertex> vertices;
         std::vector<uint32_t>   indices;
         std::vector<MeshSubset> subsets;
         std::vector<std::vector<std::pair<uint32_t, float>>> vertex_influences;
+        RawMorphTargets         raw_morph;
         for (const auto& [mat_index, mesh_list] : by_material)
         {
             MeshSubset subset;
@@ -420,6 +611,8 @@ namespace mesh
                     if (am->mTextureCoords[0]) { mv.u = am->mTextureCoords[0][v].x; mv.v = am->mTextureCoords[0][v].y; }
                     vertices.push_back(mv);
                 }
+                if (morph_epsilon > 0.0f)
+                    CollectMorphTargets(am, base, morph_epsilon, raw_morph);
                 if (skinned)
                 {
                     vertex_influences.resize(vertices.size());
@@ -504,12 +697,18 @@ namespace mesh
             return false;
         }
 
+        // Must run before the header is written: it changes the vertex ORDER.
+        MeshMorph morph;
+        if (skinned && !BuildMorphBlock(raw_morph, vertices, indices, vertex_influences, morph, error))
+            return false;
+
         MeshHeader h{};
         h.magic[0] = 'M'; h.magic[1] = '3'; h.magic[2] = '6'; h.magic[3] = '0';
         h.version     = MESH_VERSION;
         h.vertexCount = (uint32_t)vertices.size();
         h.indexCount  = (uint32_t)indices.size();
-        h.flags       = skinned ? MESH_FLAG_SKINNED : 0;
+        h.flags       = (skinned ? MESH_FLAG_SKINNED : 0u) |
+                        (morph.HasMorph() ? MESH_FLAG_MORPH : 0u);
         h.jointCount  = (uint32_t)skeleton.joints.size();
         h.skeletonFingerprint = skeleton.fingerprint;
 
@@ -550,6 +749,23 @@ namespace mesh
                 out.write(reinterpret_cast<const char*>(&joint.parent), sizeof(joint.parent));
                 out.write(reinterpret_cast<const char*>(joint.inverseBind), sizeof(joint.inverseBind));
                 out.write(reinterpret_cast<const char*>(joint.bindLocal), sizeof(joint.bindLocal));
+            }
+        }
+        if (morph.HasMorph())
+        {
+            const uint32_t target_count = (uint32_t)morph.targets.size();
+            out.write(reinterpret_cast<const char*>(&target_count), sizeof(target_count));
+            out.write(reinterpret_cast<const char*>(&morph.firstVertex), sizeof(morph.firstVertex));
+            out.write(reinterpret_cast<const char*>(&morph.vertexCount), sizeof(morph.vertexCount));
+            for (const MeshMorphTarget& target : morph.targets)
+            {
+                WriteStr(out, target.name);
+                out.write(reinterpret_cast<const char*>(&target.shape), sizeof(target.shape));
+                out.write(reinterpret_cast<const char*>(&target.positionScale), sizeof(target.positionScale));
+                const uint32_t delta_count = (uint32_t)target.deltas.size();
+                out.write(reinterpret_cast<const char*>(&delta_count), sizeof(delta_count));
+                out.write(reinterpret_cast<const char*>(target.deltas.data()),
+                          target.deltas.size() * sizeof(face::MorphDelta));
             }
         }
         return true;

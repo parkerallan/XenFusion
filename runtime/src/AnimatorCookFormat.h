@@ -4,13 +4,22 @@ namespace animcook
 {
     const unsigned int kMagic = 0x414E4331; // 'ANC1'
     const unsigned int kVersionV1 = 1;
-    const unsigned int kVersion = 2;
+    const unsigned int kVersionV2 = 2;
+    const unsigned int kVersion = 3;        // adds the face block
     const unsigned int kHeaderBytesV1 = 40;
-    const unsigned int kHeaderBytes = 56;
+    const unsigned int kHeaderBytesV2 = 56;
+    const unsigned int kHeaderBytes = 72;
     const unsigned int kStateBytes = 20;
     const unsigned int kTransitionBytes = 36;
     const unsigned int kClipBytes = 16;
     const unsigned int kModifierBytes = 92;
+
+    // Face block (v3). Expression poses are sparse -- a pose lists only the
+    // ARKit shapes it drives -- so the targets live in one flat array and each
+    // pose points into it.
+    const unsigned int kPoseBytes       = 12; // nameHash | firstTarget | targetCount
+    const unsigned int kPoseTargetBytes = 4;  // u8 shape | u8 weight | u16 pad
+    const unsigned int kMaxPoses        = 256;
 
     enum ModifierType
     {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "anim/FaceDeform.h"
+
 #include <d3d9.h>
 
 #include <cstdint>
@@ -9,8 +11,11 @@
 
 // Current baked-blob version. Bumped whenever MeshVertex or the material
 // section changes so stale blobs are re-baked from their source.
-constexpr uint32_t MESH_VERSION = 9;
+constexpr uint32_t MESH_VERSION = 10;
 constexpr uint32_t MESH_FLAG_SKINNED = 0x1u;
+constexpr uint32_t MESH_FLAG_MORPH   = 0x2u;
+
+constexpr uint32_t MAX_MORPH_TARGETS = 64;  // ARKit-52 plus headroom
 
 // The first Xbox skinning path uploads one 3x4 matrix per joint to vertex
 // constants. Keep the limit explicit in the shared asset contract so models
@@ -60,6 +65,32 @@ struct MeshSkeleton
     }
 };
 
+// One blendshape: the sparse set of vertices it moves. Deltas are quantised
+// (anim/FaceDeform.h) with ids relative to MeshMorph::firstVertex.
+struct MeshMorphTarget
+{
+    std::string name;                       // as authored; ARKit names match by fold
+    int32_t     shape = -1;                 // resolved ARKit index, or -1
+    float       positionScale = 0.0f;       // int16 delta -> model units
+    std::vector<face::MorphDelta> deltas;
+};
+
+// Baking permutes every blendshape-driven vertex into one contiguous range.
+struct MeshMorph
+{
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
+    std::vector<MeshMorphTarget> targets;
+
+    bool HasMorph() const { return !targets.empty() && vertexCount > 0; }
+    void Clear()
+    {
+        firstVertex = 0;
+        vertexCount = 0;
+        targets.clear();
+    }
+};
+
 struct MeshHeader
 {
     char     magic[4];   // "M360"
@@ -77,6 +108,10 @@ struct MeshHeader
 // relative to the mesh file; empty = absent). Skinned meshes then store vertexCount
 // MeshSkinInfluence records followed by jointCount records: length-prefixed
 // name, int32 parent, 16-float inverse bind, and 16-float local bind matrix.
+// Meshes flagged MESH_FLAG_MORPH close with a morph block: uint32 targetCount,
+// uint32 firstVertex, uint32 vertexCount, then per target a length-prefixed
+// name, int32 ARKit shape index, float positionScale, uint32 deltaCount and
+// deltaCount 12-byte face::MorphDelta records.
 
 // Diffuse / normal / specular / emissive / metallic / clearcoat / roughness
 // texture references for one material.
@@ -132,6 +167,11 @@ struct GpuMesh
     IDirect3DIndexBuffer9*  ib = nullptr;
     std::vector<GpuSubset>  subsets;
     MeshSkeleton            skeleton;
+    MeshMorph               morph;
+    // Undeformed vertices in system memory, morph meshes only: deformation
+    // accumulates onto the base pose every frame, and reading a vertex buffer
+    // back is write-combined memory on console.
+    std::vector<uint8_t>    morphBase;
     uint32_t vertexCount = 0;
     uint32_t indexCount  = 0;
     float boundsMin[3] = {};
@@ -151,6 +191,8 @@ struct GpuMesh
         }
         subsets.clear();
         skeleton.Clear();
+        morph.Clear();
+        morphBase.clear();
         if (ib) { ib->Release(); ib = nullptr; }
         if (skinVb) { skinVb->Release(); skinVb = nullptr; }
         if (vb) { vb->Release(); vb = nullptr; }

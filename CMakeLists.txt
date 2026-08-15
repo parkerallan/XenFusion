@@ -160,6 +160,7 @@ add_executable(XenFusion
     src/anim/AnimatorController.cpp
     src/anim/AnimationClip.cpp
     src/anim/AnimatorRuntime.cpp
+    src/anim/FaceRuntime.cpp
     src/physics/PhysicsWorld.cpp
     src/scene/AttrFieldsEditor.cpp
     src/script/ScriptVM.cpp

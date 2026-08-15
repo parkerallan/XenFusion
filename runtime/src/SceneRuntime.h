@@ -92,6 +92,11 @@ public:
     void  AnimatorSetBool(int objectIndex, const char* name, bool value);
     void  AnimatorSetTrigger(int objectIndex, const char* name);
     void  AnimatorSetState(int objectIndex, const char* name);
+    // Lua face.*; anim/FaceRuntime.h owns the layering order.
+    bool  FaceSetPose(int objectIndex, const char* pose, float weight, float speed);
+    bool  FaceLookAt(int objectIndex, float x, float y, float z);
+    void  FaceClearGaze(int objectIndex);
+    void  FaceSetBlink(int objectIndex, bool enabled);
 
     // contentRoot is the deployed game root, e.g. "game:\". Loads the standard
     // material, the startup scene, and builds shared geometry. Returns false if
@@ -118,6 +123,29 @@ public:
     void Render(float dt);
 
 private:
+    // Two objects sharing a mesh wear different expressions, so a morphing
+    // object draws a private clone: seeded once with the whole mesh, refreshed
+    // each frame over the morph region only, and double-buffered because the
+    // GPU is a frame behind (as the XDK's SkinnedCharacter sample does).
+    struct MorphClone
+    {
+        IDirect3DVertexBuffer9* vb[2];
+        int                     write;
+        unsigned int            vertexCount;
+        std::string             model_path;  // the clone is sized for one mesh
+        IDirect3DVertexBuffer9* bound;       // this frame's buffer; NULL = shared VB
+
+        MorphClone() : write(0), vertexCount(0), bound(NULL) { vb[0] = vb[1] = NULL; }
+        void Release()
+        {
+            for (int i = 0; i < 2; ++i)
+                if (vb[i]) { vb[i]->Release(); vb[i] = NULL; }
+            model_path.clear();
+            vertexCount = 0;
+            bound = NULL;
+        }
+    };
+
     struct DrawItem
     {
         std::string model_path;
@@ -130,10 +158,14 @@ private:
         float       scale[3];     // authored scale (collider is sized separately)
         RuntimeAnimator animator;
         std::vector<float> skin_palette;
+        std::vector<float> face_weights; // ARKit-52, empty when idle
+        MorphClone         morph;
+        face::Layer face;
+        bool        face_started;   // default pose applied
         std::vector<int> bone_collider_handles;
         std::vector<RuntimeAnimator::BoneColliderPose> bone_collider_poses;
         DrawItem() : object_index(-1), dynamic_lighting(false), cast_shadow(false),
-                     visible(true)
+                     visible(true), face_started(false)
         { scale[0] = scale[1] = scale[2] = 1.0f; }
     };
     struct ShaderItem
@@ -218,6 +250,11 @@ private:
     void DrawMesh(RtMesh* gm, const D3DMATRIX& world, const D3DMATRIX& vp, RtShader* mat,
                   bool blendPass, const std::vector<float>* skinPalette = NULL,
                   int objectIndex = -1);
+    void UpdateFaceLayers(float dt);
+    DrawItem* FaceItem(int objectIndex);
+    // Runs once before any pass, so shadow and main draw the same face.
+    void UpdateFaces();
+    IDirect3DVertexBuffer9* MorphBufferFor(int objectIndex) const;
     void DrawShaderItem(const ShaderItem& item, RtShader& shader, const D3DMATRIX& viewProj);
     IDirect3DTexture9* SolidTexture(D3DCOLOR argb);
     bool BuildGeometry();

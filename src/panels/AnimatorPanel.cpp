@@ -1,6 +1,7 @@
 #include "panels/AnimatorPanel.h"
 
 #include "anim/AnimationClip.h"
+#include "anim/FaceShapes.h"
 #include "imgui.h"
 #include "state/EngineState.h"
 #include "ui/Icons.h"
@@ -555,6 +556,132 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
     if (controller_.preview_model_path.empty()) ImGui::EndDisabled();
 }
 
+// --- Face tab: expression poses, previewed live on the previewed character.
+
+void AnimatorPanel::UpdateFacePreview()
+{
+    if (face_pose_preview_ < 0 ||
+        face_pose_preview_ >= (int)controller_.face.poses.size())
+    {
+        preview_.SetFaceWeights(nullptr);
+        return;
+    }
+    float weights[face::kShapeCount] = {};
+    for (const auto& [target, weight] : controller_.face.poses[face_pose_preview_].weights)
+    {
+        const int shape = face::ShapeIndex(target.c_str());
+        if (shape != face::kShapeNone)
+            weights[shape] = std::clamp(weight, 0.0f, 1.0f);
+    }
+    preview_.SetFaceWeights(weights);
+}
+
+
+void AnimatorPanel::RenderFacePoses()
+{
+    AnimatorFaceConfig& face = controller_.face;
+    ImGui::SeparatorText("Expression Poses");
+    if (ImGui::SmallButton("+ Add Pose"))
+    {
+        FaceExpressionPose pose;
+        pose.name = "Pose " + std::to_string(face.poses.size() + 1);
+        face.poses.push_back(pose);
+        face_pose_preview_ = (int)face.poses.size() - 1;
+        dirty_ = true;
+    }
+
+    if (face_pose_preview_ >= (int)face.poses.size())
+        face_pose_preview_ = -1;
+
+    for (std::size_t index = 0; index < face.poses.size(); ++index)
+    {
+        FaceExpressionPose& pose = face.poses[index];
+        ImGui::PushID((int)index);
+        // Per-index id, so renaming does not steal focus on every keystroke.
+        if (ImGui::TreeNode((void*)(uintptr_t)index, "%s",
+                            pose.name.empty() ? "Pose" : pose.name.c_str()))
+        {
+            dirty_ |= InputString("Name", pose.name);
+
+            bool previewing = (face_pose_preview_ == (int)index);
+            if (ImGui::Checkbox("Preview", &previewing))
+                face_pose_preview_ = previewing ? (int)index : -1;
+
+            ImGui::SameLine();
+            if (!pose.name.empty() && face.default_pose == pose.name)
+                ImGui::TextDisabled("(default)");
+            else if (ImGui::SmallButton("Set As Default"))
+            {
+                face.default_pose = pose.name;
+                dirty_ = true;
+            }
+
+            // Offer only shapes this pose does not already drive.
+            std::vector<const char*> available;
+            std::vector<int> shape_of;
+            available.push_back("+ Add blendshape...");
+            shape_of.push_back(-1);
+            for (int shape = 0; shape < face::kShapeCount; ++shape)
+            {
+                const char* name = face::ShapeName(shape);
+                bool present = false;
+                for (const auto& [target, _] : pose.weights)
+                    if (target == name) { present = true; break; }
+                if (!present) { available.push_back(name); shape_of.push_back(shape); }
+            }
+            int add = 0;
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("##addshape", &add, available.data(), (int)available.size()) && add > 0)
+            {
+                pose.weights.push_back({face::ShapeName(shape_of[(std::size_t)add]), 1.0f});
+                dirty_ = true;
+            }
+
+            for (std::size_t w = 0; w < pose.weights.size(); ++w)
+            {
+                ImGui::PushID((int)w);
+                if (ImGui::SmallButton("X"))
+                {
+                    pose.weights.erase(pose.weights.begin() + (std::ptrdiff_t)w);
+                    dirty_ = true;
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(220.0f);
+                dirty_ |= ImGui::SliderFloat(pose.weights[w].first.c_str(),
+                                             &pose.weights[w].second, 0.0f, 1.0f, "%.2f");
+                ImGui::PopID();
+            }
+
+            if (pose.weights.empty())
+                ImGui::TextDisabled("None");
+
+            if (ImGui::SmallButton("Remove Pose"))
+            {
+                if (face.default_pose == pose.name) face.default_pose.clear();
+                face.poses.erase(face.poses.begin() + (std::ptrdiff_t)index);
+                if (face_pose_preview_ == (int)index) face_pose_preview_ = -1;
+                dirty_ = true;
+                ImGui::TreePop();
+                ImGui::PopID();
+                break;
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+    if (face.poses.empty())
+        ImGui::TextDisabled("None");
+}
+
+void AnimatorPanel::RenderFace(EngineState& state)
+{
+    (void)state;
+    RenderFacePoses();
+    UpdateFacePreview();
+}
+
 void AnimatorPanel::RenderControllerEditor(EngineState& state)
 {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -582,7 +709,7 @@ void AnimatorPanel::RenderControllerEditor(EngineState& state)
         }
         if (ImGui::BeginTabItem("Face"))
         {
-            ImGui::TextDisabled("Face animation is outside the 360 runtime scope.");
+            RenderFace(state);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

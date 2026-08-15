@@ -192,9 +192,83 @@ void AnimatorPreviewRenderer::OnDeviceLost()
     m_width = m_height = 0;
 }
 
+void AnimatorPreviewRenderer::SetFaceWeights(const float* weights)
+{
+    if (weights == nullptr)
+    {
+        if (!m_face_weights.empty()) m_face_dirty = true;
+        m_face_weights.clear();
+        return;
+    }
+    // The Face tab pushes weights every frame; only rebuild on a change.
+    if (m_face_weights.size() != (std::size_t)face::kShapeCount ||
+        !std::equal(m_face_weights.begin(), m_face_weights.end(), weights))
+    {
+        m_face_weights.assign(weights, weights + face::kShapeCount);
+        m_face_dirty = true;
+    }
+}
+
+IDirect3DVertexBuffer9* AnimatorPreviewRenderer::FaceVertexBuffer(GpuMesh& mesh)
+{
+    if (!mesh.morph.HasMorph() || mesh.morphBase.empty() ||
+        m_face_weights.size() != (std::size_t)face::kShapeCount)
+        return nullptr;
+
+    std::vector<face::MorphTarget> targets(mesh.morph.targets.size());
+    for (std::size_t t = 0; t < mesh.morph.targets.size(); ++t)
+    {
+        const MeshMorphTarget& source = mesh.morph.targets[t];
+        targets[t].deltas        = source.deltas.data();
+        targets[t].deltaCount    = (unsigned)source.deltas.size();
+        targets[t].positionScale = source.positionScale;
+        targets[t].shape         = source.shape;
+    }
+    face::MorphView view;
+    view.targets     = targets.data();
+    view.targetCount = (unsigned)targets.size();
+    view.firstVertex = mesh.morph.firstVertex;
+    view.vertexCount = mesh.morph.vertexCount;
+
+    if (!face::AnyActive(view, m_face_weights.data(), face::kShapeCount))
+        return nullptr;
+
+    if (m_face_vb_model != m_pending_model || m_face_vb_vertices != mesh.vertexCount)
+    {
+        if (m_face_vb) { m_face_vb->Release(); m_face_vb = nullptr; }
+        const UINT bytes = (UINT)(mesh.vertexCount * sizeof(MeshVertex));
+        if (FAILED(m_device->CreateVertexBuffer(bytes, 0, 0, D3DPOOL_MANAGED, &m_face_vb, nullptr)))
+            return nullptr;
+        void* dst = nullptr;
+        m_face_vb->Lock(0, 0, &dst, 0);
+        std::memcpy(dst, mesh.morphBase.data(), bytes);   // seeded whole, once
+        m_face_vb->Unlock();
+        m_face_vb_model = m_pending_model;
+        m_face_vb_vertices = mesh.vertexCount;
+        m_face_dirty = true;
+    }
+
+    if (m_face_dirty)
+    {
+        const std::size_t offset = (std::size_t)view.firstVertex * sizeof(MeshVertex);
+        void* dst = nullptr;
+        if (SUCCEEDED(m_face_vb->Lock(0, 0, &dst, 0)))
+        {
+            face::Deform(mesh.morphBase.data() + offset, (unsigned)sizeof(MeshVertex), view,
+                         m_face_weights.data(), face::kShapeCount, (unsigned char*)dst + offset);
+            m_face_vb->Unlock();
+        }
+        m_face_dirty = false;
+    }
+    return m_face_vb;
+}
+
 void AnimatorPreviewRenderer::Shutdown()
 {
     OnDeviceLost();
+    if (m_face_vb) { m_face_vb->Release(); m_face_vb = nullptr; }
+    m_face_vb_model.clear();
+    m_face_vb_vertices = 0;
     if (m_def_envcube) { m_def_envcube->Release(); m_def_envcube = nullptr; }
     if (m_def_black)   { m_def_black->Release();   m_def_black = nullptr; }
     if (m_def_normal)  { m_def_normal->Release();  m_def_normal = nullptr; }
@@ -681,7 +755,8 @@ void AnimatorPreviewRenderer::RenderGpu(float /*dt*/)
 
             m_device->SetVertexDeclaration(use_skin ? m_skin_decl : m_mesh_decl);
             m_device->SetVertexShader(use_skin ? m_skin_vs : m_vs);
-            m_device->SetStreamSource(0, mesh->vb, 0, sizeof(MeshVertex));
+            IDirect3DVertexBuffer9* face_vb = FaceVertexBuffer(*mesh);
+            m_device->SetStreamSource(0, face_vb ? face_vb : mesh->vb, 0, sizeof(MeshVertex));
             m_device->SetStreamSource(1, use_skin ? mesh->skinVb : nullptr, 0,
                                       use_skin ? sizeof(MeshSkinInfluence) : 0);
             m_device->SetIndices(mesh->ib);

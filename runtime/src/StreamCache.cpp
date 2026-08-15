@@ -362,6 +362,12 @@ void StreamCache::Update(unsigned int budget)
         std::map<unsigned int, CacheMesh>::iterator mit = m_meshes.find(c.hash);
         if (mit != m_meshes.end())
         {
+            // Filed under its MESH's hash, as a TXHI is under its texture's.
+            if (c.hi)
+            {
+                if (c.ok) AttachMorphPayload(c.payload, mit->second);
+                continue;
+            }
             if (c.ok) BuildMeshFromPayload(c.payload, mit->second);
             if (c.ok && mit->second.mesh.vb)
             {
@@ -369,6 +375,9 @@ void StreamCache::Update(unsigned int budget)
                 mit->second.bytes   = mit->second.entry ? (mit->second.entry->sysMemSize + mit->second.entry->vidMemSize) : 0;
                 mit->second.lastUse = m_frame;
                 m_residentBytes    += mit->second.bytes;
+                // The mesh exists now, so the deltas have vertices to check.
+                if (mit->second.morphEntry)
+                    Enqueue(c.hash, mit->second.morphEntry, true);
             }
             else mit->second.state = StMissing;
             continue;
@@ -556,6 +565,58 @@ void StreamCache::EvictIfOverBudget()
     }
 }
 
+void StreamCache::AttachMorphPayload(const std::vector<BYTE>& blob, CacheMesh& cm)
+{
+    cm.mesh.morph.Clear();
+    if (blob.size() < spak::kMorphHeaderBytes || cm.mesh.vertexCount == 0 ||
+        cm.mesh.morphBase.empty())
+        return;
+
+    const unsigned char* p = &blob[0];
+    if (endian::LoadU32BE(p) != spak::kMorphMagic)
+        return;
+    const unsigned int targetCount = endian::LoadU32BE(p + 4);
+    const unsigned int firstVertex = endian::LoadU32BE(p + 8);
+    const unsigned int vertexCount = endian::LoadU32BE(p + 12);
+    if (targetCount == 0 || targetCount > spak::kMaxMorphTargets ||
+        vertexCount == 0 || vertexCount > spak::kMaxMorphVertices ||
+        firstVertex + vertexCount > cm.mesh.vertexCount)
+        return;
+
+    size_t off = spak::kMorphHeaderBytes;
+    std::vector<RtMorphTarget> targets;
+    for (unsigned int t = 0; t < targetCount; ++t)
+    {
+        if (off + spak::kMorphTargetBytes > blob.size())
+            return;
+        RtMorphTarget target;
+        target.shape = (int)endian::LoadU32BE(p + off);
+        const unsigned int scaleBits = endian::LoadU32BE(p + off + 4);
+        memcpy(&target.positionScale, &scaleBits, sizeof(float));
+        const unsigned int deltaCount = endian::LoadU32BE(p + off + 8);
+        off += spak::kMorphTargetBytes;
+
+        const size_t deltaBytes = (size_t)deltaCount * spak::kMorphDeltaBytes;
+        if (deltaCount == 0 || deltaCount > vertexCount || off + deltaBytes > blob.size())
+            return;
+        target.deltas.resize(deltaCount);
+        memcpy(&target.deltas[0], p + off, deltaBytes); // cooked BE = native here
+        off += deltaBytes;
+        targets.push_back(target);
+    }
+
+    cm.mesh.morph.firstVertex = firstVertex;
+    cm.mesh.morph.vertexCount = vertexCount;
+    cm.mesh.morph.targets.swap(targets);
+
+    // Residency the mesh entry's own sysmem/vidmem sizes do not cover.
+    unsigned int extra = (unsigned int)cm.mesh.morphBase.size();
+    for (size_t t = 0; t < cm.mesh.morph.targets.size(); ++t)
+        extra += (unsigned int)(cm.mesh.morph.targets[t].deltas.size() * sizeof(face::MorphDelta));
+    cm.bytes        += extra;
+    m_residentBytes += extra;
+}
+
 void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh& cm)
 {
     if (blob.size() < spak::kMeshHeaderBytes)
@@ -630,6 +691,13 @@ void StreamCache::BuildMeshFromPayload(const std::vector<BYTE>& blob, CacheMesh&
         cm.mesh.vb->Lock(0, 0, &dst, 0);
         memcpy(dst, p + bufOff, vbytes);
         cm.mesh.vb->Unlock();
+    }
+    // Deformation accumulates onto the base pose every frame; payload and
+    // vertex buffer are both native-endian.
+    if (cm.morphEntry)
+    {
+        cm.mesh.morphBase.resize(vbytes);
+        memcpy(&cm.mesh.morphBase[0], p + bufOff, vbytes);
     }
     if (skinned)
     {
@@ -892,6 +960,12 @@ RtMesh* StreamCache::GetMesh(const std::string& relPath, bool* inPak)
         CacheMesh cm;
         const SpakEntry* e = m_pak ? m_pak->Find(hash) : NULL;
         cm.entry = e;
+        if (e && m_pak)
+        {
+            const std::string morphKey = relPath + spak::kMorphKeySuffix;
+            const SpakEntry* me = m_pak->Find(spak::NameHash(morphKey.c_str()));
+            if (me && me->type == spak::kTypeMorph) cm.morphEntry = me;
+        }
         if (e && e->type == spak::kTypeMesh) { cm.state = StLoading; m_meshes[hash] = cm; Enqueue(hash, e); }
         else                                 { cm.state = StMissing; m_meshes[hash] = cm; }
         it = m_meshes.find(hash);

@@ -77,7 +77,8 @@ images with alpha become DXT5 XPR2 textures. They load asynchronously as whole
 textures through the same LRU cache as material textures; the console never decodes
 PNG/JPG pixels. `deploy.ps1` cooks the pak automatically (building `tools\spakc` and
 enumerating the startup scene's meshes and images), so the deploy requires the XDK.
-See [STREAMING.md](STREAMING.md) for the streaming subsystem.
+See [STREAMING.md](STREAMING.md) for the streaming subsystem and
+[FACE.md](FACE.md) for facial animation.
 
 Then launch it (Xenia mounts the folder holding the `.xex` as `game:\`):
 

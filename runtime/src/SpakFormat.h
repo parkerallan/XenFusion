@@ -142,6 +142,28 @@ namespace spak
     const unsigned int kSkinJointBytes      = 136;        // 2 * u32 + 32 floats
     const unsigned int kMaxSkinJoints       = 72;
 
+    // Blendshape payload, keyed at "<mesh path>#morph" — the companion-entry
+    // shape a cooked GIF uses for its frames. Kept OUT of MSH3 so a character
+    // with no face has a byte-identical mesh payload.
+    //
+    //   u32 magic 'MRP1' | u32 targetCount | u32 firstVertex | u32 vertexCount
+    //   per target: u32 arkitShape | f32 positionScale | u32 deltaCount |
+    //               deltaCount * 12-byte delta records
+    //
+    // A delta is the face::MorphDelta layout, written big-endian so the console
+    // reads the records natively. Names are dropped at cook: the ARKit index is
+    // the identity the face layer drives.
+    const unsigned int kTypeMorph       = 0x4D525048; // 'MRPH'
+    const unsigned int kMorphMagic      = 0x4D525031; // 'MRP1'
+    const unsigned int kMorphHeaderBytes = 16;        // 4 * u32
+    const unsigned int kMorphTargetBytes = 12;        // u32 + f32 + u32
+    const unsigned int kMorphDeltaBytes  = 12;
+    const unsigned int kMaxMorphTargets  = 64;        // mirrors MAX_MORPH_TARGETS
+    const unsigned int kMaxMorphVertices = 65536;     // u16 vertex ids
+
+    // One spelling, so the cooker and the console cannot disagree.
+    const char* const kMorphKeySuffix = "#morph";
+
     // alphaKind values (match RtAlphaKind: Opaque/Cutout/Blend). The low byte is
     // the kind; the byte above carries per-subset flags. The record length is
     // kMeshSubsetBytes above — the xex and the pak always deploy together, so

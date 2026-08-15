@@ -588,8 +588,8 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
     { fprintf(stderr, "spakc: bad mesh magic %s\n", meshRel.c_str()); return false; }
 
     const unsigned int version = ReadU32LE(&blob[4]);
-    if (version != 9)
-    { fprintf(stderr, "spakc: mesh %s is format v%u (need v9) - open the project in the editor to re-bake it\n",
+    if (version != 10)
+    { fprintf(stderr, "spakc: mesh %s is format v%u (need v10) - open the project in the editor to re-bake it\n",
               meshRel.c_str(), version); return false; }
 
     const unsigned int vcount = ReadU32LE(&blob[8]);
@@ -661,6 +661,62 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
             PushU32BE(skinPayload, parent);
             PushSwappedWords(skinPayload, &blob[off], 128);
             off += 128;
+        }
+    }
+
+    // Blendshapes close the blob; they cook into their own 'MRPH' entry.
+    std::vector<unsigned char> morphPayload;
+    unsigned int morphTargets = 0;
+    if ((flags & 2u) != 0)
+    {
+        if (off + 12 > blob.size())
+        { fprintf(stderr, "spakc: mesh morph header truncated %s\n", meshRel.c_str()); return false; }
+        const unsigned int targetCount = ReadU32LE(&blob[off]); off += 4;
+        const unsigned int firstVertex = ReadU32LE(&blob[off]); off += 4;
+        const unsigned int morphVerts  = ReadU32LE(&blob[off]); off += 4;
+        if (targetCount == 0 || targetCount > spak::kMaxMorphTargets ||
+            morphVerts == 0 || morphVerts > spak::kMaxMorphVertices ||
+            (size_t)firstVertex + morphVerts > vcount)
+        { fprintf(stderr, "spakc: mesh has invalid morph block %s\n", meshRel.c_str()); return false; }
+
+        PushU32BE(morphPayload, spak::kMorphMagic);
+        PushU32BE(morphPayload, targetCount);
+        PushU32BE(morphPayload, firstVertex);
+        PushU32BE(morphPayload, morphVerts);
+        for (unsigned int t = 0; t < targetCount; ++t)
+        {
+            // The name is read only to skip it.
+            if (off + 4 > blob.size())
+            { fprintf(stderr, "spakc: mesh morph target truncated %s\n", meshRel.c_str()); return false; }
+            const unsigned int nameLen = ReadU32LE(&blob[off]); off += 4;
+            if (nameLen >= 4096 || off + nameLen + 12 > blob.size())
+            { fprintf(stderr, "spakc: mesh morph target truncated %s\n", meshRel.c_str()); return false; }
+            off += nameLen;
+            const unsigned int shape      = ReadU32LE(&blob[off]); off += 4;
+            const unsigned int scaleBits  = ReadU32LE(&blob[off]); off += 4;
+            const unsigned int deltaCount = ReadU32LE(&blob[off]); off += 4;
+            const size_t deltaBytes = (size_t)deltaCount * spak::kMorphDeltaBytes;
+            if (deltaCount == 0 || deltaCount > morphVerts || off + deltaBytes > blob.size())
+            { fprintf(stderr, "spakc: mesh morph deltas truncated %s\n", meshRel.c_str()); return false; }
+
+            PushU32BE(morphPayload, shape);
+            PushU32BE(morphPayload, scaleBits);
+            PushU32BE(morphPayload, deltaCount);
+            // u16 + 3*i16 + 4*i8: the 16-bit fields swap, the bytes do not, so
+            // PushSwappedWords (32-bit words) cannot do it.
+            for (unsigned int d = 0; d < deltaCount; ++d)
+            {
+                const unsigned char* record = &blob[off + (size_t)d * spak::kMorphDeltaBytes];
+                for (int field = 0; field < 4; ++field)
+                {
+                    morphPayload.push_back(record[field * 2 + 1]);
+                    morphPayload.push_back(record[field * 2 + 0]);
+                }
+                for (int byte = 8; byte < 12; ++byte)
+                    morphPayload.push_back(record[byte]);
+            }
+            off += deltaBytes;
+            ++morphTargets;
         }
     }
 
@@ -741,8 +797,21 @@ bool AddMesh(std::vector<Entry>& entries, std::set<unsigned int>& seen,
                    (skinned ? (size_t)vcount * spak::kSkinInfluenceBytes : 0));
     entries.push_back(e);
 
-        printf("       mesh %s  v=%u i=%u subsets=%u joints=%u tex=%u\n",
-            meshRel.c_str(), vcount, icount, (unsigned int)subs.size(), jointCount, texTotal);
+    if (!morphPayload.empty())
+    {
+        Entry m;
+        m.hash = spak::NameHash((meshRel + spak::kMorphKeySuffix).c_str());
+        m.type = spak::kTypeMorph;
+        m.payload.swap(morphPayload);
+        // All system memory: deltas and the base pose never reach the GPU.
+        m.sysMemSize = (unsigned int)(m.payload.size() + vbytes);
+        m.vidMemSize = 0;
+        entries.push_back(m);
+    }
+
+        printf("       mesh %s  v=%u i=%u subsets=%u joints=%u tex=%u shapes=%u\n",
+            meshRel.c_str(), vcount, icount, (unsigned int)subs.size(), jointCount, texTotal,
+            morphTargets);
     return true;
 }
 
@@ -1370,7 +1439,8 @@ int main(int argc, char** argv)
             AddLightmapSidecar(entries, rootAbs, lmaps[i], spak::kTypeLmap);
         for (size_t i = 0; i < lmuvs.size(); ++i)
             AddLightmapSidecar(entries, rootAbs, lmuvs[i], spak::kTypeLmuv);
-        if (okMeshes == 0 && okImages == 0 && okVideos == 0 && okAudios == 0 && okFonts == 0 && okAnimations == 0)
+        if (okMeshes == 0 && okImages == 0 && okVideos == 0 && okAudios == 0 && okFonts == 0 &&
+            okAnimations == 0)
         { fprintf(stderr, "spakc: nothing cooked\n"); return 1; }
         return WriteSpak(outSpak, entries, compress) ? 0 : 1;
     }

@@ -135,7 +135,8 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
         endian::LoadU32BE(header) != animcook::kMagic)
         return FailResourceLoad();
     const unsigned int version = endian::LoadU32BE(header + 4);
-    if (version != animcook::kVersionV1 && version != animcook::kVersion)
+    if (version != animcook::kVersionV1 && version != animcook::kVersionV2 &&
+        version != animcook::kVersion)
         return FailResourceLoad();
     const unsigned int stateCount = endian::LoadU32BE(header + 12);
     const unsigned int transitionCount = endian::LoadU32BE(header + 16);
@@ -143,13 +144,13 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
     const unsigned int stateOffset = endian::LoadU32BE(header + 24);
     const unsigned int transitionOffset = endian::LoadU32BE(header + 28);
     const unsigned int clipOffset = endian::LoadU32BE(header + 32);
-    const unsigned int modifierCount = version >= animcook::kVersion
+    const unsigned int modifierCount = version >= animcook::kVersionV2
         ? endian::LoadU32BE(header + 40) : 0;
-    const unsigned int modifierOffset = version >= animcook::kVersion
+    const unsigned int modifierOffset = version >= animcook::kVersionV2
         ? endian::LoadU32BE(header + 44) : 0;
-    const unsigned int stringOffset = version >= animcook::kVersion
+    const unsigned int stringOffset = version >= animcook::kVersionV2
         ? endian::LoadU32BE(header + 48) : 0;
-    const unsigned int stringBytes = version >= animcook::kVersion
+    const unsigned int stringBytes = version >= animcook::kVersionV2
         ? endian::LoadU32BE(header + 52) : 0;
     if (stateCount == 0 || stateCount > 1024 || transitionCount > 4096 || clipCount == 0 || clipCount > 1024 ||
         modifierCount > 1024 ||
@@ -238,6 +239,60 @@ bool RuntimeAnimator::Load(StreamPak* pak, StreamCache* streamCache,
             return FailResourceLoad();
         m_resource->modifiers.push_back(modifier);
     }
+    // Controllers cooked before facial animation existed stop at v2.
+    if (version >= animcook::kVersion)
+    {
+        m_resource->defaultPose = endian::LoadU32BE(header + 56);
+        const unsigned int poseCount        = endian::LoadU32BE(header + 60);
+        const unsigned int poseOffset       = endian::LoadU32BE(header + 64);
+        const unsigned int poseTargetOffset = endian::LoadU32BE(header + 68);
+        if (poseCount > animcook::kMaxPoses ||
+            poseOffset + poseCount * animcook::kPoseBytes > m_entry->uncompressedSize)
+            return FailResourceLoad();
+
+        if (poseCount)
+        {
+            records.resize(poseCount * animcook::kPoseBytes);
+            if (!m_pak->ReadRawRange(m_entry, poseOffset, &records[0], (unsigned int)records.size()))
+                return FailResourceLoad();
+            // One flat array shared by every pose: read the span it ends at.
+            unsigned int targetTotal = 0;
+            for (unsigned int index = 0; index < poseCount; ++index)
+            {
+                const unsigned char* record = &records[index * animcook::kPoseBytes];
+                targetTotal = endian::LoadU32BE(record + 4) + endian::LoadU32BE(record + 8);
+            }
+            std::vector<unsigned char> targets(targetTotal * animcook::kPoseTargetBytes);
+            if (targetTotal &&
+                (poseTargetOffset + targets.size() > m_entry->uncompressedSize ||
+                 !m_pak->ReadRawRange(m_entry, poseTargetOffset, &targets[0],
+                                      (unsigned int)targets.size())))
+                return FailResourceLoad();
+
+            for (unsigned int index = 0; index < poseCount; ++index)
+            {
+                const unsigned char* record = &records[index * animcook::kPoseBytes];
+                face::Pose pose;
+                pose.nameHash = endian::LoadU32BE(record);
+                const unsigned int first = endian::LoadU32BE(record + 4);
+                const unsigned int count = endian::LoadU32BE(record + 8);
+                if (first + count > targetTotal)
+                    return FailResourceLoad();
+                for (unsigned int t = 0; t < count; ++t)
+                {
+                    const unsigned char* entry = &targets[(first + t) * animcook::kPoseTargetBytes];
+                    face::PoseTarget target;
+                    target.shape = entry[0];
+                    target.weight = entry[1];
+                    if (target.shape < face::kShapeCount)
+                        pose.targets.push_back(target);
+                }
+                m_resource->poses.push_back(pose);
+            }
+        }
+
+    }
+
     m_resource->defaultState = endian::LoadU32BE(header + 8);
     m_activeState = spak::NameHash(initialState.c_str());
     if (!FindState(m_activeState)) m_activeState = m_resource->defaultState;
@@ -280,6 +335,20 @@ const RuntimeAnimator::State* RuntimeAnimator::FindState(unsigned int hash) cons
     for (size_t index = 0; index < m_resource->states.size(); ++index)
         if (m_resource->states[index].nameHash == hash) return &m_resource->states[index];
     return NULL;
+}
+
+const face::Pose* RuntimeAnimator::FindPose(unsigned int nameHash) const
+{
+    if (!m_resource || nameHash == 0) return NULL;
+    for (size_t index = 0; index < m_resource->poses.size(); ++index)
+        if (m_resource->poses[index].nameHash == nameHash) return &m_resource->poses[index];
+    return NULL;
+}
+
+
+bool RuntimeAnimator::HasFace() const
+{
+    return m_resource && !m_resource->poses.empty();
 }
 
 RuntimeAnimator::Clip* RuntimeAnimator::FindClip(unsigned int hash)

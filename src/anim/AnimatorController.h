@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct AnimatorClipReference
@@ -31,6 +32,21 @@ struct AnimatorTransitionDefinition
     float exit_time = 1.0f;
 };
 
+// Sparse: only the shapes the pose drives are listed.
+struct FaceExpressionPose
+{
+    std::string name;
+    std::vector<std::pair<std::string, float>> weights; // ARKit target -> weight
+};
+
+// Evaluated as its own layer, independent of the skeletal state machine.
+struct AnimatorFaceConfig
+{
+    std::string default_pose;                  // applied when a script sets none
+    std::vector<FaceExpressionPose> poses;
+    bool IsEmpty() const { return poses.empty(); }
+};
+
 struct AnimatorController
 {
     int version = 1;
@@ -41,6 +57,7 @@ struct AnimatorController
     std::vector<AnimatorStateDefinition> states;
     std::vector<AnimatorTransitionDefinition> transitions;
     std::vector<AnimatorBoneModifier> bone_modifiers;
+    AnimatorFaceConfig face;
 };
 
 namespace animator

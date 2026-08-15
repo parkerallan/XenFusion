@@ -33,6 +33,21 @@ add_test(NAME mesh_skin_bake_fox
     COMMAND mesh_skin_bake_test
         "${CMAKE_SOURCE_DIR}/../360proj/assets/models/Fox.gltf")
 
+add_executable(face_layer_test
+    tests/FaceLayerTest.cpp
+    src/anim/FaceRuntime.cpp
+)
+target_include_directories(face_layer_test PRIVATE src)
+add_test(NAME face_layer COMMAND face_layer_test)
+
+add_executable(face_morph_bake_test
+    tests/FaceMorphBakeTest.cpp
+    src/render/MeshBaker.cpp
+)
+target_include_directories(face_morph_bake_test PRIVATE src)
+target_link_libraries(face_morph_bake_test PRIVATE assimp d3d9)
+add_test(NAME face_morph_bake COMMAND face_morph_bake_test)
+
 add_executable(skin_shader_compile_test
     tests/SkinShaderCompileTest.cpp
     src/render/Shader.cpp
@@ -52,7 +67,7 @@ target_include_directories(animator_controller_test PRIVATE src)
 target_link_libraries(animator_controller_test PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME animator_controller_round_trip
     COMMAND animator_controller_test
-        "${CMAKE_SOURCE_DIR}/../360proj/assets/animators/NewAnimator.anim")
+        "${CMAKE_SOURCE_DIR}/../360proj/assets/animators/FoxAnim.anim")
 
 add_executable(animation_clip_test
     tests/AnimationClipTest.cpp

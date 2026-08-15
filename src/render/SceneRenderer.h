@@ -7,6 +7,7 @@
 #include "anim/AnimatorRuntime.h"
 #include "render/BoneModifiers.h"
 #include "video/VideoPlayer.h"
+#include "anim/FaceRuntime.h"
 #include "audio/AudioPlayer.h"
 #include "camera/CameraResolve.h"
 #include "light/LightSelect.h"
@@ -111,6 +112,14 @@ public:
     void  AnimatorSetBool(int objectIndex, const char* name, bool value);
     void  AnimatorSetTrigger(int objectIndex, const char* name);
     void  AnimatorSetState(int objectIndex, const char* name);
+    // Pins an object's ARKit-52 weights for viewport preview, overriding the
+    // face layer; null clears it. Used by the Face tab.
+    void  SetFacePreviewWeights(int objectIndex, const float* weights);
+    // Lua face layer (Animator.SetFacePose / LookAt / ...).
+    bool  FaceSetPose(int objectIndex, const char* pose, float weight, float speed) override;
+    bool  FaceLookAt(int objectIndex, float x, float y, float z) override;
+    void  FaceClearGaze(int objectIndex) override;
+    void  FaceSetBlink(int objectIndex, bool enabled) override;
 
     void Initialize(IDirect3DDevice9* device);
     void Shutdown();
@@ -135,7 +144,34 @@ private:
     // Select the static or skinned vertex path and bind both streams. Until
     // animation sampling lands, skinned meshes receive an identity palette so
     // the authored bind pose remains unchanged in edit mode.
-    void BindMeshForDraw(GpuMesh* mesh, const std::vector<float>* palette = nullptr);
+    void BindMeshForDraw(GpuMesh* mesh, const std::vector<float>* palette = nullptr,
+                         IDirect3DVertexBuffer9* morph_vb = nullptr);
+
+    // Two objects sharing a mesh wear different expressions, so a morphing
+    // object draws a private clone: seeded once with the whole mesh, refreshed
+    // each frame over the morph region, double-buffered because the GPU is
+    // still reading last frame's copy.
+    struct MorphInstance
+    {
+        IDirect3DVertexBuffer9* vb[2] = {nullptr, nullptr};
+        int         write = 0;
+        std::string model_path;         // the clone is sized for one mesh
+        uint32_t    vertexCount = 0;
+
+        void Release()
+        {
+            for (int i = 0; i < 2; ++i)
+                if (vb[i]) { vb[i]->Release(); vb[i] = nullptr; }
+            model_path.clear();
+            vertexCount = 0;
+        }
+    };
+
+    // The buffer to draw, or null for the mesh's shared (base-pose) one.
+    IDirect3DVertexBuffer9* UpdateMorph(int object_index, const std::string& model_path,
+                                        GpuMesh& mesh, const std::vector<float>& weights);
+    void ReleaseMorphInstances();
+    void UpdateFaces();
 
     struct DrawItem
     {
@@ -151,6 +187,10 @@ private:
         bool        dynamic_lighting = false;
         bool        cast_shadow = false;
         std::vector<float> skin_palette;
+        std::vector<float> face_weights;   // ARKit-52, empty when idle
+        // Refreshed by UpdateFaces before any pass, so shadow, capture and main
+        // all draw the same deformation. Null = draw the mesh's shared buffer.
+        IDirect3DVertexBuffer9* morph_vb = nullptr;
     };
 
     struct LightmapVertex
@@ -470,6 +510,29 @@ private:
     std::map<std::string, ControllerCacheEntry> m_animator_controllers;
     std::map<std::string, ClipCacheEntry>       m_animation_clips;
     std::map<int, AnimatorInstance>             m_animator_instances;
+    std::map<int, MorphInstance>                m_morph_instances;
+    std::map<int, std::vector<float>>           m_face_preview;
+
+    // Kept separate from AnimatorInstance: a face outlives its lifetime rules.
+    struct FaceInstance
+    {
+        face::Layer layer;
+        std::vector<unsigned char> clip_bytes;
+        std::string  audio_path;   // project-relative, while a clip plays
+        unsigned int audio_gen = 0;
+        bool         started = false;
+    };
+    std::map<int, FaceInstance> m_face_instances;
+    // Cooked face clips by project-relative path. Cooked, not sampled from the
+    // curves directly, so the viewport plays the EXACT bytes the console will.
+    std::map<std::string, std::vector<unsigned char>> m_face_clips;
+    // Loaded and cached on first use; null when missing or unparseable.
+    const AnimatorController* GetController(const std::string& controller_path);
+    // Null when the object's controller has no such pose.
+    const face::Pose* FindFacePose(int object_index, const std::string& pose_name);
+    std::map<std::string, face::Pose> m_face_poses; // controller path + '#' + pose
+    std::string FaceAudioKey(int object_index, unsigned int generation) const;
+    void UpdateFaceLayers(float dt);
     void UpdateAnimations(float dt);
 
     // Unit quad + unit cube (mesh vertex layout) for standalone shaders

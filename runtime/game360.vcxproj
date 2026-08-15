@@ -85,6 +85,7 @@
     <ClCompile Include="..\src\audio\AudioVoicePolicy.cpp" />
     <ClCompile Include="..\src\audio\AudioPlayer.cpp" />
     <ClCompile Include="..\src\audio\Spatial3D.cpp" />
+    <ClCompile Include="..\src\anim\FaceRuntime.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\XboxRenderer.h" />

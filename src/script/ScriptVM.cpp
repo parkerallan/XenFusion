@@ -899,6 +899,47 @@ namespace
         return 0;
     }
 
+    // Face layer. Poses and lip-sync clips are declared on the object's
+    // animator, so these fail (returning false) on an object without one.
+    int l_animator_set_face_pose(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (!h) { lua_pushboolean(L, 0); return 1; }
+        // An empty pose name eases back to the controller's default; weight
+        // defaults to full and speed to 0, which snaps (what a cut wants).
+        const char* pose = lua_isnoneornil(L, 2) ? "" : luaL_checkstring(L, 2);
+        const float weight = (float)luaL_optnumber(L, 3, 1.0);
+        const float speed = (float)luaL_optnumber(L, 4, 0.0);
+        lua_pushboolean(L, h->FaceSetPose(h->FindObject(luaL_checkstring(L, 1)),
+                                          pose, weight, speed) ? 1 : 0);
+        return 1;
+    }
+    int l_animator_set_eye_target(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (!h) { lua_pushboolean(L, 0); return 1; }
+        lua_pushboolean(L, h->FaceLookAt(h->FindObject(luaL_checkstring(L, 1)),
+                                         (float)luaL_checknumber(L, 2),
+                                         (float)luaL_checknumber(L, 3),
+                                         (float)luaL_checknumber(L, 4)) ? 1 : 0);
+        return 1;
+    }
+    int l_animator_clear_eye_target(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        if (h) h->FaceClearGaze(h->FindObject(luaL_checkstring(L, 1)));
+        return 0;
+    }
+    int l_animator_set_blink(lua_State* L)
+    {
+        script::ScriptHost* h = getHost(L);
+        // Blink is on by default, so a bare call with no second argument reads
+        // as "turn it off" only if the script says so explicitly.
+        if (h) h->FaceSetBlink(h->FindObject(luaL_checkstring(L, 1)),
+                               lua_isnoneornil(L, 2) ? true : (lua_toboolean(L, 2) != 0));
+        return 0;
+    }
+
     // ---------------------------------------------------------------------
     // gui table + xf_widget handles
     //
@@ -1542,6 +1583,12 @@ namespace script
         lua_pushcfunction(L, l_animator_set_bool);    lua_setfield(L, -2, "SetBool");
         lua_pushcfunction(L, l_animator_set_trigger); lua_setfield(L, -2, "SetTrigger");
         lua_pushcfunction(L, l_animator_set_state);   lua_setfield(L, -2, "SetState");
+        lua_pushcfunction(L, l_animator_set_face_pose);       lua_setfield(L, -2, "SetFacePose");
+        lua_pushcfunction(L, l_animator_set_eye_target);      lua_setfield(L, -2, "SetEyeTarget");
+        // LookAt is the same call under the name the Vulkan engine's API uses.
+        lua_pushcfunction(L, l_animator_set_eye_target);      lua_setfield(L, -2, "LookAt");
+        lua_pushcfunction(L, l_animator_clear_eye_target);    lua_setfield(L, -2, "ClearEyeTarget");
+        lua_pushcfunction(L, l_animator_set_blink);           lua_setfield(L, -2, "SetBlink");
         lua_setglobal(L, "Animator");
 
         // Global gui table + the widget handle metatable. Only registered when
