@@ -1,0 +1,510 @@
+{
+  "_name": "简体中文",
+  "_font": "NotoSansSC-Regular.otf",
+  "_glyphs": "chinese_simplified",
+  "animator": {
+    "bonemod": {
+      "add_selected_bone": "+ 添加所选骨骼",
+      "advanced": "高级",
+      "affects_children": "影响子对象",
+      "angle_limit": "角度限制",
+      "bone_modifiers": "骨骼修改器",
+      "center_offset": "中心偏移",
+      "fit_to_bone": "适配骨骼",
+      "gravity_dir": "重力方向",
+      "half_extents": "半尺寸",
+      "preset": "预设",
+      "radius": "半径",
+      "remove_modifier": "移除修改器",
+      "type": "类型",
+      "type_collision": "碰撞",
+      "type_physics": "物理"
+    },
+    "clips": {
+      "add_clip": "+ 添加片段",
+      "clip": "片段",
+      "drop_model_fbx_gltf_glb_here": "将模型（.fbx/.gltf/.glb）拖到此处",
+      "import_selected_model": "导入所选模型",
+      "imported_clips": "已导入的片段",
+      "remove_clip": "移除片段"
+    },
+    "controller": {
+      "face": "面部",
+      "general": "常规"
+    },
+    "faceclips": {
+      "clips": "片段",
+      "missing": "缺失",
+      "none": "无"
+    },
+    "livelink": {
+      "calibrate_neutral": "校准中性表情",
+      "connect": "连接",
+      "disconnect": "断开连接",
+      "hint": "已停滞 - 最后一个数据包来自 %s",
+      "hint_2": "正在监听 %d，但没有数据到达",
+      "hint_3": "此电脑没有带网关的网络适配器",
+      "hold_still_s": "请保持不动... %.1f 秒",
+      "live_link_face": "Live Link Face",
+      "not_listening": "未在监听",
+      "on_selected_object": "应用于所选对象",
+      "point_the_phone_at": "将手机对准  %s : %d",
+      "port": "端口",
+      "preview": "预览",
+      "s_from": "%s  %.0f/秒  来自 %s"
+    },
+    "no_options": "%s：无可用选项",
+    "poses": {
+      "add_pose": "+ 添加姿势",
+      "default": "（默认）",
+      "expression_poses": "表情姿势",
+      "none": "无",
+      "preview": "预览",
+      "remove_pose": "移除姿势",
+      "set_as_default": "设为默认"
+    },
+    "preview": {
+      "bone": "骨骼：%s",
+      "mesh": "网格",
+      "no_clips": "（无片段）",
+      "s": "%.2f / %.2f 秒",
+      "skeleton": "骨架",
+      "texture": "纹理"
+    },
+    "record": {
+      "hint": "正在等待麦克风...",
+      "microphone": "麦克风",
+      "needs_tracking": "需要开启跟踪",
+      "record": "录制",
+      "s_frames": "%.1f 秒  %u 帧",
+      "stop": "停止",
+      "take_name": "镜次名称",
+      "text": "（%s）"
+    },
+    "states": {
+      "add_state": "+ 添加状态",
+      "default_state": "默认状态",
+      "loop": "循环",
+      "playback_speed": "播放速度",
+      "remove": "移除",
+      "set_as_default": "设为默认",
+      "state": "状态",
+      "states": "状态"
+    },
+    "toolbar": {
+      "hint": "打开项目后才能编辑动画控制器。",
+      "unsaved_changes": "有未保存的更改"
+    },
+    "transitions": {
+      "add_transition": "+ 添加过渡",
+      "blend_duration": "混合时长",
+      "exit_time": "退出时间",
+      "has_exit_time": "启用退出时间",
+      "hint": "示例：grounded, !grounded, speed > 0.5, moving == true",
+      "remove_transition": "移除过渡",
+      "transition": "过渡",
+      "transitions": "过渡"
+    }
+  },
+  "assets": {
+    "import": "导入",
+    "import_tooltip": "导入文件（或从资源管理器拖入）",
+    "new_folder": "新建文件夹",
+    "new_script": "新建脚本",
+    "new_shader": "新建着色器"
+  },
+  "common": {
+    "add": "添加",
+    "browse": "浏览...",
+    "cancel": "取消",
+    "clear": "清除",
+    "clear_all": "全部清除",
+    "copy": "复制",
+    "delete": "删除",
+    "new_name": "新名称：",
+    "no_project": "未打开项目。",
+    "not_set": "（未设置）",
+    "off": "关",
+    "on": "开",
+    "rename": "重命名",
+    "save": "保存",
+    "select_all": "全选"
+  },
+  "editor": {
+    "empty": "从“文件”或“资源”面板打开文本或代码文件。"
+  },
+  "files": {
+    "new_object": "新建对象",
+    "new_scene": "新建场景",
+    "no_project_hint": "文件 > 新建项目 / 打开项目。"
+  },
+  "inspector": {
+    "add_attribute": "添加属性",
+    "animator": {
+      "auto_play": "自动播放",
+      "hint": "编辑模式下为绑定姿势；播放开始时控制器启动。",
+      "playback_speed": "播放速度"
+    },
+    "attribute": {
+      "3d_model": "3D 模型",
+      "animator": "动画控制器",
+      "audio": "音频",
+      "camera": "摄像机",
+      "color": "颜色",
+      "directional_light": "平行光",
+      "environment_light": "环境光",
+      "image": "图像",
+      "point_light": "点光源",
+      "rigid_body": "刚体",
+      "script": "脚本",
+      "shader": "着色器",
+      "skybox": "天空盒",
+      "spot_light": "聚光灯",
+      "text": "文本",
+      "trigger_volume": "触发体积",
+      "video": "视频"
+    },
+    "attributes": "属性",
+    "audio": {
+      "3d_spatialize": "3D 空间化",
+      "class": "类别",
+      "class_items": [
+        "音效",
+        "音乐",
+        "环境音",
+        "对白"
+      ],
+      "doppler_factor": "多普勒系数",
+      "hint": "仅在播放模式下发声；位置跟随对象。",
+      "load_mode": "加载模式",
+      "load_mode_items": [
+        "自动",
+        "常驻",
+        "流式"
+      ],
+      "loop": "循环",
+      "max_distance": "最大距离",
+      "min_distance": "最小距离",
+      "pitch": "音高",
+      "play_items": [
+        "关闭",
+        "开启"
+      ],
+      "play_mode": "播放模式",
+      "priority": "优先级",
+      "volume": "音量"
+    },
+    "camera": {
+      "acceleration": "加速度",
+      "active": "启用",
+      "add_point": "添加路径点",
+      "far": "远裁剪面",
+      "fov": "视野",
+      "lock_position": "锁定位置",
+      "near": "近裁剪面",
+      "none": "（无）",
+      "offset": "偏移",
+      "orbit": "环绕",
+      "path_points": "路径点（%d）",
+      "rotation_offset": "旋转偏移",
+      "rotation_offset_track": "旋转偏移",
+      "smoothing": "平滑",
+      "speed": "速度",
+      "target": "目标",
+      "type": "类型",
+      "type_items": [
+        "固定",
+        "跟随",
+        "路径"
+      ]
+    },
+    "color": {
+      "alpha": "不透明度",
+      "color": "颜色",
+      "hint": "位置和尺寸基于 1280x720 参考空间。",
+      "hint_2": "优先级越高绘制得越靠后。",
+      "lock_aspect_ratio": "锁定宽高比",
+      "position": "位置",
+      "priority": "优先级",
+      "size": "尺寸",
+      "stretch_to_screen": "拉伸至全屏",
+      "width": "宽度"
+    },
+    "hint": "请在“文件”面板中选择一个对象。",
+    "image": {
+      "alpha": "不透明度",
+      "hint": "位置和尺寸基于 1280x720 参考空间。",
+      "hint_2": "优先级越高绘制得越靠后。",
+      "hint_3": "播放节奏来自 GIF 自身的帧延迟。",
+      "hint_4": "播放时动画；编辑时固定在第 1 帧。",
+      "lock_aspect_ratio": "锁定宽高比",
+      "play_mode": "播放模式",
+      "play_mode_items": [
+        "关闭",
+        "播放一次",
+        "循环"
+      ],
+      "position": "位置",
+      "priority": "优先级",
+      "size": "尺寸",
+      "stretch_to_screen": "拉伸至全屏",
+      "tint": "着色",
+      "width": "宽度"
+    },
+    "light": {
+      "beam_intensity": "光束强度",
+      "color": "颜色",
+      "inner_cone": "内锥角",
+      "intensity": "强度",
+      "mode": "模式",
+      "mode_items": [
+        "烘焙",
+        "实时",
+        "混合"
+      ],
+      "outer_cone": "外锥角",
+      "project_light_shaft": "投射光束",
+      "range": "范围"
+    },
+    "model": {
+      "cast_shadow": "投射阴影",
+      "importing": "正在导入 %s..."
+    },
+    "position": "位置",
+    "rigidbody": {
+      "angular_damping": "角阻尼",
+      "body": "刚体类型",
+      "body_items": [
+        "静态",
+        "动态",
+        "运动学"
+      ],
+      "bounciness": "弹性",
+      "friction": "摩擦力",
+      "gravity": "重力",
+      "gravity_scale": "重力系数",
+      "half_extents": "半尺寸",
+      "half_height": "半高",
+      "hint": "使用此对象的 3D 模型网格。",
+      "linear_damping": "线性阻尼",
+      "lock_rotation": "锁定旋转",
+      "mass": "质量",
+      "radius": "半径",
+      "shape": "形状",
+      "shape_items": [
+        "长方体",
+        "球体",
+        "胶囊体",
+        "圆柱体",
+        "网格（凸包）",
+        "网格（精确）"
+      ]
+    },
+    "rotation": "旋转",
+    "scale": "缩放",
+    "script": {
+      "hint": "播放期间运行 on_start / on_update(dt) / on_trigger。"
+    },
+    "skybox": {
+      "hint": "等距柱状（2:1）图像。仅偏航；对象变换不生效。",
+      "hint_2": "场景中的第一个天空盒生效。",
+      "rotation": "旋转"
+    },
+    "text": {
+      "alpha": "不透明度",
+      "color": "颜色",
+      "font_size": "字号",
+      "hint": "位置和尺寸基于 1280x720 参考空间。",
+      "hint_2": "优先级越高绘制得越靠后。",
+      "lock_aspect_ratio": "锁定宽高比",
+      "position": "位置",
+      "priority": "优先级",
+      "size": "尺寸",
+      "text": "文本",
+      "width": "宽度"
+    },
+    "transform": "变换",
+    "trigger": {
+      "half_extents": "半尺寸",
+      "half_height": "半高",
+      "hint": "仅报告重叠；无物理响应。",
+      "radius": "半径",
+      "shape": "形状",
+      "shape_items": [
+        "长方体",
+        "球体",
+        "胶囊体",
+        "圆柱体"
+      ]
+    },
+    "video": {
+      "alpha": "不透明度",
+      "hint": "位置和尺寸基于 1280x720 参考空间。",
+      "hint_2": "优先级越高绘制得越靠后。",
+      "hint_3": "编辑模式显示第一帧；播放模式下播放。",
+      "lock_aspect_ratio": "锁定宽高比",
+      "muted": "静音",
+      "play_mode": "播放模式",
+      "play_mode_items": [
+        "关闭",
+        "播放一次",
+        "循环"
+      ],
+      "position": "位置",
+      "priority": "优先级",
+      "size": "尺寸",
+      "stretch_to_screen": "拉伸至全屏",
+      "tint": "着色",
+      "volume": "音量",
+      "width": "宽度"
+    },
+    "visible": "可见"
+  },
+  "log": {
+    "tooltip": {
+      "auto_scroll": "自动滚动：%s",
+      "clear": "清除日志"
+    }
+  },
+  "mapping": {
+    "column": {
+      "control": "Xbox 控件",
+      "pc_input": "PC 按键 / 鼠标",
+      "script_call": "脚本调用"
+    },
+    "hint": "将 PC 按键或鼠标绑定到 Xbox 控件，即可在预览中无需手柄驱动脚本",
+    "listening": "请按任意键...",
+    "mouse": {
+      "minus_x": "鼠标移动 -X",
+      "minus_y": "鼠标移动 -Y",
+      "plus_x": "鼠标移动 +X",
+      "plus_y": "鼠标移动 +Y"
+    },
+    "no_project": "（打开项目后才能保存）"
+  },
+  "menu": {
+    "build": {
+      "bake_lighting": "烘焙光照",
+      "build_iso": "生成 .iso 映像",
+      "clean": "清理生成",
+      "rebuild_shaders": "重新编译引擎着色器",
+      "run_xex": "生成并运行 XEX",
+      "title": "生成"
+    },
+    "file": {
+      "close_project": "关闭项目",
+      "exit": "退出",
+      "new_project": "新建项目...",
+      "open_project": "打开项目...",
+      "recent_projects": "最近的项目...",
+      "save_scene": "保存场景",
+      "title": "文件"
+    },
+    "view": {
+      "title": "视图"
+    }
+  },
+  "modal": {
+    "import": {
+      "confirm": "导入",
+      "destination": "目标位置",
+      "empty": "（将文件拖到此处 - 尚未暂存）",
+      "hint": "将文件从 Windows 资源管理器拖到此窗口即可暂存。",
+      "staged": "已暂存的文件",
+      "title": "导入资源"
+    },
+    "recent": {
+      "empty": "没有最近的项目。",
+      "header": "最近",
+      "new_project": "新建项目",
+      "open_project": "打开项目",
+      "title": "最近的项目"
+    }
+  },
+  "panel": {
+    "animator": {
+      "title": "动画控制器"
+    },
+    "assets": {
+      "title": "资源"
+    },
+    "editor": {
+      "title": "编辑器"
+    },
+    "files": {
+      "title": "文件列表"
+    },
+    "inspector": {
+      "title": "检查器"
+    },
+    "log": {
+      "title": "日志"
+    },
+    "mapping": {
+      "title": "映射"
+    },
+    "performance": {
+      "title": "性能"
+    },
+    "settings": {
+      "title": "设置"
+    },
+    "style_editor": {
+      "title": "样式编辑器"
+    },
+    "version_control": {
+      "title": "版本控制"
+    },
+    "viewport": {
+      "title": "视口"
+    }
+  },
+  "performance": {
+    "counts": "场景：%d   对象：%d",
+    "fps": "%.1f FPS",
+    "frame_ms": "%.3f 毫秒/帧",
+    "plot_overlay": "帧时间（毫秒）"
+  },
+  "settings": {
+    "build": {
+      "config": "配置",
+      "header": "生成配置",
+      "iso_name": "ISO 名称",
+      "iso_name_hint": "<项目>.iso",
+      "output_dir": "生成输出文件夹",
+      "output_dir_default": "  （未设置 - 默认使用引擎的 runtime\\ 文件夹）"
+    },
+    "language": {
+      "header": "语言",
+      "none": "  （在 lang\\ 中未找到语言文件）"
+    },
+    "log_filters": {
+      "build": "生成",
+      "error": "错误",
+      "header": "日志筛选",
+      "info": "信息",
+      "script": "日志",
+      "warning": "警告"
+    },
+    "toolchain": {
+      "emulator": "Xenia 模拟器",
+      "header": "工具链",
+      "xdk": "Xbox 360 SDK (XDK) 2.0.21256.3"
+    }
+  },
+  "style_editor": {
+    "theme": "引擎主题"
+  },
+  "vcs": {
+    "commit": "提交",
+    "commit_hint": "提交信息",
+    "detached": "（游离头指针）",
+    "fetch": "获取",
+    "init_repo": "初始化仓库",
+    "no_changes": "没有更改。",
+    "no_repo": "此项目文件夹不是 git 仓库。",
+    "pull": "拉取",
+    "push": "推送",
+    "refresh": "刷新"
+  }
+}

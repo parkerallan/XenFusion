@@ -1,0 +1,510 @@
+{
+  "_name": "日本語",
+  "_font": "NotoSansJP-Regular.otf",
+  "_glyphs": "japanese",
+  "animator": {
+    "bonemod": {
+      "add_selected_bone": "+ 選択したボーンを追加",
+      "advanced": "詳細",
+      "affects_children": "子に影響",
+      "angle_limit": "角度制限",
+      "bone_modifiers": "ボーンモディファイア",
+      "center_offset": "中心オフセット",
+      "fit_to_bone": "ボーンに合わせる",
+      "gravity_dir": "重力の向き",
+      "half_extents": "ハーフサイズ",
+      "preset": "プリセット",
+      "radius": "半径",
+      "remove_modifier": "モディファイアを削除",
+      "type": "種類",
+      "type_collision": "コリジョン",
+      "type_physics": "物理"
+    },
+    "clips": {
+      "add_clip": "+ クリップを追加",
+      "clip": "クリップ",
+      "drop_model_fbx_gltf_glb_here": "モデル (.fbx/.gltf/.glb) をここにドロップ",
+      "import_selected_model": "選択したモデルをインポート",
+      "imported_clips": "インポート済みクリップ",
+      "remove_clip": "クリップを削除"
+    },
+    "controller": {
+      "face": "フェイス",
+      "general": "全般"
+    },
+    "faceclips": {
+      "clips": "クリップ",
+      "missing": "見つかりません",
+      "none": "なし"
+    },
+    "livelink": {
+      "calibrate_neutral": "ニュートラルを調整",
+      "connect": "接続",
+      "disconnect": "切断",
+      "hint": "停止しました - 最後のパケットの送信元 %s",
+      "hint_2": "%d で待ち受け中ですが、何も届きません",
+      "hint_3": "この PC にはゲートウェイを持つネットワークアダプターがありません",
+      "hold_still_s": "動かないでください... %.1f 秒",
+      "live_link_face": "Live Link Face",
+      "not_listening": "待ち受けていません",
+      "on_selected_object": "選択中のオブジェクトに適用",
+      "point_the_phone_at": "スマートフォンを向けてください  %s : %d",
+      "port": "ポート",
+      "preview": "プレビュー",
+      "s_from": "%s  %.0f/秒  送信元 %s"
+    },
+    "no_options": "%s: オプションなし",
+    "poses": {
+      "add_pose": "+ ポーズを追加",
+      "default": "(既定)",
+      "expression_poses": "表情ポーズ",
+      "none": "なし",
+      "preview": "プレビュー",
+      "remove_pose": "ポーズを削除",
+      "set_as_default": "既定に設定"
+    },
+    "preview": {
+      "bone": "ボーン: %s",
+      "mesh": "メッシュ",
+      "no_clips": "(クリップなし)",
+      "s": "%.2f / %.2f 秒",
+      "skeleton": "スケルトン",
+      "texture": "テクスチャ"
+    },
+    "record": {
+      "hint": "マイクを待っています...",
+      "microphone": "マイク",
+      "needs_tracking": "トラッキングが必要",
+      "record": "録画",
+      "s_frames": "%.1f 秒  %u フレーム",
+      "stop": "停止",
+      "take_name": "テイク名",
+      "text": "(%s)"
+    },
+    "states": {
+      "add_state": "+ ステートを追加",
+      "default_state": "既定のステート",
+      "loop": "ループ",
+      "playback_speed": "再生速度",
+      "remove": "削除",
+      "set_as_default": "既定に設定",
+      "state": "ステート",
+      "states": "ステート"
+    },
+    "toolbar": {
+      "hint": "アニメーターコントローラーを編集するにはプロジェクトを開いてください。",
+      "unsaved_changes": "未保存の変更があります"
+    },
+    "transitions": {
+      "add_transition": "+ トランジションを追加",
+      "blend_duration": "ブレンド時間",
+      "exit_time": "終了時間",
+      "has_exit_time": "終了時間を使用",
+      "hint": "例: grounded, !grounded, speed > 0.5, moving == true",
+      "remove_transition": "トランジションを削除",
+      "transition": "トランジション",
+      "transitions": "トランジション"
+    }
+  },
+  "assets": {
+    "import": "インポート",
+    "import_tooltip": "ファイルをインポート (エクスプローラーからドラッグも可)",
+    "new_folder": "新規フォルダー",
+    "new_script": "新規スクリプト",
+    "new_shader": "新規シェーダー"
+  },
+  "common": {
+    "add": "追加",
+    "browse": "参照...",
+    "cancel": "キャンセル",
+    "clear": "クリア",
+    "clear_all": "すべてクリア",
+    "copy": "コピー",
+    "delete": "削除",
+    "new_name": "新しい名前:",
+    "no_project": "プロジェクトが開かれていません。",
+    "not_set": "(未設定)",
+    "off": "オフ",
+    "on": "オン",
+    "rename": "名前の変更",
+    "save": "保存",
+    "select_all": "すべて選択"
+  },
+  "editor": {
+    "empty": "「ファイル」または「アセット」パネルからテキストやコードを開いてください。"
+  },
+  "files": {
+    "new_object": "新規オブジェクト",
+    "new_scene": "新規シーン",
+    "no_project_hint": "ファイル > 新規プロジェクト / プロジェクトを開く。"
+  },
+  "inspector": {
+    "add_attribute": "アトリビュートを追加",
+    "animator": {
+      "auto_play": "自動再生",
+      "hint": "編集中はバインドポーズ。再生開始でコントローラーが動きます。",
+      "playback_speed": "再生速度"
+    },
+    "attribute": {
+      "3d_model": "3D モデル",
+      "animator": "アニメーター",
+      "audio": "オーディオ",
+      "camera": "カメラ",
+      "color": "カラー",
+      "directional_light": "ディレクショナルライト",
+      "environment_light": "環境ライト",
+      "image": "画像",
+      "point_light": "ポイントライト",
+      "rigid_body": "リジッドボディ",
+      "script": "スクリプト",
+      "shader": "シェーダー",
+      "skybox": "スカイボックス",
+      "spot_light": "スポットライト",
+      "text": "テキスト",
+      "trigger_volume": "トリガーボリューム",
+      "video": "動画"
+    },
+    "attributes": "アトリビュート",
+    "audio": {
+      "3d_spatialize": "3D 空間化",
+      "class": "クラス",
+      "class_items": [
+        "効果音",
+        "音楽",
+        "環境音",
+        "セリフ"
+      ],
+      "doppler_factor": "ドップラー係数",
+      "hint": "再生モードでのみ鳴り、位置はオブジェクトに追従します。",
+      "load_mode": "読み込みモード",
+      "load_mode_items": [
+        "自動",
+        "常駐",
+        "ストリーム"
+      ],
+      "loop": "ループ",
+      "max_distance": "最大距離",
+      "min_distance": "最小距離",
+      "pitch": "ピッチ",
+      "play_items": [
+        "オフ",
+        "オン"
+      ],
+      "play_mode": "再生モード",
+      "priority": "優先度",
+      "volume": "音量"
+    },
+    "camera": {
+      "acceleration": "加速度",
+      "active": "有効",
+      "add_point": "ポイントを追加",
+      "far": "ファークリップ",
+      "fov": "視野角",
+      "lock_position": "位置を固定",
+      "near": "ニアクリップ",
+      "none": "(なし)",
+      "offset": "オフセット",
+      "orbit": "オービット",
+      "path_points": "パスポイント (%d)",
+      "rotation_offset": "回転オフセット",
+      "rotation_offset_track": "回転オフセット",
+      "smoothing": "スムージング",
+      "speed": "速度",
+      "target": "ターゲット",
+      "type": "種類",
+      "type_items": [
+        "固定",
+        "追従",
+        "パス"
+      ]
+    },
+    "color": {
+      "alpha": "アルファ",
+      "color": "カラー",
+      "hint": "位置とサイズは 1280x720 の基準空間です。",
+      "hint_2": "優先度が高いほど後ろに描画されます。",
+      "lock_aspect_ratio": "縦横比を固定",
+      "position": "位置",
+      "priority": "優先度",
+      "size": "サイズ",
+      "stretch_to_screen": "画面に合わせて拡大",
+      "width": "幅"
+    },
+    "hint": "「ファイル」パネルでオブジェクトを選択してください。",
+    "image": {
+      "alpha": "アルファ",
+      "hint": "位置とサイズは 1280x720 の基準空間です。",
+      "hint_2": "優先度が高いほど後ろに描画されます。",
+      "hint_3": "タイミングは GIF 自身のフレーム遅延に従います。",
+      "hint_4": "再生中はアニメーション。編集中は 1 フレーム目で停止します。",
+      "lock_aspect_ratio": "縦横比を固定",
+      "play_mode": "再生モード",
+      "play_mode_items": [
+        "オフ",
+        "1 回再生",
+        "ループ"
+      ],
+      "position": "位置",
+      "priority": "優先度",
+      "size": "サイズ",
+      "stretch_to_screen": "画面に合わせて拡大",
+      "tint": "ティント",
+      "width": "幅"
+    },
+    "light": {
+      "beam_intensity": "光芒の強度",
+      "color": "カラー",
+      "inner_cone": "内側コーン",
+      "intensity": "強度",
+      "mode": "モード",
+      "mode_items": [
+        "ベイク",
+        "リアルタイム",
+        "ミックス"
+      ],
+      "outer_cone": "外側コーン",
+      "project_light_shaft": "光芒を投射",
+      "range": "範囲"
+    },
+    "model": {
+      "cast_shadow": "影を落とす",
+      "importing": "%s をインポート中..."
+    },
+    "position": "位置",
+    "rigidbody": {
+      "angular_damping": "角ダンピング",
+      "body": "ボディ",
+      "body_items": [
+        "スタティック",
+        "ダイナミック",
+        "キネマティック"
+      ],
+      "bounciness": "反発",
+      "friction": "摩擦",
+      "gravity": "重力",
+      "gravity_scale": "重力スケール",
+      "half_extents": "ハーフサイズ",
+      "half_height": "ハーフハイト",
+      "hint": "このオブジェクトの 3D モデルのメッシュを使用します。",
+      "linear_damping": "線形ダンピング",
+      "lock_rotation": "回転を固定",
+      "mass": "質量",
+      "radius": "半径",
+      "shape": "形状",
+      "shape_items": [
+        "ボックス",
+        "スフィア",
+        "カプセル",
+        "シリンダー",
+        "メッシュ (凸包)",
+        "メッシュ (正確)"
+      ]
+    },
+    "rotation": "回転",
+    "scale": "スケール",
+    "script": {
+      "hint": "再生中に on_start / on_update(dt) / on_trigger を実行します。"
+    },
+    "skybox": {
+      "hint": "正距円筒図法 (2:1) の画像。ヨーのみ。トランスフォームは無視されます。",
+      "hint_2": "シーン内の最初のスカイボックスが使われます。",
+      "rotation": "回転"
+    },
+    "text": {
+      "alpha": "アルファ",
+      "color": "カラー",
+      "font_size": "フォントサイズ",
+      "hint": "位置とサイズは 1280x720 の基準空間です。",
+      "hint_2": "優先度が高いほど後ろに描画されます。",
+      "lock_aspect_ratio": "縦横比を固定",
+      "position": "位置",
+      "priority": "優先度",
+      "size": "サイズ",
+      "text": "テキスト",
+      "width": "幅"
+    },
+    "transform": "トランスフォーム",
+    "trigger": {
+      "half_extents": "ハーフサイズ",
+      "half_height": "ハーフハイト",
+      "hint": "重なりを通知するだけで、物理的な反応はありません。",
+      "radius": "半径",
+      "shape": "形状",
+      "shape_items": [
+        "ボックス",
+        "スフィア",
+        "カプセル",
+        "シリンダー"
+      ]
+    },
+    "video": {
+      "alpha": "アルファ",
+      "hint": "位置とサイズは 1280x720 の基準空間です。",
+      "hint_2": "優先度が高いほど後ろに描画されます。",
+      "hint_3": "編集中は最初のフレーム。再生モードで再生されます。",
+      "lock_aspect_ratio": "縦横比を固定",
+      "muted": "ミュート",
+      "play_mode": "再生モード",
+      "play_mode_items": [
+        "オフ",
+        "1 回再生",
+        "ループ"
+      ],
+      "position": "位置",
+      "priority": "優先度",
+      "size": "サイズ",
+      "stretch_to_screen": "画面に合わせて拡大",
+      "tint": "ティント",
+      "volume": "音量",
+      "width": "幅"
+    },
+    "visible": "表示"
+  },
+  "log": {
+    "tooltip": {
+      "auto_scroll": "自動スクロール: %s",
+      "clear": "ログをクリア"
+    }
+  },
+  "mapping": {
+    "column": {
+      "control": "Xbox の操作",
+      "pc_input": "PC のキー / マウス",
+      "script_call": "スクリプト呼び出し"
+    },
+    "hint": "PC のキーやマウスを Xbox の操作に割り当てると、ゲームパッドなしでプレビュー中のスクリプトを操作できます",
+    "listening": "キーを押してください...",
+    "mouse": {
+      "minus_x": "マウス移動 -X",
+      "minus_y": "マウス移動 -Y",
+      "plus_x": "マウス移動 +X",
+      "plus_y": "マウス移動 +Y"
+    },
+    "no_project": "(保存するにはプロジェクトを開いてください)"
+  },
+  "menu": {
+    "build": {
+      "bake_lighting": "ライティングをベイク",
+      "build_iso": ".iso イメージを作成",
+      "clean": "ビルドをクリーン",
+      "rebuild_shaders": "エンジンシェーダーを再ビルド",
+      "run_xex": "XEX をビルドして実行",
+      "title": "ビルド"
+    },
+    "file": {
+      "close_project": "プロジェクトを閉じる",
+      "exit": "終了",
+      "new_project": "新規プロジェクト...",
+      "open_project": "プロジェクトを開く...",
+      "recent_projects": "最近のプロジェクト...",
+      "save_scene": "シーンを保存",
+      "title": "ファイル"
+    },
+    "view": {
+      "title": "表示"
+    }
+  },
+  "modal": {
+    "import": {
+      "confirm": "インポート",
+      "destination": "インポート先",
+      "empty": "(ここにファイルをドロップ - まだありません)",
+      "hint": "エクスプローラーからこのウィンドウにファイルをドラッグしてください。",
+      "staged": "準備済みのファイル",
+      "title": "アセットをインポート"
+    },
+    "recent": {
+      "empty": "最近のプロジェクトはありません。",
+      "header": "最近",
+      "new_project": "新規プロジェクト",
+      "open_project": "プロジェクトを開く",
+      "title": "最近のプロジェクト"
+    }
+  },
+  "panel": {
+    "animator": {
+      "title": "アニメーター"
+    },
+    "assets": {
+      "title": "アセット"
+    },
+    "editor": {
+      "title": "エディター"
+    },
+    "files": {
+      "title": "ファイル一覧"
+    },
+    "inspector": {
+      "title": "インスペクター"
+    },
+    "log": {
+      "title": "ログ"
+    },
+    "mapping": {
+      "title": "マッピング"
+    },
+    "performance": {
+      "title": "パフォーマンス"
+    },
+    "settings": {
+      "title": "設定"
+    },
+    "style_editor": {
+      "title": "スタイルエディター"
+    },
+    "version_control": {
+      "title": "バージョン管理"
+    },
+    "viewport": {
+      "title": "ビューポート"
+    }
+  },
+  "performance": {
+    "counts": "シーン: %d   オブジェクト: %d",
+    "fps": "%.1f FPS",
+    "frame_ms": "%.3f ミリ秒/フレーム",
+    "plot_overlay": "フレーム時間 (ミリ秒)"
+  },
+  "settings": {
+    "build": {
+      "config": "構成",
+      "header": "ビルド構成",
+      "iso_name": "ISO 名",
+      "iso_name_hint": "<プロジェクト>.iso",
+      "output_dir": "ビルド出力フォルダー",
+      "output_dir_default": "  (未設定 - エンジンの runtime\\ フォルダーを使用)"
+    },
+    "language": {
+      "header": "言語",
+      "none": "  (lang\\ に言語ファイルが見つかりません)"
+    },
+    "log_filters": {
+      "build": "ビルド",
+      "error": "エラー",
+      "header": "ログフィルター",
+      "info": "情報",
+      "script": "ログ",
+      "warning": "警告"
+    },
+    "toolchain": {
+      "emulator": "Xenia エミュレーター",
+      "header": "ツールチェーン",
+      "xdk": "Xbox 360 SDK (XDK) 2.0.21256.3"
+    }
+  },
+  "style_editor": {
+    "theme": "エンジンのテーマ"
+  },
+  "vcs": {
+    "commit": "コミット",
+    "commit_hint": "コミットメッセージ",
+    "detached": "(detached)",
+    "fetch": "フェッチ",
+    "init_repo": "リポジトリを初期化",
+    "no_changes": "変更はありません。",
+    "no_repo": "このプロジェクトフォルダーは git リポジトリではありません。",
+    "pull": "プル",
+    "push": "プッシュ",
+    "refresh": "更新"
+  }
+}

@@ -135,6 +135,7 @@ add_executable(XenFusion
     src/app/Settings.cpp
     src/build/BuildRun.cpp
     src/core/Log.cpp
+    src/loc/Loc.cpp
     src/render/Renderer.cpp
     src/render/SceneRenderer.cpp
     src/render/MeshBaker.cpp
@@ -228,12 +229,23 @@ set_target_properties(XenFusion PROPERTIES
 )
 target_link_options(XenFusion PRIVATE "$<$<NOT:$<CONFIG:Debug>>:/ENTRY:mainCRTStartup>")
 
-# Ship the icon font next to the exe so it can be loaded at runtime.
+# Ship the fonts next to the exe: the icon font plus the CJK faces the language
+# files name. Bundled rather than read from C:\Windows\Fonts so a release does
+# not assume the user has a Chinese/Japanese/Korean font; Noto Sans CJK is under
+# the SIL OFL, which permits redistribution. copy_directory so adding a face
+# here ships on the next build.
 add_custom_command(TARGET XenFusion POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:XenFusion>/fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/third_party/fonts/fa-solid-900.ttf"
-        "$<TARGET_FILE_DIR:XenFusion>/fonts/fa-solid-900.ttf"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/third_party/fonts"
+        "$<TARGET_FILE_DIR:XenFusion>/fonts"
+    VERBATIM
+)
+
+# Ship the UI language files; copy_directory so a new <code>.json just works.
+add_custom_command(TARGET XenFusion POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/lang"
+        "$<TARGET_FILE_DIR:XenFusion>/lang"
     VERBATIM
 )
 

@@ -27,6 +27,7 @@ namespace settings
     {
         json j;
         j["theme"]           = (int)s.theme;
+        j["language"]        = s.language;
         j["clear_color"]     = { s.clear_color[0], s.clear_color[1], s.clear_color[2], s.clear_color[3] };
         j["auto_scroll_log"] = s.auto_scroll_log;
         j["log"] = {
@@ -73,7 +74,8 @@ namespace settings
         try { in >> j; }
         catch (const std::exception&) { return; }
 
-        s.theme = (Theme)j.value("theme", (int)s.theme);
+        s.theme    = (Theme)j.value("theme", (int)s.theme);
+        s.language = j.value("language", s.language);
         if (j.contains("clear_color") && j["clear_color"].is_array() && j["clear_color"].size() == 4)
             for (int i = 0; i < 4; ++i) s.clear_color[i] = j["clear_color"][i].get<float>();
         s.auto_scroll_log = j.value("auto_scroll_log", s.auto_scroll_log);

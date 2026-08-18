@@ -47,6 +47,8 @@ private:
     void OnDropFiles(void* hDrop);            // HDROP from WM_DROPFILES
     void ImportStagedFiles(const char* dest); // dest relative to project root
     void LoadFonts();
+    void LoadLanguageFont();  // merges glyphs the active language needs
+    void RebuildFontAtlas();  // after a language change; must run outside a frame
     void ApplyStyle();
     void ApplyGrayTheme();
     void BuildDefaultDockLayout(ImGuiID dockspace_id);

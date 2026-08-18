@@ -1,4 +1,5 @@
 #include "panels/VersionControlPanel.h"
+#include "loc/Loc.h"
 
 #include "state/EngineState.h"
 #include "ui/Icons.h"
@@ -75,7 +76,7 @@ void VersionControlPanel::Render(EngineState& state)
     if (!state.show_version_control_panel)
         return;
 
-    if (!ImGui::Begin("Version Control", &state.show_version_control_panel))
+    if (!ImGui::Begin(loc::TWin("panel.version_control.title", "Version Control"), &state.show_version_control_panel))
     {
         ImGui::End();
         return;
@@ -83,7 +84,7 @@ void VersionControlPanel::Render(EngineState& state)
 
     if (!state.HasProject())
     {
-        ImGui::TextDisabled("No project open.");
+        ImGui::TextDisabled(loc::T("common.no_project"));
         ImGui::End();
         return;
     }
@@ -100,9 +101,9 @@ void VersionControlPanel::Render(EngineState& state)
 
     if (!has_repo_)
     {
-        ImGui::TextWrapped("This project folder is not a git repository.");
+        ImGui::TextWrapped(loc::T("vcs.no_repo"));
         ImGui::Spacing();
-        if (ImGui::Button(ICON_FA_CODE_BRANCH " Initialize Repository"))
+        if (ImGui::Button(loc::TI(ICON_FA_CODE_BRANCH, "vcs.init_repo")))
         {
             std::string out;
             if (RunGit("init", out))
@@ -122,25 +123,26 @@ void VersionControlPanel::Render(EngineState& state)
     }
 
     // Toolbar: branch + sync actions.
-    ImGui::Text(ICON_FA_CODE_BRANCH " %s", current_branch_.empty() ? "(detached)" : current_branch_.c_str());
+    ImGui::Text(ICON_FA_CODE_BRANCH " %s",
+                current_branch_.empty() ? loc::T("vcs.detached") : current_branch_.c_str());
     ImGui::SameLine();
-    if (ImGui::SmallButton("Refresh"))
+    if (ImGui::SmallButton(loc::TL("vcs.refresh")))
         refresh_requested_ = true;
     ImGui::SameLine();
-    if (ImGui::SmallButton("Pull"))
+    if (ImGui::SmallButton(loc::TL("vcs.pull")))
     {
         RunGit("pull --rebase", status_message_);
         state.AddLog("git pull:\n" + status_message_);
         refresh_requested_ = true;
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Push"))
+    if (ImGui::SmallButton(loc::TL("vcs.push")))
     {
         RunGit("push", status_message_);
         state.AddLog("git push:\n" + status_message_);
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Fetch"))
+    if (ImGui::SmallButton(loc::TL("vcs.fetch")))
     {
         RunGit("fetch --all --prune", status_message_);
         state.AddLog("git fetch:\n" + status_message_);
@@ -153,7 +155,7 @@ void VersionControlPanel::Render(EngineState& state)
     ImGui::BeginChild("##changes", ImVec2(0.0f, -96.0f), ImGuiChildFlags_Borders);
     if (changes_.empty())
     {
-        ImGui::TextDisabled("No changes.");
+        ImGui::TextDisabled(loc::T("vcs.no_changes"));
     }
     else
     {
@@ -173,7 +175,7 @@ void VersionControlPanel::Render(EngineState& state)
 
     // Commit box.
     ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::InputTextWithHint("##commitmsg", "Commit message", commit_message_.data(), commit_message_.size());
+    ImGui::InputTextWithHint("##commitmsg", loc::T("vcs.commit_hint"), commit_message_.data(), commit_message_.size());
 
     bool any_selected = false;
     for (const Change& c : changes_)
@@ -181,7 +183,7 @@ void VersionControlPanel::Render(EngineState& state)
 
     const bool can_commit = any_selected && commit_message_[0] != '\0';
     ImGui::BeginDisabled(!can_commit);
-    if (ImGui::Button(ICON_FA_CODE_BRANCH " Commit"))
+    if (ImGui::Button(loc::TI(ICON_FA_CODE_BRANCH, "vcs.commit")))
     {
         for (const Change& c : changes_)
             if (selection_[c.path])

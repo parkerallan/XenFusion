@@ -1,0 +1,508 @@
+{
+  "_name": "English",
+  "animator": {
+    "bonemod": {
+      "add_selected_bone": "+ Add Selected Bone",
+      "advanced": "Advanced",
+      "affects_children": "Affects Children",
+      "angle_limit": "Angle Limit",
+      "bone_modifiers": "Bone Modifiers",
+      "center_offset": "Center Offset",
+      "fit_to_bone": "Fit to Bone",
+      "gravity_dir": "Gravity Dir",
+      "half_extents": "Half Extents",
+      "preset": "Preset",
+      "radius": "Radius",
+      "remove_modifier": "Remove Modifier",
+      "type": "Type",
+      "type_collision": "Collision",
+      "type_physics": "Physics"
+    },
+    "clips": {
+      "add_clip": "+ Add Clip",
+      "clip": "clip",
+      "drop_model_fbx_gltf_glb_here": "Drop Model (.fbx/.gltf/.glb) Here",
+      "import_selected_model": "Import Selected Model",
+      "imported_clips": "Imported Clips",
+      "remove_clip": "Remove Clip"
+    },
+    "controller": {
+      "face": "Face",
+      "general": "General"
+    },
+    "faceclips": {
+      "clips": "Clips",
+      "missing": "missing",
+      "none": "None"
+    },
+    "livelink": {
+      "calibrate_neutral": "Calibrate Neutral",
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "hint": "Stalled - last packet from %s",
+      "hint_2": "Listening on %d, nothing arriving",
+      "hint_3": "This PC has no network adapter with a gateway",
+      "hold_still_s": "Hold still... %.1fs",
+      "live_link_face": "Live Link Face",
+      "not_listening": "Not listening",
+      "on_selected_object": "On selected object",
+      "point_the_phone_at": "Point the phone at  %s : %d",
+      "port": "Port",
+      "preview": "Preview",
+      "s_from": "%s  %.0f/s  from %s"
+    },
+    "no_options": "%s: no options",
+    "poses": {
+      "add_pose": "+ Add Pose",
+      "default": "(default)",
+      "expression_poses": "Expression Poses",
+      "none": "None",
+      "preview": "Preview",
+      "remove_pose": "Remove Pose",
+      "set_as_default": "Set As Default"
+    },
+    "preview": {
+      "bone": "Bone: %s",
+      "mesh": "Mesh",
+      "no_clips": "(no clips)",
+      "s": "%.2f / %.2fs",
+      "skeleton": "Skeleton",
+      "texture": "Texture"
+    },
+    "record": {
+      "hint": "waiting for the microphone...",
+      "microphone": "Microphone",
+      "needs_tracking": "needs tracking",
+      "record": "Record",
+      "s_frames": "%.1fs  %u frames",
+      "stop": "Stop",
+      "take_name": "Take name",
+      "text": "(%s)"
+    },
+    "states": {
+      "add_state": "+ Add State",
+      "default_state": "Default state",
+      "loop": "Loop",
+      "playback_speed": "Playback Speed",
+      "remove": "Remove",
+      "set_as_default": "Set As Default",
+      "state": "state",
+      "states": "States"
+    },
+    "toolbar": {
+      "hint": "Open a project to edit animator controllers.",
+      "unsaved_changes": "Unsaved changes"
+    },
+    "transitions": {
+      "add_transition": "+ Add Transition",
+      "blend_duration": "Blend Duration",
+      "exit_time": "Exit Time",
+      "has_exit_time": "Has Exit Time",
+      "hint": "Examples: grounded, !grounded, speed > 0.5, moving == true",
+      "remove_transition": "Remove Transition",
+      "transition": "transition",
+      "transitions": "Transitions"
+    }
+  },
+  "assets": {
+    "import": "Import",
+    "import_tooltip": "Import files (or drag them from Explorer)",
+    "new_folder": "New Folder",
+    "new_script": "New Script",
+    "new_shader": "New Shader"
+  },
+  "common": {
+    "add": "Add",
+    "browse": "Browse...",
+    "cancel": "Cancel",
+    "clear": "Clear",
+    "clear_all": "Clear all",
+    "copy": "Copy",
+    "delete": "Delete",
+    "new_name": "New name:",
+    "no_project": "No project open.",
+    "not_set": "(not set)",
+    "off": "Off",
+    "on": "On",
+    "rename": "Rename",
+    "save": "Save",
+    "select_all": "Select All"
+  },
+  "editor": {
+    "empty": "Open a text or code file from the Files or Assets panel."
+  },
+  "files": {
+    "new_object": "New Object",
+    "new_scene": "New Scene",
+    "no_project_hint": "File > New Project / Open Project."
+  },
+  "inspector": {
+    "add_attribute": "Add Attribute",
+    "animator": {
+      "auto_play": "Auto Play",
+      "hint": "Bind pose in edit mode; controller starts when Play begins.",
+      "playback_speed": "Playback Speed"
+    },
+    "attribute": {
+      "3d_model": "3D Model",
+      "animator": "Animator",
+      "audio": "Audio",
+      "camera": "Camera",
+      "color": "Color",
+      "directional_light": "Directional Light",
+      "environment_light": "Environment Light",
+      "image": "Image",
+      "point_light": "Point Light",
+      "rigid_body": "Rigid Body",
+      "script": "Script",
+      "shader": "Shader",
+      "skybox": "Skybox",
+      "spot_light": "Spot Light",
+      "text": "Text",
+      "trigger_volume": "Trigger Volume",
+      "video": "Video"
+    },
+    "attributes": "Attributes",
+    "audio": {
+      "3d_spatialize": "3D Spatialize",
+      "class": "Class",
+      "class_items": [
+        "Effect",
+        "Music",
+        "Ambience",
+        "Dialogue"
+      ],
+      "doppler_factor": "Doppler Factor",
+      "hint": "Plays in Play mode only; position follows the object.",
+      "load_mode": "Load Mode",
+      "load_mode_items": [
+        "Auto",
+        "Resident",
+        "Stream"
+      ],
+      "loop": "Loop",
+      "max_distance": "Max Distance",
+      "min_distance": "Min Distance",
+      "pitch": "Pitch",
+      "play_items": [
+        "Off",
+        "On"
+      ],
+      "play_mode": "Play Mode",
+      "priority": "Priority",
+      "volume": "Volume"
+    },
+    "camera": {
+      "acceleration": "Acceleration",
+      "active": "Active",
+      "add_point": "Add Point",
+      "far": "Far",
+      "fov": "FOV",
+      "lock_position": "Lock Position",
+      "near": "Near",
+      "none": "(none)",
+      "offset": "Offset",
+      "orbit": "Orbit",
+      "path_points": "Path Points (%d)",
+      "rotation_offset": "Rotation Offset",
+      "rotation_offset_track": "Rotation Offset",
+      "smoothing": "Smoothing",
+      "speed": "Speed",
+      "target": "Target",
+      "type": "Type",
+      "type_items": [
+        "Fixed",
+        "Follow",
+        "Track"
+      ]
+    },
+    "color": {
+      "alpha": "Alpha",
+      "color": "Color",
+      "hint": "Position/size in 1280x720 reference space.",
+      "hint_2": "Higher priority draws behind lower.",
+      "lock_aspect_ratio": "Lock Aspect Ratio",
+      "position": "Position",
+      "priority": "Priority",
+      "size": "Size",
+      "stretch_to_screen": "Stretch To Screen",
+      "width": "Width"
+    },
+    "hint": "Select an object in the Files panel.",
+    "image": {
+      "alpha": "Alpha",
+      "hint": "Position/size in 1280x720 reference space.",
+      "hint_2": "Higher priority draws behind lower.",
+      "hint_3": "Timing comes from the GIF's own frame delays.",
+      "hint_4": "Animates in Play; frozen on frame 1 while editing.",
+      "lock_aspect_ratio": "Lock Aspect Ratio",
+      "play_mode": "Play Mode",
+      "play_mode_items": [
+        "Off",
+        "Play Once",
+        "Loop"
+      ],
+      "position": "Position",
+      "priority": "Priority",
+      "size": "Size",
+      "stretch_to_screen": "Stretch To Screen",
+      "tint": "Tint",
+      "width": "Width"
+    },
+    "light": {
+      "beam_intensity": "Beam Intensity",
+      "color": "Color",
+      "inner_cone": "Inner Cone",
+      "intensity": "Intensity",
+      "mode": "Mode",
+      "mode_items": [
+        "Baked",
+        "Realtime",
+        "Mixed"
+      ],
+      "outer_cone": "Outer Cone",
+      "project_light_shaft": "Project Light Shaft",
+      "range": "Range"
+    },
+    "model": {
+      "cast_shadow": "Cast Shadow",
+      "importing": "Importing %s..."
+    },
+    "position": "Position",
+    "rigidbody": {
+      "angular_damping": "Angular damping",
+      "body": "Body",
+      "body_items": [
+        "Static",
+        "Dynamic",
+        "Kinematic"
+      ],
+      "bounciness": "Bounciness",
+      "friction": "Friction",
+      "gravity": "Gravity",
+      "gravity_scale": "Gravity scale",
+      "half_extents": "Half-extents",
+      "half_height": "Half-height",
+      "hint": "Uses this object's 3D Model mesh.",
+      "linear_damping": "Linear damping",
+      "lock_rotation": "Lock rotation",
+      "mass": "Mass",
+      "radius": "Radius",
+      "shape": "Shape",
+      "shape_items": [
+        "Box",
+        "Sphere",
+        "Capsule",
+        "Cylinder",
+        "Mesh (convex)",
+        "Mesh (exact)"
+      ]
+    },
+    "rotation": "Rotation",
+    "scale": "Scale",
+    "script": {
+      "hint": "Runs on_start / on_update(dt) / on_trigger during Play."
+    },
+    "skybox": {
+      "hint": "Equirectangular (2:1) image. Yaw only; the object transform is unused.",
+      "hint_2": "First Skybox in the scene wins.",
+      "rotation": "Rotation"
+    },
+    "text": {
+      "alpha": "Alpha",
+      "color": "Color",
+      "font_size": "Font Size",
+      "hint": "Position/size in 1280x720 reference space.",
+      "hint_2": "Higher priority draws behind lower.",
+      "lock_aspect_ratio": "Lock Aspect Ratio",
+      "position": "Position",
+      "priority": "Priority",
+      "size": "Size",
+      "text": "Text",
+      "width": "Width"
+    },
+    "transform": "Transform",
+    "trigger": {
+      "half_extents": "Half-extents",
+      "half_height": "Half-height",
+      "hint": "Reports overlaps; no physical response.",
+      "radius": "Radius",
+      "shape": "Shape",
+      "shape_items": [
+        "Box",
+        "Sphere",
+        "Capsule",
+        "Cylinder"
+      ]
+    },
+    "video": {
+      "alpha": "Alpha",
+      "hint": "Position/size in 1280x720 reference space.",
+      "hint_2": "Higher priority draws behind lower.",
+      "hint_3": "Edit mode shows the first frame; plays in Play mode.",
+      "lock_aspect_ratio": "Lock Aspect Ratio",
+      "muted": "Muted",
+      "play_mode": "Play Mode",
+      "play_mode_items": [
+        "Off",
+        "Play Once",
+        "Loop"
+      ],
+      "position": "Position",
+      "priority": "Priority",
+      "size": "Size",
+      "stretch_to_screen": "Stretch To Screen",
+      "tint": "Tint",
+      "volume": "Volume",
+      "width": "Width"
+    },
+    "visible": "Visible"
+  },
+  "log": {
+    "tooltip": {
+      "auto_scroll": "Auto-scroll: %s",
+      "clear": "Clear log"
+    }
+  },
+  "mapping": {
+    "column": {
+      "control": "Xbox control",
+      "pc_input": "PC key / mouse",
+      "script_call": "Script call"
+    },
+    "hint": "Bind PC keys/mouse to Xbox controls so you can drive scripts in the Play preview without a gamepad",
+    "listening": "press a key...",
+    "mouse": {
+      "minus_x": "Mouse Move -X",
+      "minus_y": "Mouse Move -Y",
+      "plus_x": "Mouse Move +X",
+      "plus_y": "Mouse Move +Y"
+    },
+    "no_project": "(open a project to save)"
+  },
+  "menu": {
+    "build": {
+      "bake_lighting": "Bake Lighting",
+      "build_iso": "Build .iso Image",
+      "clean": "Clean Build",
+      "rebuild_shaders": "Rebuild Engine Shaders",
+      "run_xex": "Build and Run XEX",
+      "title": "Build"
+    },
+    "file": {
+      "close_project": "Close Project",
+      "exit": "Exit",
+      "new_project": "New Project...",
+      "open_project": "Open Project...",
+      "recent_projects": "Recent Projects...",
+      "save_scene": "Save Scene",
+      "title": "File"
+    },
+    "view": {
+      "title": "View"
+    }
+  },
+  "modal": {
+    "import": {
+      "confirm": "Import",
+      "destination": "Destination",
+      "empty": "(drag files here - none staged yet)",
+      "hint": "Drag files from Windows Explorer onto this window to stage them.",
+      "staged": "Staged files",
+      "title": "Import Assets"
+    },
+    "recent": {
+      "empty": "No recent projects.",
+      "header": "Recent",
+      "new_project": "New Project",
+      "open_project": "Open Project",
+      "title": "Recent Projects"
+    }
+  },
+  "panel": {
+    "animator": {
+      "title": "Animator"
+    },
+    "assets": {
+      "title": "Assets"
+    },
+    "editor": {
+      "title": "Editor"
+    },
+    "files": {
+      "title": "Files"
+    },
+    "inspector": {
+      "title": "Inspector"
+    },
+    "log": {
+      "title": "Log"
+    },
+    "mapping": {
+      "title": "Mapping"
+    },
+    "performance": {
+      "title": "Performance"
+    },
+    "settings": {
+      "title": "Settings"
+    },
+    "style_editor": {
+      "title": "Style Editor"
+    },
+    "version_control": {
+      "title": "Version Control"
+    },
+    "viewport": {
+      "title": "Viewport"
+    }
+  },
+  "performance": {
+    "counts": "Scenes: %d   Objects: %d",
+    "fps": "%.1f FPS",
+    "frame_ms": "%.3f ms/frame",
+    "plot_overlay": "frame time (ms)"
+  },
+  "settings": {
+    "build": {
+      "config": "Configuration",
+      "header": "Build Configuration",
+      "iso_name": "ISO name",
+      "iso_name_hint": "<project>.iso",
+      "output_dir": "Build output folder",
+      "output_dir_default": "  (not set - defaults to the engine's runtime\\ folder)"
+    },
+    "language": {
+      "header": "Language",
+      "none": "  (no language files found in lang\\)"
+    },
+    "log_filters": {
+      "build": "Build",
+      "error": "Error",
+      "header": "Log filters",
+      "info": "Info",
+      "script": "Log",
+      "warning": "Warning"
+    },
+    "toolchain": {
+      "emulator": "Xenia emulator",
+      "header": "Toolchain",
+      "xdk": "Xbox 360 SDK (XDK) 2.0.21256.3"
+    }
+  },
+  "style_editor": {
+    "theme": "Engine theme"
+  },
+  "vcs": {
+    "commit": "Commit",
+    "commit_hint": "Commit message",
+    "detached": "(detached)",
+    "fetch": "Fetch",
+    "init_repo": "Initialize Repository",
+    "no_changes": "No changes.",
+    "no_repo": "This project folder is not a git repository.",
+    "pull": "Pull",
+    "push": "Push",
+    "refresh": "Refresh"
+  }
+}

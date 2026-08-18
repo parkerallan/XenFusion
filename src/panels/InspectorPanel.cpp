@@ -1,4 +1,5 @@
 #include "panels/InspectorPanel.h"
+#include "loc/Loc.h"
 
 #include "image/GifAnim.h"
 #include "project/ProjectIO.h"
@@ -22,6 +23,24 @@
 
 namespace
 {
+    // Attribute type names are scene-JSON identifiers — the comparisons below
+    // and the saved scenes depend on the exact English spelling, so the shown
+    // name is looked up from the identifier rather than translated in place.
+    const char* AttributeTypeLabel(const std::string& type)
+    {
+        std::string key = "inspector.attribute.";
+        for (std::size_t i = 0; i < type.size(); ++i)
+        {
+            const unsigned char c = (unsigned char)type[i];
+            key += std::isalnum(c) ? (char)std::tolower(c) : '_';
+        }
+
+        // loc::T returns the key pointer itself when there is no entry, and
+        // key is a local — fall back to the identifier, which the caller owns.
+        const char* label = loc::T(key.c_str());
+        return (label == key.c_str()) ? type.c_str() : label;
+    }
+
     // Run an ffmpeg command hidden and wait for its exit. Video imports call
     // this from a background job; audio import still uses it synchronously.
     bool RunFfmpeg(const std::string& cmd, bool& could_start)
@@ -141,7 +160,7 @@ void InspectorPanel::Render(EngineState& state)
     if (!state.show_inspector_panel)
         return;
 
-    if (!ImGui::Begin("Inspector", &state.show_inspector_panel))
+    if (!ImGui::Begin(loc::TWin("panel.inspector.title", "Inspector"), &state.show_inspector_panel))
     {
         ImGui::End();
         return;
@@ -151,7 +170,7 @@ void InspectorPanel::Render(EngineState& state)
     SceneFile*   scene = state.SelectedScene();
     if (!obj)
     {
-        ImGui::TextDisabled("Select an object in the Files panel.");
+        ImGui::TextDisabled(loc::T("inspector.hint"));
         ImGui::End();
         return;
     }
@@ -173,7 +192,7 @@ void InspectorPanel::Render(EngineState& state)
         changed = true;
     }
 
-    changed |= ImGui::Checkbox("Visible", &obj->visible);
+    changed |= ImGui::Checkbox(loc::TL("inspector.visible"), &obj->visible);
 
     // Tags: a comma-separated list, since they are short labels a script matches
     // exactly (find_by_tag / obj:has_tag) rather than structured data.
@@ -208,16 +227,16 @@ void InspectorPanel::Render(EngineState& state)
         }
     }
 
-    ImGui::SeparatorText("Transform");
-    changed |= ImGui::DragFloat3("Position", obj->position, 0.05f);
-    changed |= ImGui::DragFloat3("Rotation", obj->rotation, 0.5f);
-    changed |= ImGui::DragFloat3("Scale",    obj->scale,    0.05f);
+    ImGui::SeparatorText(loc::T("inspector.transform"));
+    changed |= ImGui::DragFloat3(loc::TL("inspector.position"), obj->position, 0.05f);
+    changed |= ImGui::DragFloat3(loc::TL("inspector.rotation"), obj->rotation, 0.5f);
+    changed |= ImGui::DragFloat3(loc::TL("inspector.scale"),    obj->scale,    0.05f);
 
     if (changed && scene)
         scene->dirty = true;
 
     // --- Attributes ---
-    ImGui::SeparatorText("Attributes");
+    ImGui::SeparatorText(loc::T("inspector.attributes"));
 
     auto save = [&]() { if (scene) { scene->dirty = true; project::SaveScene(*scene); } };
 
@@ -236,7 +255,7 @@ void InspectorPanel::Render(EngineState& state)
         ImGui::SameLine();
         ImGui::TextUnformatted(ICON_FA_CUBE);
         ImGui::SameLine();
-        ImGui::TextUnformatted(attr.type.c_str());
+        ImGui::TextUnformatted(AttributeTypeLabel(attr.type));
 
         if (attr.type == "3D Model")
         {
@@ -291,13 +310,13 @@ void InspectorPanel::Render(EngineState& state)
                 ImGui::EndDragDropTarget();
             }
 
-            if (ImGui::Checkbox("Cast Shadow", &attr.cast_shadow))
+            if (ImGui::Checkbox(loc::TL("inspector.model.cast_shadow"), &attr.cast_shadow))
             {
                 save();
             }
 
             if (video_import_)
-                ImGui::TextDisabled("Importing %s...", video_import_->source_name.c_str());
+                ImGui::TextDisabled(loc::T("inspector.model.importing"), video_import_->source_name.c_str());
             // Transparency (blend vs. cutout) is derived from the diffuse's alpha
             // channel at load time — no toggle, same as the rest of the material.
         }
@@ -368,7 +387,7 @@ void InspectorPanel::Render(EngineState& state)
                 }
                 ImGui::EndDragDropTarget();
             }
-            ImGui::TextDisabled("Runs on_start / on_update(dt) / on_trigger during Play.");
+            ImGui::TextDisabled(loc::T("inspector.script.hint"));
         }
         else if (attr.type == "Animator")
         {
@@ -415,7 +434,7 @@ void InspectorPanel::Render(EngineState& state)
             }
 
             bool edited = false;
-            if (ImGui::DragFloat("Playback Speed", &attr.animator_playback_speed,
+            if (ImGui::DragFloat(loc::TL("inspector.animator.playback_speed"), &attr.animator_playback_speed,
                                  0.01f, 0.01f, 10.0f, "%.2fx"))
             {
                 if (attr.animator_playback_speed < 0.01f)
@@ -424,24 +443,24 @@ void InspectorPanel::Render(EngineState& state)
             }
             if (ImGui::IsItemDeactivatedAfterEdit())
                 save();
-            if (ImGui::Checkbox("Auto Play", &attr.animator_auto_play))
+            if (ImGui::Checkbox(loc::TL("inspector.animator.auto_play"), &attr.animator_auto_play))
                 save();
             if (edited && scene)
                 scene->dirty = true;
-            ImGui::TextDisabled("Bind pose in edit mode; controller starts when Play begins.");
+            ImGui::TextDisabled(loc::T("inspector.animator.hint"));
         }
         else if (attr.type == "Camera")
         {
             // Edits mark the scene dirty every tick; the file is written once,
             // when the drag ends (the gizmo's commit-on-release pattern).
             bool edited = false, commit = false;
-            edited |= ImGui::DragFloat("FOV",  &attr.cam_fov, 0.5f, 1.0f, 179.0f, "%.1f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.camera.fov"),  &attr.cam_fov, 0.5f, 1.0f, 179.0f, "%.1f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Near", &attr.cam_near, 0.05f, 0.01f, 1000.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.camera.near"), &attr.cam_near, 0.05f, 0.01f, 1000.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Far",  &attr.cam_far, 1.0f, 1.0f, 10000.0f, "%.0f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.camera.far"),  &attr.cam_far, 1.0f, 1.0f, 10000.0f, "%.0f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            if (ImGui::Checkbox("Active", &attr.cam_active))
+            if (ImGui::Checkbox(loc::TL("inspector.camera.active"), &attr.cam_active))
             {
                 // One active camera per scene: activating this one clears the rest.
                 if (attr.cam_active && scene)
@@ -452,8 +471,8 @@ void InspectorPanel::Render(EngineState& state)
                 edited = commit = true;
             }
 
-            const char* cam_types = "Fixed\0Follow\0Track\0";
-            if (ImGui::Combo("Type", &attr.cam_type, cam_types))
+            const char* cam_types = loc::T("inspector.camera.type_items");
+            if (ImGui::Combo(loc::TL("inspector.camera.type"), &attr.cam_type, cam_types))
             {
                 // Switching to Track seeds a minimal 2-point path at the object.
                 if (attr.cam_type == 2 && attr.cam_track_points.size() < 6)
@@ -472,9 +491,9 @@ void InspectorPanel::Render(EngineState& state)
                 // Target picker: any other object in this scene by name.
                 const char* current = attr.cam_follow_target.empty()
                                           ? "(none)" : attr.cam_follow_target.c_str();
-                if (ImGui::BeginCombo("Target", current))
+                if (ImGui::BeginCombo(loc::TL("inspector.camera.target"), current))
                 {
-                    if (ImGui::Selectable("(none)", attr.cam_follow_target.empty()))
+                    if (ImGui::Selectable(loc::TL("inspector.camera.none"), attr.cam_follow_target.empty()))
                     {
                         attr.cam_follow_target.clear();
                         edited = commit = true;
@@ -493,27 +512,27 @@ void InspectorPanel::Render(EngineState& state)
                         }
                     ImGui::EndCombo();
                 }
-                if (ImGui::Checkbox("Lock Position", &attr.cam_follow_lock))
+                if (ImGui::Checkbox(loc::TL("inspector.camera.lock_position"), &attr.cam_follow_lock))
                     edited = commit = true;
                 ImGui::TextDisabled(attr.cam_follow_lock
                     ? "Stays at its transform + offset, aims at the target."
                     : "Rides at target + offset; keeps its own rotation.");
-                edited |= ImGui::DragFloat3("Offset", attr.cam_follow_offset, 0.05f);
+                edited |= ImGui::DragFloat3(loc::TL("inspector.camera.offset"), attr.cam_follow_offset, 0.05f);
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
                 ImGui::BeginDisabled(attr.cam_follow_lock);
-                edited |= ImGui::DragFloat2("Orbit", attr.cam_follow_orbit, 0.5f, -360.0f, 360.0f, "%.2f deg");
+                edited |= ImGui::DragFloat2(loc::TL("inspector.camera.orbit"), attr.cam_follow_orbit, 0.5f, -360.0f, 360.0f, "%.2f deg");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
                 ImGui::EndDisabled();
-                edited |= ImGui::DragFloat3("Rotation Offset", attr.cam_follow_rot_offset, 0.5f, -360.0f, 360.0f, "%.2f deg");
+                edited |= ImGui::DragFloat3(loc::TL("inspector.camera.rotation_offset"), attr.cam_follow_rot_offset, 0.5f, -360.0f, 360.0f, "%.2f deg");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Smoothing", &attr.cam_follow_smoothing, 0.005f, 0.0f, 2.0f, "%.3f s");
+                edited |= ImGui::DragFloat(loc::TL("inspector.camera.smoothing"), &attr.cam_follow_smoothing, 0.005f, 0.0f, 2.0f, "%.3f s");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
                 if (attr.cam_follow_smoothing < 0.0f) attr.cam_follow_smoothing = 0.0f;
             }
             else if (attr.cam_type == 2) // Track
             {
                 const int point_count = (int)(attr.cam_track_points.size() / 3);
-                ImGui::Text("Path Points (%d)", point_count);
+                ImGui::Text(loc::T("inspector.camera.path_points"), point_count);
                 int remove_index = -1;
                 for (int p = 0; p < point_count; ++p)
                 {
@@ -539,7 +558,7 @@ void InspectorPanel::Render(EngineState& state)
                         state.selected_track_point_index = point_count - 2;
                     edited = commit = true;
                 }
-                if (ImGui::Button("Add Point"))
+                if (ImGui::Button(loc::TL("inspector.camera.add_point")))
                 {
                     // Append 2 units past the last point along +Z.
                     const std::size_t n = attr.cam_track_points.size();
@@ -551,11 +570,11 @@ void InspectorPanel::Render(EngineState& state)
                     state.selected_track_point_index = point_count;
                     edited = commit = true;
                 }
-                edited |= ImGui::DragFloat("Speed", &attr.cam_track_speed, 0.05f, 0.0f, 1000.0f, "%.2f u/s");
+                edited |= ImGui::DragFloat(loc::TL("inspector.camera.speed"), &attr.cam_track_speed, 0.05f, 0.0f, 1000.0f, "%.2f u/s");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Acceleration", &attr.cam_track_accel, 0.05f, 0.0f, 1000.0f, "%.2f u/s^2");
+                edited |= ImGui::DragFloat(loc::TL("inspector.camera.acceleration"), &attr.cam_track_accel, 0.05f, 0.0f, 1000.0f, "%.2f u/s^2");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat3("Rotation Offset##track", attr.cam_track_rot_offset, 0.5f, -360.0f, 360.0f, "%.2f deg");
+                edited |= ImGui::DragFloat3(loc::TL("inspector.camera.rotation_offset_track"), attr.cam_track_rot_offset, 0.5f, -360.0f, 360.0f, "%.2f deg");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
                 if (attr.cam_track_speed < 0.0f) attr.cam_track_speed = 0.0f;
                 if (attr.cam_track_accel < 0.0f) attr.cam_track_accel = 0.0f;
@@ -575,29 +594,29 @@ void InspectorPanel::Render(EngineState& state)
                                 : is_point ? "Position uses the object position."
                                            : "Direction uses the object rotation.");
             bool edited = false, commit = false;
-            edited |= ImGui::ColorEdit3("Color", attr.light_color);
+            edited |= ImGui::ColorEdit3(loc::TL("inspector.light.color"), attr.light_color);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Intensity", &attr.light_intensity, 0.05f, 0.0f, 100.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.light.intensity"), &attr.light_intensity, 0.05f, 0.0f, 100.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            const char* light_modes[] = {"Baked", "Realtime", "Mixed"};
-            if (ImGui::Combo("Mode", &attr.light_mode, light_modes, 3)) { edited = commit = true; }
+            const char* light_modes = loc::T("inspector.light.mode_items");
+            if (ImGui::Combo(loc::TL("inspector.light.mode"), &attr.light_mode, light_modes)) { edited = commit = true; }
             if (is_point || is_spot)
             {
-                edited |= ImGui::DragFloat("Range", &attr.light_range, 0.1f, 0.1f, 1000.0f, "%.1f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.light.range"), &attr.light_range, 0.1f, 0.1f, 1000.0f, "%.1f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             if (is_spot)
             {
-                edited |= ImGui::DragFloat("Inner Cone", &attr.light_inner_deg, 0.25f, 0.1f, 89.0f, "%.1f deg");
+                edited |= ImGui::DragFloat(loc::TL("inspector.light.inner_cone"), &attr.light_inner_deg, 0.25f, 0.1f, 89.0f, "%.1f deg");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Outer Cone", &attr.light_outer_deg, 0.25f, 0.1f, 89.0f, "%.1f deg");
+                edited |= ImGui::DragFloat(loc::TL("inspector.light.outer_cone"), &attr.light_outer_deg, 0.25f, 0.1f, 89.0f, "%.1f deg");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
                 // Volumetric beam: the cone made visible in the air (flashlight
                 // in fog) — an additive cone mesh, see beam.hlsl.
-                if (ImGui::Checkbox("Project Light Shaft", &attr.light_volumetric)) { edited = commit = true; }
+                if (ImGui::Checkbox(loc::TL("inspector.light.project_light_shaft"), &attr.light_volumetric)) { edited = commit = true; }
                 if (attr.light_volumetric)
                 {
-                    edited |= ImGui::DragFloat("Beam Intensity", &attr.light_volumetric_intensity, 0.01f, 0.0f, 10.0f, "%.2f");
+                    edited |= ImGui::DragFloat(loc::TL("inspector.light.beam_intensity"), &attr.light_volumetric_intensity, 0.01f, 0.0f, 10.0f, "%.2f");
                     commit |= ImGui::IsItemDeactivatedAfterEdit();
                 }
             }
@@ -641,71 +660,71 @@ void InspectorPanel::Render(EngineState& state)
             }
 
             bool edited = false, commit = false;
-            edited |= ImGui::DragFloat("Rotation", &attr.sky_rotation, 0.25f, -3600.0f, 3600.0f, "%.1f deg");
+            edited |= ImGui::DragFloat(loc::TL("inspector.skybox.rotation"), &attr.sky_rotation, 0.25f, -3600.0f, 3600.0f, "%.1f deg");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::TextDisabled("Equirectangular (2:1) image. Yaw only; the object transform is unused.");
-            ImGui::TextDisabled("First Skybox in the scene wins.");
+            ImGui::TextDisabled(loc::T("inspector.skybox.hint"));
+            ImGui::TextDisabled(loc::T("inspector.skybox.hint_2"));
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
         else if (attr.type == "Rigid Body")
         {
             bool edited = false, commit = false;
-            const char* kinds = "Static\0Dynamic\0Kinematic\0";
-            if (ImGui::Combo("Body", &attr.phys_kind, kinds)) { edited = commit = true; }
-            const char* shapes = "Box\0Sphere\0Capsule\0Cylinder\0Mesh (convex)\0Mesh (exact)\0";
-            if (ImGui::Combo("Shape", &attr.phys_shape, shapes)) { edited = commit = true; }
+            const char* kinds = loc::T("inspector.rigidbody.body_items");
+            if (ImGui::Combo(loc::TL("inspector.rigidbody.body"), &attr.phys_kind, kinds)) { edited = commit = true; }
+            const char* shapes = loc::T("inspector.rigidbody.shape_items");
+            if (ImGui::Combo(loc::TL("inspector.rigidbody.shape"), &attr.phys_shape, shapes)) { edited = commit = true; }
             if (attr.phys_shape == 0) // Box
             {
-                edited |= ImGui::DragFloat3("Half-extents", attr.phys_size, 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat3(loc::TL("inspector.rigidbody.half_extents"), attr.phys_size, 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             else if (attr.phys_shape == 1) // Sphere
             {
-                edited |= ImGui::DragFloat("Radius", &attr.phys_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.radius"), &attr.phys_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             else if (attr.phys_shape == 2 || attr.phys_shape == 3) // Capsule / Cylinder
             {
-                edited |= ImGui::DragFloat("Radius", &attr.phys_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.radius"), &attr.phys_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Half-height", &attr.phys_size[1], 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.half_height"), &attr.phys_size[1], 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             else // Mesh (convex = 4, exact = 5): geometry comes from the 3D Model
             {
-                ImGui::TextDisabled("Uses this object's 3D Model mesh.");
+                ImGui::TextDisabled(loc::T("inspector.rigidbody.hint"));
                 if (attr.phys_shape == 5 && attr.phys_kind == 1) // exact + dynamic
                     ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
                                        "Exact mesh is static-only; this body won't move.");
             }
             if (attr.phys_kind == 1) // Dynamic
             {
-                edited |= ImGui::DragFloat("Mass", &attr.phys_mass, 0.05f, 0.001f, 10000.0f, "%.3f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.mass"), &attr.phys_mass, 0.05f, 0.001f, 10000.0f, "%.3f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Linear damping",  &attr.phys_lin_damping, 0.005f, 0.0f, 1.0f, "%.3f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.linear_damping"),  &attr.phys_lin_damping, 0.005f, 0.0f, 1.0f, "%.3f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Angular damping", &attr.phys_ang_damping, 0.005f, 0.0f, 1.0f, "%.3f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.angular_damping"), &attr.phys_ang_damping, 0.005f, 0.0f, 1.0f, "%.3f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                ImGui::TextUnformatted("Lock rotation");
+                ImGui::TextUnformatted(loc::T("inspector.rigidbody.lock_rotation"));
                 ImGui::SameLine();
                 if (ImGui::Checkbox("X##LockRotation", &attr.phys_lock_rotation[0])) { edited = commit = true; }
                 ImGui::SameLine();
                 if (ImGui::Checkbox("Y##LockRotation", &attr.phys_lock_rotation[1])) { edited = commit = true; }
                 ImGui::SameLine();
                 if (ImGui::Checkbox("Z##LockRotation", &attr.phys_lock_rotation[2])) { edited = commit = true; }
-                if (ImGui::Checkbox("Gravity", &attr.phys_gravity)) { edited = commit = true; }
+                if (ImGui::Checkbox(loc::TL("inspector.rigidbody.gravity"), &attr.phys_gravity)) { edited = commit = true; }
                 if (attr.phys_gravity)
                 {
-                    edited |= ImGui::DragFloat("Gravity scale", &attr.phys_gravity_scale, 0.02f, -10.0f, 10.0f, "%.2f");
+                    edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.gravity_scale"), &attr.phys_gravity_scale, 0.02f, -10.0f, 10.0f, "%.2f");
                     commit |= ImGui::IsItemDeactivatedAfterEdit();
                 }
             }
             // Contact material: applies to every body (a bouncy floor needs
             // restitution too; Bullet combines the two bodies' values on contact).
-            edited |= ImGui::DragFloat("Bounciness", &attr.phys_restitution, 0.005f, 0.0f, 1.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.bounciness"), &attr.phys_restitution, 0.005f, 0.0f, 1.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Friction", &attr.phys_friction, 0.005f, 0.0f, 2.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.rigidbody.friction"), &attr.phys_friction, 0.005f, 0.0f, 2.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
             if (edited && scene) scene->dirty = true;
             if (commit) save();
@@ -751,10 +770,10 @@ void InspectorPanel::Render(EngineState& state)
             }
 
             bool edited = false, commit = false;
-            if (ImGui::Checkbox("Stretch To Screen", &attr.image_stretch)) { edited = commit = true; }
+            if (ImGui::Checkbox(loc::TL("inspector.image.stretch_to_screen"), &attr.image_stretch)) { edited = commit = true; }
             ImGui::BeginDisabled(attr.image_stretch);
             float pos[2] = { attr.image_x, attr.image_y };
-            if (ImGui::DragFloat2("Position", pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            if (ImGui::DragFloat2(loc::TL("inspector.image.position"), pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
             {
                 attr.image_x = pos[0]; attr.image_y = pos[1];
                 edited = true;
@@ -763,7 +782,7 @@ void InspectorPanel::Render(EngineState& state)
             if (attr.image_lock_aspect)
             {
                 const float aspect = attr.image_h > 0.0f ? attr.image_w / attr.image_h : 1.0f;
-                if (ImGui::DragFloat("Width", &attr.image_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                if (ImGui::DragFloat(loc::TL("inspector.image.width"), &attr.image_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
                 {
                     attr.image_h = attr.image_w / aspect;
                     edited = true;
@@ -773,29 +792,29 @@ void InspectorPanel::Render(EngineState& state)
             else
             {
                 float size[2] = { attr.image_w, attr.image_h };
-                if (ImGui::DragFloat2("Size", size, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                if (ImGui::DragFloat2(loc::TL("inspector.image.size"), size, 1.0f, 1.0f, 4000.0f, "%.0f"))
                 {
                     attr.image_w = size[0]; attr.image_h = size[1];
                     edited = true;
                 }
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
-            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.image_lock_aspect)) { edited = commit = true; }
+            if (ImGui::Checkbox(loc::TL("inspector.image.lock_aspect_ratio"), &attr.image_lock_aspect)) { edited = commit = true; }
             ImGui::EndDisabled();
-            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
-            edited |= ImGui::ColorEdit3("Tint", attr.image_tint);
+            ImGui::TextDisabled(loc::T("inspector.image.hint"));
+            edited |= ImGui::ColorEdit3(loc::TL("inspector.image.tint"), attr.image_tint);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Alpha", &attr.image_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.image.alpha"), &attr.image_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragInt("Priority", &attr.image_priority, 0.1f, 0, 100);
+            edited |= ImGui::DragInt(loc::TL("inspector.image.priority"), &attr.image_priority, 0.1f, 0, 100);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::TextDisabled("Higher priority draws behind lower.");
+            ImGui::TextDisabled(loc::T("inspector.image.hint_2"));
             if (gifanim::IsGifPath(attr.image_path))
             {
-                const char* modes = "Off\0Play Once\0Loop\0";
-                if (ImGui::Combo("Play Mode", &attr.image_play_mode, modes)) { edited = commit = true; }
-                ImGui::TextDisabled("Timing comes from the GIF's own frame delays.");
-                ImGui::TextDisabled("Animates in Play; frozen on frame 1 while editing.");
+                const char* modes = loc::T("inspector.image.play_mode_items");
+                if (ImGui::Combo(loc::TL("inspector.image.play_mode"), &attr.image_play_mode, modes)) { edited = commit = true; }
+                ImGui::TextDisabled(loc::T("inspector.image.hint_3"));
+                ImGui::TextDisabled(loc::T("inspector.image.hint_4"));
             }
             if (edited && scene) scene->dirty = true;
             if (commit) save();
@@ -803,10 +822,10 @@ void InspectorPanel::Render(EngineState& state)
         else if (attr.type == "Color")
         {
             bool edited = false, commit = false;
-            if (ImGui::Checkbox("Stretch To Screen", &attr.color_stretch)) { edited = commit = true; }
+            if (ImGui::Checkbox(loc::TL("inspector.color.stretch_to_screen"), &attr.color_stretch)) { edited = commit = true; }
             ImGui::BeginDisabled(attr.color_stretch);
             float pos[2] = { attr.color_x, attr.color_y };
-            if (ImGui::DragFloat2("Position", pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            if (ImGui::DragFloat2(loc::TL("inspector.color.position"), pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
             {
                 attr.color_x = pos[0]; attr.color_y = pos[1];
                 edited = true;
@@ -817,7 +836,7 @@ void InspectorPanel::Render(EngineState& state)
                 // No source image to take a ratio from, so hold the ratio the
                 // block already has and let width drive height.
                 const float aspect = attr.color_h > 0.0f ? attr.color_w / attr.color_h : 1.0f;
-                if (ImGui::DragFloat("Width", &attr.color_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                if (ImGui::DragFloat(loc::TL("inspector.color.width"), &attr.color_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
                 {
                     attr.color_h = attr.color_w / aspect;
                     edited = true;
@@ -827,23 +846,23 @@ void InspectorPanel::Render(EngineState& state)
             else
             {
                 float size[2] = { attr.color_w, attr.color_h };
-                if (ImGui::DragFloat2("Size", size, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                if (ImGui::DragFloat2(loc::TL("inspector.color.size"), size, 1.0f, 1.0f, 4000.0f, "%.0f"))
                 {
                     attr.color_w = size[0]; attr.color_h = size[1];
                     edited = true;
                 }
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
-            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.color_lock_aspect)) { edited = commit = true; }
+            if (ImGui::Checkbox(loc::TL("inspector.color.lock_aspect_ratio"), &attr.color_lock_aspect)) { edited = commit = true; }
             ImGui::EndDisabled();
-            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
-            edited |= ImGui::ColorEdit3("Color", attr.color_rgb);
+            ImGui::TextDisabled(loc::T("inspector.color.hint"));
+            edited |= ImGui::ColorEdit3(loc::TL("inspector.color.color"), attr.color_rgb);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Alpha", &attr.color_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.color.alpha"), &attr.color_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragInt("Priority", &attr.color_priority, 0.1f, 0, 100);
+            edited |= ImGui::DragInt(loc::TL("inspector.color.priority"), &attr.color_priority, 0.1f, 0, 100);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::TextDisabled("Higher priority draws behind lower.");
+            ImGui::TextDisabled(loc::T("inspector.color.hint_2"));
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
@@ -882,7 +901,7 @@ void InspectorPanel::Render(EngineState& state)
             char text_buf[4096];
             std::strncpy(text_buf, attr.text_value.c_str(), sizeof(text_buf) - 1);
             text_buf[sizeof(text_buf) - 1] = '\0';
-            if (ImGui::InputTextMultiline("Text", text_buf, sizeof(text_buf), ImVec2(-1.0f, 100.0f)))
+            if (ImGui::InputTextMultiline(loc::TL("inspector.text.text"), text_buf, sizeof(text_buf), ImVec2(-1.0f, 100.0f)))
             {
                 attr.text_value = text_buf;
                 if (scene) scene->dirty = true;
@@ -891,7 +910,7 @@ void InspectorPanel::Render(EngineState& state)
 
             bool edited = false, commit = false;
             float position[2] = { attr.text_x, attr.text_y };
-            if (ImGui::DragFloat2("Position", position, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            if (ImGui::DragFloat2(loc::TL("inspector.text.position"), position, 1.0f, -4000.0f, 4000.0f, "%.0f"))
             {
                 attr.text_x = position[0]; attr.text_y = position[1]; edited = true;
             }
@@ -899,7 +918,7 @@ void InspectorPanel::Render(EngineState& state)
             if (attr.text_lock_aspect)
             {
                 const float aspect = attr.text_h > 0.0f ? attr.text_w / attr.text_h : 1.0f;
-                if (ImGui::DragFloat("Width", &attr.text_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                if (ImGui::DragFloat(loc::TL("inspector.text.width"), &attr.text_w, 1.0f, 1.0f, 4000.0f, "%.0f"))
                 {
                     attr.text_h = attr.text_w / aspect; edited = true;
                 }
@@ -908,23 +927,23 @@ void InspectorPanel::Render(EngineState& state)
             else
             {
                 float size[2] = { attr.text_w, attr.text_h };
-                if (ImGui::DragFloat2("Size", size, 1.0f, 1.0f, 4000.0f, "%.0f"))
+                if (ImGui::DragFloat2(loc::TL("inspector.text.size"), size, 1.0f, 1.0f, 4000.0f, "%.0f"))
                 {
                     attr.text_w = size[0]; attr.text_h = size[1]; edited = true;
                 }
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
-            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.text_lock_aspect)) { edited = commit = true; }
-            edited |= ImGui::DragFloat("Font Size", &attr.text_font_size, 0.5f, 1.0f, 512.0f, "%.1f");
+            if (ImGui::Checkbox(loc::TL("inspector.text.lock_aspect_ratio"), &attr.text_lock_aspect)) { edited = commit = true; }
+            edited |= ImGui::DragFloat(loc::TL("inspector.text.font_size"), &attr.text_font_size, 0.5f, 1.0f, 512.0f, "%.1f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::ColorEdit3("Color", attr.text_color);
+            edited |= ImGui::ColorEdit3(loc::TL("inspector.text.color"), attr.text_color);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Alpha", &attr.text_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.text.alpha"), &attr.text_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragInt("Priority", &attr.text_priority, 0.1f, 0, 100);
+            edited |= ImGui::DragInt(loc::TL("inspector.text.priority"), &attr.text_priority, 0.1f, 0, 100);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
-            ImGui::TextDisabled("Higher priority draws behind lower.");
+            ImGui::TextDisabled(loc::T("inspector.text.hint"));
+            ImGui::TextDisabled(loc::T("inspector.text.hint_2"));
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
@@ -1010,10 +1029,10 @@ void InspectorPanel::Render(EngineState& state)
             }
 
             bool edited = false, commit = false;
-            if (ImGui::Checkbox("Stretch To Screen", &attr.video_stretch)) { edited = commit = true; }
+            if (ImGui::Checkbox(loc::TL("inspector.video.stretch_to_screen"), &attr.video_stretch)) { edited = commit = true; }
             ImGui::BeginDisabled(attr.video_stretch);
             float pos[2] = { attr.video_x, attr.video_y };
-            if (ImGui::DragFloat2("Position", pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
+            if (ImGui::DragFloat2(loc::TL("inspector.video.position"), pos, 1.0f, -4000.0f, 4000.0f, "%.0f"))
             {
                 attr.video_x = pos[0]; attr.video_y = pos[1];
                 edited = true;
@@ -1021,35 +1040,35 @@ void InspectorPanel::Render(EngineState& state)
             commit |= ImGui::IsItemDeactivatedAfterEdit();
             if (attr.video_lock_aspect)
             {
-                edited |= ImGui::DragFloat("Width", &attr.video_w, 1.0f, 16.0f, 4000.0f, "%.0f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.video.width"), &attr.video_w, 1.0f, 16.0f, 4000.0f, "%.0f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             else
             {
                 float size[2] = { attr.video_w, attr.video_h };
-                if (ImGui::DragFloat2("Size", size, 1.0f, 16.0f, 4000.0f, "%.0f"))
+                if (ImGui::DragFloat2(loc::TL("inspector.video.size"), size, 1.0f, 16.0f, 4000.0f, "%.0f"))
                 {
                     attr.video_w = size[0]; attr.video_h = size[1];
                     edited = true;
                 }
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
-            if (ImGui::Checkbox("Lock Aspect Ratio", &attr.video_lock_aspect)) { edited = commit = true; }
+            if (ImGui::Checkbox(loc::TL("inspector.video.lock_aspect_ratio"), &attr.video_lock_aspect)) { edited = commit = true; }
             ImGui::EndDisabled();
-            ImGui::TextDisabled("Position/size in 1280x720 reference space.");
-            edited |= ImGui::ColorEdit3("Tint", attr.video_tint);
+            ImGui::TextDisabled(loc::T("inspector.video.hint"));
+            edited |= ImGui::ColorEdit3(loc::TL("inspector.video.tint"), attr.video_tint);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Alpha", &attr.video_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.video.alpha"), &attr.video_alpha, 0.005f, 0.0f, 1.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragInt("Priority", &attr.video_priority, 0.1f, 0, 100);
+            edited |= ImGui::DragInt(loc::TL("inspector.video.priority"), &attr.video_priority, 0.1f, 0, 100);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            ImGui::TextDisabled("Higher priority draws behind lower.");
-            const char* modes = "Off\0Play Once\0Loop\0";
-            if (ImGui::Combo("Play Mode", &attr.video_play_mode, modes)) { edited = commit = true; }
-            edited |= ImGui::DragFloat("Volume", &attr.video_volume, 0.005f, 0.0f, 1.0f, "%.2f");
+            ImGui::TextDisabled(loc::T("inspector.video.hint_2"));
+            const char* modes = loc::T("inspector.video.play_mode_items");
+            if (ImGui::Combo(loc::TL("inspector.video.play_mode"), &attr.video_play_mode, modes)) { edited = commit = true; }
+            edited |= ImGui::DragFloat(loc::TL("inspector.video.volume"), &attr.video_volume, 0.005f, 0.0f, 1.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            if (ImGui::Checkbox("Muted", &attr.video_muted)) { edited = commit = true; }
-            ImGui::TextDisabled("Edit mode shows the first frame; plays in Play mode.");
+            if (ImGui::Checkbox(loc::TL("inspector.video.muted"), &attr.video_muted)) { edited = commit = true; }
+            ImGui::TextDisabled(loc::T("inspector.video.hint_3"));
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
@@ -1110,54 +1129,54 @@ void InspectorPanel::Render(EngineState& state)
             }
 
             bool edited = false, commit = false;
-            const char* modes = "Off\0On\0";
-            if (ImGui::Combo("Play Mode", &attr.audio_play, modes)) { edited = commit = true; }
-            edited |= ImGui::DragFloat("Volume", &attr.audio_volume, 0.05f, 0.0f, 20.0f, "%.2f");
+            const char* modes = loc::T("inspector.audio.play_items");
+            if (ImGui::Combo(loc::TL("inspector.audio.play_mode"), &attr.audio_play, modes)) { edited = commit = true; }
+            edited |= ImGui::DragFloat(loc::TL("inspector.audio.volume"), &attr.audio_volume, 0.05f, 0.0f, 20.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            edited |= ImGui::DragFloat("Pitch", &attr.audio_pitch, 0.005f, 0.1f, 4.0f, "%.2f");
+            edited |= ImGui::DragFloat(loc::TL("inspector.audio.pitch"), &attr.audio_pitch, 0.005f, 0.1f, 4.0f, "%.2f");
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            if (ImGui::Checkbox("Loop", &attr.audio_loop)) { edited = commit = true; }
-            const char* audioClasses = "Effect\0Music\0Ambience\0Dialogue\0";
-            if (ImGui::Combo("Class", &attr.audio_class, audioClasses)) { edited = commit = true; }
-            edited |= ImGui::DragInt("Priority", &attr.audio_priority, 1.0f, -100, 100);
+            if (ImGui::Checkbox(loc::TL("inspector.audio.loop"), &attr.audio_loop)) { edited = commit = true; }
+            const char* audioClasses = loc::T("inspector.audio.class_items");
+            if (ImGui::Combo(loc::TL("inspector.audio.class"), &attr.audio_class, audioClasses)) { edited = commit = true; }
+            edited |= ImGui::DragInt(loc::TL("inspector.audio.priority"), &attr.audio_priority, 1.0f, -100, 100);
             commit |= ImGui::IsItemDeactivatedAfterEdit();
-            const char* loadModes = "Auto\0Resident\0Stream\0";
-            if (ImGui::Combo("Load Mode", &attr.audio_load_mode, loadModes)) { edited = commit = true; }
-            if (ImGui::Checkbox("3D Spatialize", &attr.audio_spatial)) { edited = commit = true; }
+            const char* loadModes = loc::T("inspector.audio.load_mode_items");
+            if (ImGui::Combo(loc::TL("inspector.audio.load_mode"), &attr.audio_load_mode, loadModes)) { edited = commit = true; }
+            if (ImGui::Checkbox(loc::TL("inspector.audio.3d_spatialize"), &attr.audio_spatial)) { edited = commit = true; }
             if (attr.audio_spatial)
             {
-                edited |= ImGui::DragFloat("Min Distance", &attr.audio_min_dist, 0.05f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.audio.min_distance"), &attr.audio_min_dist, 0.05f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Max Distance", &attr.audio_max_dist, 0.1f, 0.02f, 1000.0f, "%.1f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.audio.max_distance"), &attr.audio_max_dist, 0.1f, 0.02f, 1000.0f, "%.1f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Doppler Factor", &attr.audio_doppler, 0.02f, 0.0f, 10.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.audio.doppler_factor"), &attr.audio_doppler, 0.02f, 0.0f, 10.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
-            ImGui::TextDisabled("Plays in Play mode only; position follows the object.");
+            ImGui::TextDisabled(loc::T("inspector.audio.hint"));
             if (edited && scene) scene->dirty = true;
             if (commit) save();
         }
         else if (attr.type == "Trigger Volume")
         {
-            ImGui::TextDisabled("Reports overlaps; no physical response.");
+            ImGui::TextDisabled(loc::T("inspector.trigger.hint"));
             bool edited = false, commit = false;
-            const char* shapes = "Box\0Sphere\0Capsule\0Cylinder\0";
-            if (ImGui::Combo("Shape", &attr.trig_shape, shapes)) { edited = commit = true; }
+            const char* shapes = loc::T("inspector.trigger.shape_items");
+            if (ImGui::Combo(loc::TL("inspector.trigger.shape"), &attr.trig_shape, shapes)) { edited = commit = true; }
             if (attr.trig_shape == 0) // Box
             {
-                edited |= ImGui::DragFloat3("Half-extents", attr.trig_size, 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat3(loc::TL("inspector.trigger.half_extents"), attr.trig_size, 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             else if (attr.trig_shape == 1) // Sphere
             {
-                edited |= ImGui::DragFloat("Radius", &attr.trig_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.trigger.radius"), &attr.trig_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             else // Capsule / Cylinder (Y-up): radius + half-height
             {
-                edited |= ImGui::DragFloat("Radius", &attr.trig_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.trigger.radius"), &attr.trig_size[0], 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
-                edited |= ImGui::DragFloat("Half-height", &attr.trig_size[1], 0.02f, 0.01f, 1000.0f, "%.2f");
+                edited |= ImGui::DragFloat(loc::TL("inspector.trigger.half_height"), &attr.trig_size[1], 0.02f, 0.01f, 1000.0f, "%.2f");
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             if (edited && scene) scene->dirty = true;
@@ -1167,67 +1186,67 @@ void InspectorPanel::Render(EngineState& state)
         ImGui::PopID();
     }
 
-    if (ImGui::Button(ICON_FA_PLUS " Add Attribute"))
+    if (ImGui::Button(loc::TI(ICON_FA_PLUS, "inspector.add_attribute")))
         ImGui::OpenPopup("add_attribute");
     if (ImGui::BeginPopup("add_attribute"))
     {
-        if (ImGui::MenuItem("3D Model"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.3d_model")))
         {
             ObjectAttribute attr;
             attr.type = "3D Model";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Shader"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.shader")))
         {
             ObjectAttribute attr;
             attr.type = "Shader";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Script"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.script")))
         {
             ObjectAttribute attr;
             attr.type = "Script";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Animator"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.animator")))
         {
             ObjectAttribute attr;
             attr.type = "Animator";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Camera"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.camera")))
         {
             ObjectAttribute attr;
             attr.type = "Camera";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Directional Light"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.directional_light")))
         {
             ObjectAttribute attr;
             attr.type = "Directional Light";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Point Light"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.point_light")))
         {
             ObjectAttribute attr;
             attr.type = "Point Light";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Spot Light"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.spot_light")))
         {
             ObjectAttribute attr;
             attr.type = "Spot Light";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Environment Light"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.environment_light")))
         {
             ObjectAttribute attr;
             attr.type = "Environment Light";
@@ -1235,56 +1254,56 @@ void InspectorPanel::Render(EngineState& state)
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Skybox"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.skybox")))
         {
             ObjectAttribute attr;
             attr.type = "Skybox";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Rigid Body"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.rigid_body")))
         {
             ObjectAttribute attr;
             attr.type = "Rigid Body";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Trigger Volume"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.trigger_volume")))
         {
             ObjectAttribute attr;
             attr.type = "Trigger Volume";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Image"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.image")))
         {
             ObjectAttribute attr;
             attr.type = "Image";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Color"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.color")))
         {
             ObjectAttribute attr;
             attr.type = "Color";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Text"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.text")))
         {
             ObjectAttribute attr;
             attr.type = "Text";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Video"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.video")))
         {
             ObjectAttribute attr;
             attr.type = "Video";
             obj->attributes.push_back(attr);
             save();
         }
-        if (ImGui::MenuItem("Audio"))
+        if (ImGui::MenuItem(loc::TL("inspector.attribute.audio")))
         {
             ObjectAttribute attr;
             attr.type = "Audio";

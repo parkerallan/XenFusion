@@ -1,0 +1,508 @@
+{
+  "_name": "Deutsch",
+  "animator": {
+    "bonemod": {
+      "add_selected_bone": "+ Ausgewählten Knochen hinzufügen",
+      "advanced": "Erweitert",
+      "affects_children": "Wirkt auf Unterobjekte",
+      "angle_limit": "Winkelgrenze",
+      "bone_modifiers": "Knochenmodifikatoren",
+      "center_offset": "Mittelpunktversatz",
+      "fit_to_bone": "An Knochen anpassen",
+      "gravity_dir": "Schwerkraftrichtung",
+      "half_extents": "Halbe Ausdehnung",
+      "preset": "Voreinstellung",
+      "radius": "Radius",
+      "remove_modifier": "Modifikator entfernen",
+      "type": "Typ",
+      "type_collision": "Kollision",
+      "type_physics": "Physik"
+    },
+    "clips": {
+      "add_clip": "+ Clip hinzufügen",
+      "clip": "Clip",
+      "drop_model_fbx_gltf_glb_here": "Modell (.fbx/.gltf/.glb) hier ablegen",
+      "import_selected_model": "Ausgewähltes Modell importieren",
+      "imported_clips": "Importierte Clips",
+      "remove_clip": "Clip entfernen"
+    },
+    "controller": {
+      "face": "Gesicht",
+      "general": "Allgemein"
+    },
+    "faceclips": {
+      "clips": "Clips",
+      "missing": "fehlt",
+      "none": "Keine"
+    },
+    "livelink": {
+      "calibrate_neutral": "Neutral kalibrieren",
+      "connect": "Verbinden",
+      "disconnect": "Trennen",
+      "hint": "Angehalten - letztes Paket von %s",
+      "hint_2": "Empfang auf %d, es kommt nichts an",
+      "hint_3": "Dieser PC hat keinen Netzwerkadapter mit Gateway",
+      "hold_still_s": "Still halten... %.1fs",
+      "live_link_face": "Live Link Face",
+      "not_listening": "Nicht empfangsbereit",
+      "on_selected_object": "Am ausgewählten Objekt",
+      "point_the_phone_at": "Richten Sie das Telefon auf  %s : %d",
+      "port": "Port",
+      "preview": "Vorschau",
+      "s_from": "%s  %.0f/s  von %s"
+    },
+    "no_options": "%s: keine Optionen",
+    "poses": {
+      "add_pose": "+ Pose hinzufügen",
+      "default": "(Standard)",
+      "expression_poses": "Ausdruckposen",
+      "none": "Keine",
+      "preview": "Vorschau",
+      "remove_pose": "Pose entfernen",
+      "set_as_default": "Als Standard festlegen"
+    },
+    "preview": {
+      "bone": "Knochen: %s",
+      "mesh": "Netz",
+      "no_clips": "(keine Clips)",
+      "s": "%.2f / %.2fs",
+      "skeleton": "Skelett",
+      "texture": "Textur"
+    },
+    "record": {
+      "hint": "warte auf das Mikrofon...",
+      "microphone": "Mikrofon",
+      "needs_tracking": "Tracking erforderlich",
+      "record": "Aufnehmen",
+      "s_frames": "%.1fs  %u Bilder",
+      "stop": "Stopp",
+      "take_name": "Name der Aufnahme",
+      "text": "(%s)"
+    },
+    "states": {
+      "add_state": "+ Zustand hinzufügen",
+      "default_state": "Standardzustand",
+      "loop": "Schleife",
+      "playback_speed": "Abspielgeschwindigkeit",
+      "remove": "Entfernen",
+      "set_as_default": "Als Standard festlegen",
+      "state": "Zustand",
+      "states": "Zustände"
+    },
+    "toolbar": {
+      "hint": "Öffnen Sie ein Projekt, um Animationscontroller zu bearbeiten.",
+      "unsaved_changes": "Nicht gespeicherte Änderungen"
+    },
+    "transitions": {
+      "add_transition": "+ Übergang hinzufügen",
+      "blend_duration": "Überblenddauer",
+      "exit_time": "Ausstiegszeit",
+      "has_exit_time": "Hat Ausstiegszeit",
+      "hint": "Beispiele: grounded, !grounded, speed > 0.5, moving == true",
+      "remove_transition": "Übergang entfernen",
+      "transition": "Übergang",
+      "transitions": "Übergänge"
+    }
+  },
+  "assets": {
+    "import": "Importieren",
+    "import_tooltip": "Dateien importieren (oder aus dem Explorer ziehen)",
+    "new_folder": "Neuer Ordner",
+    "new_script": "Neues Skript",
+    "new_shader": "Neuer Shader"
+  },
+  "common": {
+    "add": "Hinzufügen",
+    "browse": "Durchsuchen...",
+    "cancel": "Abbrechen",
+    "clear": "Löschen",
+    "clear_all": "Alles löschen",
+    "copy": "Kopieren",
+    "delete": "Entfernen",
+    "new_name": "Neuer Name:",
+    "no_project": "Kein Projekt geöffnet.",
+    "not_set": "(nicht festgelegt)",
+    "off": "Aus",
+    "on": "Ein",
+    "rename": "Umbenennen",
+    "save": "Speichern",
+    "select_all": "Alles auswählen"
+  },
+  "editor": {
+    "empty": "Öffnen Sie eine Text- oder Codedatei über Dateien oder Ressourcen."
+  },
+  "files": {
+    "new_object": "Neues Objekt",
+    "new_scene": "Neue Szene",
+    "no_project_hint": "Datei > Neues Projekt / Projekt öffnen."
+  },
+  "inspector": {
+    "add_attribute": "Attribut hinzufügen",
+    "animator": {
+      "auto_play": "Automatisch abspielen",
+      "hint": "Bindepose im Bearbeitungsmodus; der Controller startet beim Abspielen.",
+      "playback_speed": "Abspielgeschwindigkeit"
+    },
+    "attribute": {
+      "3d_model": "3D-Modell",
+      "animator": "Animator",
+      "audio": "Audio",
+      "camera": "Kamera",
+      "color": "Farbe",
+      "directional_light": "Richtungslicht",
+      "environment_light": "Umgebungslicht",
+      "image": "Bild",
+      "point_light": "Punktlicht",
+      "rigid_body": "Starrkörper",
+      "script": "Skript",
+      "shader": "Shader",
+      "skybox": "Skybox",
+      "spot_light": "Spotlicht",
+      "text": "Text",
+      "trigger_volume": "Auslöservolumen",
+      "video": "Video"
+    },
+    "attributes": "Attribute",
+    "audio": {
+      "3d_spatialize": "3D-Räumlichkeit",
+      "class": "Klasse",
+      "class_items": [
+        "Effekt",
+        "Musik",
+        "Ambiente",
+        "Dialog"
+      ],
+      "doppler_factor": "Doppler-Faktor",
+      "hint": "Spielt nur beim Abspielen; die Position folgt dem Objekt.",
+      "load_mode": "Lademodus",
+      "load_mode_items": [
+        "Automatisch",
+        "Resident",
+        "Stream"
+      ],
+      "loop": "Schleife",
+      "max_distance": "Maximalabstand",
+      "min_distance": "Mindestabstand",
+      "pitch": "Tonhöhe",
+      "play_items": [
+        "Aus",
+        "Ein"
+      ],
+      "play_mode": "Abspielmodus",
+      "priority": "Priorität",
+      "volume": "Lautstärke"
+    },
+    "camera": {
+      "acceleration": "Beschleunigung",
+      "active": "Aktiv",
+      "add_point": "Punkt hinzufügen",
+      "far": "Fern",
+      "fov": "Sichtfeld",
+      "lock_position": "Position sperren",
+      "near": "Nah",
+      "none": "(keines)",
+      "offset": "Versatz",
+      "orbit": "Orbit",
+      "path_points": "Pfadpunkte (%d)",
+      "rotation_offset": "Rotationsversatz",
+      "rotation_offset_track": "Rotationsversatz",
+      "smoothing": "Glättung",
+      "speed": "Geschwindigkeit",
+      "target": "Ziel",
+      "type": "Typ",
+      "type_items": [
+        "Fest",
+        "Folgen",
+        "Pfad"
+      ]
+    },
+    "color": {
+      "alpha": "Alpha",
+      "color": "Farbe",
+      "hint": "Position und Größe im Referenzraum 1280x720.",
+      "hint_2": "Höhere Priorität wird dahinter gezeichnet.",
+      "lock_aspect_ratio": "Seitenverhältnis sperren",
+      "position": "Position",
+      "priority": "Priorität",
+      "size": "Größe",
+      "stretch_to_screen": "Auf Bildschirm strecken",
+      "width": "Breite"
+    },
+    "hint": "Wählen Sie ein Objekt im Dateien-Panel aus.",
+    "image": {
+      "alpha": "Alpha",
+      "hint": "Position und Größe im Referenzraum 1280x720.",
+      "hint_2": "Höhere Priorität wird dahinter gezeichnet.",
+      "hint_3": "Das Timing stammt aus den Bildverzögerungen des GIF.",
+      "hint_4": "Animiert beim Abspielen; beim Bearbeiten auf Bild 1 eingefroren.",
+      "lock_aspect_ratio": "Seitenverhältnis sperren",
+      "play_mode": "Abspielmodus",
+      "play_mode_items": [
+        "Aus",
+        "Einmal",
+        "Schleife"
+      ],
+      "position": "Position",
+      "priority": "Priorität",
+      "size": "Größe",
+      "stretch_to_screen": "Auf Bildschirm strecken",
+      "tint": "Färbung",
+      "width": "Breite"
+    },
+    "light": {
+      "beam_intensity": "Strahlintensität",
+      "color": "Farbe",
+      "inner_cone": "Innerer Kegel",
+      "intensity": "Intensität",
+      "mode": "Modus",
+      "mode_items": [
+        "Vorberechnet",
+        "Echtzeit",
+        "Gemischt"
+      ],
+      "outer_cone": "Äußerer Kegel",
+      "project_light_shaft": "Lichtstrahl projizieren",
+      "range": "Reichweite"
+    },
+    "model": {
+      "cast_shadow": "Schatten werfen",
+      "importing": "%s wird importiert..."
+    },
+    "position": "Position",
+    "rigidbody": {
+      "angular_damping": "Winkeldämpfung",
+      "body": "Körper",
+      "body_items": [
+        "Statisch",
+        "Dynamisch",
+        "Kinematisch"
+      ],
+      "bounciness": "Sprungkraft",
+      "friction": "Reibung",
+      "gravity": "Schwerkraft",
+      "gravity_scale": "Schwerkraftfaktor",
+      "half_extents": "Halbe Ausdehnung",
+      "half_height": "Halbe Höhe",
+      "hint": "Verwendet das Netz des 3D-Modells dieses Objekts.",
+      "linear_damping": "Lineare Dämpfung",
+      "lock_rotation": "Rotation sperren",
+      "mass": "Masse",
+      "radius": "Radius",
+      "shape": "Form",
+      "shape_items": [
+        "Quader",
+        "Kugel",
+        "Kapsel",
+        "Zylinder",
+        "Netz (konvex)",
+        "Netz (exakt)"
+      ]
+    },
+    "rotation": "Rotation",
+    "scale": "Skalierung",
+    "script": {
+      "hint": "Führt on_start / on_update(dt) / on_trigger beim Abspielen aus."
+    },
+    "skybox": {
+      "hint": "Equirektanguläres Bild (2:1). Nur Gierung; die Transformation wird ignoriert.",
+      "hint_2": "Die erste Skybox in der Szene gewinnt.",
+      "rotation": "Rotation"
+    },
+    "text": {
+      "alpha": "Alpha",
+      "color": "Farbe",
+      "font_size": "Schriftgröße",
+      "hint": "Position und Größe im Referenzraum 1280x720.",
+      "hint_2": "Höhere Priorität wird dahinter gezeichnet.",
+      "lock_aspect_ratio": "Seitenverhältnis sperren",
+      "position": "Position",
+      "priority": "Priorität",
+      "size": "Größe",
+      "text": "Text",
+      "width": "Breite"
+    },
+    "transform": "Transformation",
+    "trigger": {
+      "half_extents": "Halbe Ausdehnung",
+      "half_height": "Halbe Höhe",
+      "hint": "Meldet Überlappungen; keine physikalische Reaktion.",
+      "radius": "Radius",
+      "shape": "Form",
+      "shape_items": [
+        "Quader",
+        "Kugel",
+        "Kapsel",
+        "Zylinder"
+      ]
+    },
+    "video": {
+      "alpha": "Alpha",
+      "hint": "Position und Größe im Referenzraum 1280x720.",
+      "hint_2": "Höhere Priorität wird dahinter gezeichnet.",
+      "hint_3": "Im Bearbeitungsmodus wird das erste Bild gezeigt; Wiedergabe beim Abspielen.",
+      "lock_aspect_ratio": "Seitenverhältnis sperren",
+      "muted": "Stumm",
+      "play_mode": "Abspielmodus",
+      "play_mode_items": [
+        "Aus",
+        "Einmal",
+        "Schleife"
+      ],
+      "position": "Position",
+      "priority": "Priorität",
+      "size": "Größe",
+      "stretch_to_screen": "Auf Bildschirm strecken",
+      "tint": "Färbung",
+      "volume": "Lautstärke",
+      "width": "Breite"
+    },
+    "visible": "Sichtbar"
+  },
+  "log": {
+    "tooltip": {
+      "auto_scroll": "Automatischer Bildlauf: %s",
+      "clear": "Protokoll löschen"
+    }
+  },
+  "mapping": {
+    "column": {
+      "control": "Xbox-Steuerung",
+      "pc_input": "PC-Taste / Maus",
+      "script_call": "Skriptaufruf"
+    },
+    "hint": "Ordnen Sie PC-Tasten oder Maus den Xbox-Steuerungen zu, um Skripte in der Vorschau ohne Gamepad zu steuern",
+    "listening": "Taste drücken...",
+    "mouse": {
+      "minus_x": "Maus -X",
+      "minus_y": "Maus -Y",
+      "plus_x": "Maus +X",
+      "plus_y": "Maus +Y"
+    },
+    "no_project": "(Projekt öffnen zum Speichern)"
+  },
+  "menu": {
+    "build": {
+      "bake_lighting": "Beleuchtung vorberechnen",
+      "build_iso": ".iso-Abbild erstellen",
+      "clean": "Build bereinigen",
+      "rebuild_shaders": "Engine-Shader neu erstellen",
+      "run_xex": "XEX erstellen und starten",
+      "title": "Erstellen"
+    },
+    "file": {
+      "close_project": "Projekt schließen",
+      "exit": "Beenden",
+      "new_project": "Neues Projekt...",
+      "open_project": "Projekt öffnen...",
+      "recent_projects": "Zuletzt verwendete Projekte...",
+      "save_scene": "Szene speichern",
+      "title": "Datei"
+    },
+    "view": {
+      "title": "Ansicht"
+    }
+  },
+  "modal": {
+    "import": {
+      "confirm": "Importieren",
+      "destination": "Ziel",
+      "empty": "(Dateien hierher ziehen - noch keine vorgemerkt)",
+      "hint": "Ziehen Sie Dateien aus dem Windows-Explorer auf dieses Fenster.",
+      "staged": "Vorgemerkte Dateien",
+      "title": "Ressourcen importieren"
+    },
+    "recent": {
+      "empty": "Keine zuletzt verwendeten Projekte.",
+      "header": "Zuletzt verwendet",
+      "new_project": "Neues Projekt",
+      "open_project": "Projekt öffnen",
+      "title": "Zuletzt verwendete Projekte"
+    }
+  },
+  "panel": {
+    "animator": {
+      "title": "Animator"
+    },
+    "assets": {
+      "title": "Ressourcen"
+    },
+    "editor": {
+      "title": "Editor"
+    },
+    "files": {
+      "title": "Dateien"
+    },
+    "inspector": {
+      "title": "Inspektor"
+    },
+    "log": {
+      "title": "Protokoll"
+    },
+    "mapping": {
+      "title": "Zuordnung"
+    },
+    "performance": {
+      "title": "Leistung"
+    },
+    "settings": {
+      "title": "Einstellungen"
+    },
+    "style_editor": {
+      "title": "Stil-Editor"
+    },
+    "version_control": {
+      "title": "Versionsverwaltung"
+    },
+    "viewport": {
+      "title": "Ansichtsfenster"
+    }
+  },
+  "performance": {
+    "counts": "Szenen: %d   Objekte: %d",
+    "fps": "%.1f FPS",
+    "frame_ms": "%.3f ms/Bild",
+    "plot_overlay": "Bildzeit (ms)"
+  },
+  "settings": {
+    "build": {
+      "config": "Konfiguration",
+      "header": "Build-Konfiguration",
+      "iso_name": "ISO-Name",
+      "iso_name_hint": "<Projekt>.iso",
+      "output_dir": "Build-Ausgabeordner",
+      "output_dir_default": "  (nicht festgelegt - der runtime\\-Ordner der Engine wird verwendet)"
+    },
+    "language": {
+      "header": "Sprache",
+      "none": "  (keine Sprachdateien in lang\\ gefunden)"
+    },
+    "log_filters": {
+      "build": "Build",
+      "error": "Fehler",
+      "header": "Protokollfilter",
+      "info": "Info",
+      "script": "Protokoll",
+      "warning": "Warnung"
+    },
+    "toolchain": {
+      "emulator": "Xenia-Emulator",
+      "header": "Toolchain",
+      "xdk": "Xbox 360 SDK (XDK) 2.0.21256.3"
+    }
+  },
+  "style_editor": {
+    "theme": "Engine-Design"
+  },
+  "vcs": {
+    "commit": "Commit",
+    "commit_hint": "Commit-Nachricht",
+    "detached": "(losgelöst)",
+    "fetch": "Fetch",
+    "init_repo": "Repository initialisieren",
+    "no_changes": "Keine Änderungen.",
+    "no_repo": "Dieser Projektordner ist kein Git-Repository.",
+    "pull": "Pull",
+    "push": "Push",
+    "refresh": "Aktualisieren"
+  }
+}

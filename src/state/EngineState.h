@@ -214,6 +214,9 @@ struct EngineState
 {
     Theme theme = Theme::Gray;
 
+    // UI language: the stem of a file in <exe>/lang (e.g. "es" for es.json).
+    std::string language = "en";
+
     // --- Dock / window visibility ---
     bool dock_layout_built    = false;
     bool show_viewport_panel  = true;

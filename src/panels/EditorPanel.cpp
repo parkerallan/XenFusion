@@ -1,4 +1,5 @@
 #include "panels/EditorPanel.h"
+#include "loc/Loc.h"
 
 #include "state/EngineState.h"
 #include "ui/Icons.h"
@@ -72,7 +73,7 @@ void EditorPanel::Render(EngineState& state)
     if (!state.show_editor_panel)
         return;
 
-    if (!ImGui::Begin("Editor", &state.show_editor_panel))
+    if (!ImGui::Begin(loc::TWin("panel.editor.title", "Editor"), &state.show_editor_panel))
     {
         ImGui::End();
         return;
@@ -87,7 +88,7 @@ void EditorPanel::Render(EngineState& state)
 
     if (docs_.empty())
     {
-        ImGui::TextDisabled("Open a text or code file from the Files or Assets panel.");
+        ImGui::TextDisabled(loc::T("editor.empty"));
         ImGui::End();
         return;
     }
@@ -107,7 +108,7 @@ void EditorPanel::Render(EngineState& state)
 
             if (ImGui::BeginTabItem(doc.path.filename().string().c_str(), &open, flags))
             {
-                if (ImGui::SmallButton(ICON_FA_FLOPPY_DISK " Save"))
+                if (ImGui::SmallButton(loc::TI(ICON_FA_FLOPPY_DISK, "common.save")))
                     SaveDoc(doc, state);
                 ImGui::SameLine();
                 ImGui::TextDisabled("%s", doc.path.string().c_str());

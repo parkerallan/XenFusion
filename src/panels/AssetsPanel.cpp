@@ -1,4 +1,5 @@
 #include "panels/AssetsPanel.h"
+#include "loc/Loc.h"
 
 #include "core/Log.h"
 #include "state/EngineState.h"
@@ -221,7 +222,7 @@ void AssetsPanel::Render(EngineState& state)
     if (!state.show_assets_panel)
         return;
 
-    if (!ImGui::Begin("Assets", &state.show_assets_panel))
+    if (!ImGui::Begin(loc::TWin("panel.assets.title", "Assets"), &state.show_assets_panel))
     {
         ImGui::End();
         return;
@@ -229,7 +230,7 @@ void AssetsPanel::Render(EngineState& state)
 
     if (!state.HasProject())
     {
-        ImGui::TextDisabled("No project open.");
+        ImGui::TextDisabled(loc::T("common.no_project"));
         ImGui::End();
         return;
     }
@@ -252,14 +253,14 @@ void AssetsPanel::Render(EngineState& state)
         }
     }
     {
-        const char* lbl = ICON_FA_PLUS " Import";
+        const char* lbl = loc::TI(ICON_FA_PLUS, "assets.import");
         const float w = ImGui::CalcTextSize(lbl).x + ImGui::GetStyle().FramePadding.x * 2.0f;
         ImGui::SameLine();
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - w);
         if (ImGui::Button(lbl))
             state.show_import_modal = true;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Import files (or drag them from Explorer)");
+            ImGui::SetTooltip(loc::T("assets.import_tooltip"));
     }
 
     ImGui::Separator();
@@ -325,25 +326,25 @@ void AssetsPanel::Render(EngineState& state)
                     {
                         state.open_animator_path = p;
                         state.show_animator_panel = true;
-                        ImGui::SetWindowFocus("Animator");
+                        ImGui::SetWindowFocus("###Animator");
                     }
                     else
                     {
                         state.open_file_path = p;
                         state.show_editor_panel = true;
-                        ImGui::SetWindowFocus("Editor");
+                        ImGui::SetWindowFocus("###Editor");
                     }
                 }
                 ImGui::Separator();
             }
-            if (ImGui::MenuItem("Rename"))
+            if (ImGui::MenuItem(loc::TL("common.rename")))
             {
                 g_rename_target = p;
                 std::snprintf(g_rename_buf, sizeof(g_rename_buf), "%s", nm.c_str());
                 g_open_rename = true;
             }
-            if (ImGui::MenuItem("Copy"))   g_pending = {PendingOp::Copy,   p, {}};
-            if (ImGui::MenuItem("Delete")) g_pending = {PendingOp::Delete, p, {}};
+            if (ImGui::MenuItem(loc::TL("common.copy")))   g_pending = {PendingOp::Copy,   p, {}};
+            if (ImGui::MenuItem(loc::TL("common.delete"))) g_pending = {PendingOp::Delete, p, {}};
             ImGui::EndPopup();
         }
 
@@ -369,13 +370,13 @@ void AssetsPanel::Render(EngineState& state)
                 {
                     state.open_animator_path = p;
                     state.show_animator_panel = true;
-                    ImGui::SetWindowFocus("Animator");
+                    ImGui::SetWindowFocus("###Animator");
                 }
                 else
                 {
                     state.open_file_path = p;
                     state.show_editor_panel = true;
-                    ImGui::SetWindowFocus("Editor");
+                    ImGui::SetWindowFocus("###Editor");
                 }
             }
         }
@@ -393,11 +394,11 @@ void AssetsPanel::Render(EngineState& state)
     if (ImGui::BeginPopupContextWindow("##assets_bg",
                                        ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
     {
-        if (ImGui::MenuItem(ICON_FA_FOLDER " New Folder"))
+        if (ImGui::MenuItem(loc::TI(ICON_FA_FOLDER, "assets.new_folder")))
             g_pending = {PendingOp::NewFolder, dir, {}};
-        if (ImGui::MenuItem(ICON_FA_FILE " New Shader"))
+        if (ImGui::MenuItem(loc::TI(ICON_FA_FILE, "assets.new_shader")))
             g_pending = {PendingOp::NewShader, dir, {}};
-        if (ImGui::MenuItem(ICON_FA_FILE " New Script"))
+        if (ImGui::MenuItem(loc::TI(ICON_FA_FILE, "assets.new_script")))
             g_pending = {PendingOp::NewScript, dir, {}};
         ImGui::EndPopup();
     }
@@ -472,11 +473,11 @@ void AssetsPanel::Render(EngineState& state)
     if (g_open_rename) { ImGui::OpenPopup("Rename Asset"); g_open_rename = false; }
     if (ImGui::BeginPopup("Rename Asset"))
     {
-        ImGui::TextUnformatted("New name:");
+        ImGui::TextUnformatted(loc::T("common.new_name"));
         ImGui::SetNextItemWidth(240.0f);
         const bool enter = ImGui::InputText("##rn", g_rename_buf, sizeof(g_rename_buf),
                                             ImGuiInputTextFlags_EnterReturnsTrue);
-        if ((ImGui::Button("Rename") || enter) && g_rename_buf[0] != '\0')
+        if ((ImGui::Button(loc::TL("common.rename")) || enter) && g_rename_buf[0] != '\0')
         {
             std::error_code fec;
             fs::rename(g_rename_target, g_rename_target.parent_path() / g_rename_buf, fec);
@@ -484,7 +485,7 @@ void AssetsPanel::Render(EngineState& state)
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel"))
+        if (ImGui::Button(loc::TL("common.cancel")))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }

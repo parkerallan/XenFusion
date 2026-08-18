@@ -2,6 +2,7 @@
 
 #include "app/Settings.h"
 #include "build/BuildRun.h"
+#include "loc/Loc.h"
 #include "platform/Dialogs.h"
 #include "project/ProjectIO.h"
 #include "ui/Icons.h"
@@ -207,6 +208,7 @@ bool EngineApplication::Init()
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     settings::Load(state_); // restore persisted settings before the theme is applied
+    loc::Init(state_.language); // UI strings must resolve before any panel runs
 
     LoadFonts();
     ApplyStyle();
@@ -271,6 +273,19 @@ void EngineApplication::RunLoop()
             break;
 
         const float dt = TickDeltaSeconds();
+
+        // Between frames: every const char* loc::T handed out last frame dies
+        // here, and a language needing new glyphs rebuilds the atlas.
+        {
+            const std::string  before_font = loc::FontFile();
+            const std::string  before_set  = loc::GlyphSet();
+            const size_t       before_ext  = loc::ExtendedCodepoints().size();
+            loc::Apply();
+            if (loc::FontFile() != before_font ||
+                loc::GlyphSet() != before_set ||
+                loc::ExtendedCodepoints().size() != before_ext)
+                RebuildFontAtlas();
+        }
 
         // Per-frame reset of panel/renderer state, before the ImGui frame.
         viewport_panel_.BeginFrame();
@@ -383,8 +398,8 @@ void EngineApplication::RenderUI()
 
     if (!startup_tabs_selected_)
     {
-        ImGui::SetWindowFocus("Viewport");
-        ImGui::SetWindowFocus("Log");
+        ImGui::SetWindowFocus("###Viewport");
+        ImGui::SetWindowFocus("###Log");
         startup_tabs_selected_ = true;
     }
 
@@ -396,14 +411,15 @@ void EngineApplication::RenderUI()
     // ImGuiCol_ entries to the clipboard — paste those into ApplyStyle().
     if (state_.show_style_editor)
     {
-        if (ImGui::Begin("Style Editor", &state_.show_style_editor))
+        if (ImGui::Begin(loc::TWin("panel.style_editor.title", "Style Editor"),
+                         &state_.show_style_editor))
         {
             // Engine themes. The stock selector further down only lists ImGui's
             // built-in palettes; this one applies (and persists) ours.
             static const char* kThemes[] = { "Light", "Gray (default)", "Classic" };
             int cur = (int)state_.theme;
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::Combo("Engine theme", &cur, kThemes, IM_ARRAYSIZE(kThemes)))
+            if (ImGui::Combo(loc::TL("style_editor.theme"), &cur, kThemes, IM_ARRAYSIZE(kThemes)))
             {
                 state_.theme = (Theme)cur;
                 ApplyStyle();
@@ -439,70 +455,70 @@ void EngineApplication::RenderMainMenuBar()
     if (!ImGui::BeginMenuBar())
         return;
 
-    if (ImGui::BeginMenu("File"))
+    if (ImGui::BeginMenu(loc::TL("menu.file.title")))
     {
-        if (ImGui::MenuItem("New Project..."))
+        if (ImGui::MenuItem(loc::TL("menu.file.new_project")))
         {
             std::filesystem::path folder;
             if (platform::PickFolder(window_, folder))
                 project::CreateProject(folder, state_);
         }
-        if (ImGui::MenuItem("Open Project..."))
+        if (ImGui::MenuItem(loc::TL("menu.file.open_project")))
         {
             std::filesystem::path folder;
             if (platform::PickFolder(window_, folder))
                 project::OpenProject(folder, state_);
         }
-        if (ImGui::MenuItem("Recent Projects..."))
+        if (ImGui::MenuItem(loc::TL("menu.file.recent_projects")))
             state_.show_recent_modal = true;
-        if (ImGui::MenuItem("Close Project", nullptr, false, state_.HasProject()))
+        if (ImGui::MenuItem(loc::TL("menu.file.close_project"), nullptr, false, state_.HasProject()))
             project::CloseProject(state_);
 
         ImGui::Separator();
 
-        if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, state_.SelectedScene() != nullptr))
+        if (ImGui::MenuItem(loc::TL("menu.file.save_scene"), "Ctrl+S", false, state_.SelectedScene() != nullptr))
             project::SaveScene(*state_.SelectedScene());
 
         ImGui::Separator();
 
-        if (ImGui::MenuItem("Exit"))
+        if (ImGui::MenuItem(loc::TL("menu.file.exit")))
             running_ = false;
         ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("Build"))
+    if (ImGui::BeginMenu(loc::TL("menu.build.title")))
     {
-        if (ImGui::MenuItem("Rebuild Engine Shaders", nullptr, false, state_.HasProject()))
+        if (ImGui::MenuItem(loc::TL("menu.build.rebuild_shaders"), nullptr, false, state_.HasProject()))
             state_.compile_shaders_requested = true;
-        if (ImGui::MenuItem("Bake Lighting", nullptr, false,
+        if (ImGui::MenuItem(loc::TL("menu.build.bake_lighting"), nullptr, false,
                             state_.SelectedScene() != nullptr && !lighting_bake_thread_.joinable()))
             StartLightingBake();
-        if (ImGui::MenuItem("Build and Run XEX", nullptr, false,
+        if (ImGui::MenuItem(loc::TL("menu.build.run_xex"), nullptr, false,
                             state_.HasProject() && !buildrun::Running()))
             state_.build_run_requested = true;
-        if (ImGui::MenuItem("Build .iso Image", nullptr, false,
+        if (ImGui::MenuItem(loc::TL("menu.build.build_iso"), nullptr, false,
                             state_.HasProject() && !buildrun::Running()))
             state_.build_iso_requested = true;
-        if (ImGui::MenuItem("Clean Build", nullptr, false, !buildrun::Running()))
+        if (ImGui::MenuItem(loc::TL("menu.build.clean"), nullptr, false, !buildrun::Running()))
             state_.clean_build_requested = true;
         ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("View"))
+    if (ImGui::BeginMenu(loc::TL("menu.view.title")))
     {
-        ImGui::MenuItem("Viewport",    nullptr, &state_.show_viewport_panel);
-        ImGui::MenuItem("Editor",      nullptr, &state_.show_editor_panel);
-        ImGui::MenuItem("Mapping",     nullptr, &state_.show_mapper_panel);
-        ImGui::MenuItem("Animator",    nullptr, &state_.show_animator_panel);
-        ImGui::MenuItem("Inspector",   nullptr, &state_.show_inspector_panel);
-        ImGui::MenuItem("Files",       nullptr, &state_.show_files_panel);
-        ImGui::MenuItem("Version Control", nullptr, &state_.show_version_control_panel);
-        ImGui::MenuItem("Assets",      nullptr, &state_.show_assets_panel);
-        ImGui::MenuItem("Settings",    nullptr, &state_.show_settings_panel);
-        ImGui::MenuItem("Log",         nullptr, &state_.show_log_panel);
-        ImGui::MenuItem("Performance", nullptr, &state_.show_performance_panel);
+        ImGui::MenuItem(loc::TL("panel.viewport.title"),    nullptr, &state_.show_viewport_panel);
+        ImGui::MenuItem(loc::TL("panel.editor.title"),      nullptr, &state_.show_editor_panel);
+        ImGui::MenuItem(loc::TL("panel.mapping.title"),     nullptr, &state_.show_mapper_panel);
+        ImGui::MenuItem(loc::TL("panel.animator.title"),    nullptr, &state_.show_animator_panel);
+        ImGui::MenuItem(loc::TL("panel.inspector.title"),   nullptr, &state_.show_inspector_panel);
+        ImGui::MenuItem(loc::TL("panel.files.title"),       nullptr, &state_.show_files_panel);
+        ImGui::MenuItem(loc::TL("panel.version_control.title"), nullptr, &state_.show_version_control_panel);
+        ImGui::MenuItem(loc::TL("panel.assets.title"),      nullptr, &state_.show_assets_panel);
+        ImGui::MenuItem(loc::TL("panel.settings.title"),    nullptr, &state_.show_settings_panel);
+        ImGui::MenuItem(loc::TL("panel.log.title"),         nullptr, &state_.show_log_panel);
+        ImGui::MenuItem(loc::TL("panel.performance.title"), nullptr, &state_.show_performance_panel);
         ImGui::Separator();
-        ImGui::MenuItem("Style Editor", nullptr, &state_.show_style_editor);
+        ImGui::MenuItem(loc::TL("panel.style_editor.title"), nullptr, &state_.show_style_editor);
         ImGui::EndMenu();
     }
 
@@ -603,8 +619,9 @@ void EngineApplication::ImportStagedFiles(const char* dest)
 
 void EngineApplication::RenderImportModal()
 {
-    if (state_.show_import_modal && !ImGui::IsPopupOpen("Import Assets"))
-        ImGui::OpenPopup("Import Assets");
+    // Translated caption: the ID is the hash of "###Import Assets".
+    if (state_.show_import_modal && !ImGui::IsPopupOpen("###Import Assets"))
+        ImGui::OpenPopup("###Import Assets");
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 center = viewport->GetCenter();
@@ -614,10 +631,11 @@ void EngineApplication::RenderImportModal()
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(modal_size, ImGuiCond_Appearing);
 
-    if (!ImGui::BeginPopupModal("Import Assets", &state_.show_import_modal))
+    if (!ImGui::BeginPopupModal(loc::TWin("modal.import.title", "Import Assets"),
+                                &state_.show_import_modal))
         return;
 
-    ImGui::TextWrapped("Drag files from Windows Explorer onto this window to stage them.");
+    ImGui::TextWrapped(loc::T("modal.import.hint"));
     ImGui::Spacing();
 
     std::vector<std::string> destinations = { "assets" };
@@ -651,15 +669,15 @@ void EngineApplication::RenderImportModal()
     state_.import_dest = (std::min)(state_.import_dest, (int)destinations.size() - 1);
 
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::Combo("Destination", &state_.import_dest,
+    ImGui::Combo(loc::TL("modal.import.destination"), &state_.import_dest,
                  destination_labels.data(), (int)destination_labels.size());
 
-    ImGui::SeparatorText("Staged files");
+    ImGui::SeparatorText(loc::T("modal.import.staged"));
     const float footer_height = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
     ImGui::BeginChild("##staged", ImVec2(0.0f, -footer_height), ImGuiChildFlags_Borders);
     if (state_.import_files.empty())
     {
-        ImGui::TextDisabled("(drag files here - none staged yet)");
+        ImGui::TextDisabled(loc::T("modal.import.empty"));
     }
     else
     {
@@ -684,7 +702,7 @@ void EngineApplication::RenderImportModal()
 
     const bool has_files = !state_.import_files.empty();
     ImGui::BeginDisabled(!has_files);
-    if (ImGui::Button("Import", ImVec2(120.0f, 0.0f)))
+    if (ImGui::Button(loc::TL("modal.import.confirm"), ImVec2(120.0f, 0.0f)))
     {
         ImportStagedFiles(destinations[state_.import_dest].c_str());
         state_.import_files.clear();
@@ -694,11 +712,11 @@ void EngineApplication::RenderImportModal()
     ImGui::EndDisabled();
 
     ImGui::SameLine();
-    if (ImGui::Button("Clear", ImVec2(120.0f, 0.0f)))
+    if (ImGui::Button(loc::TL("common.clear"), ImVec2(120.0f, 0.0f)))
         state_.import_files.clear();
 
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+    if (ImGui::Button(loc::TL("common.cancel"), ImVec2(120.0f, 0.0f)))
     {
         state_.import_files.clear();
         state_.show_import_modal = false;
@@ -710,18 +728,19 @@ void EngineApplication::RenderImportModal()
 
 void EngineApplication::RenderRecentModal()
 {
-    if (state_.show_recent_modal && !ImGui::IsPopupOpen("Recent Projects"))
-        ImGui::OpenPopup("Recent Projects");
+    if (state_.show_recent_modal && !ImGui::IsPopupOpen("###Recent Projects"))
+        ImGui::OpenPopup("###Recent Projects");
 
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
 
-    if (!ImGui::BeginPopupModal("Recent Projects", &state_.show_recent_modal))
+    if (!ImGui::BeginPopupModal(loc::TWin("modal.recent.title", "Recent Projects"),
+                                &state_.show_recent_modal))
         return;
 
     // New / Open buttons.
-    if (ImGui::Button(ICON_FA_PLUS " New Project", ImVec2(160.0f, 0.0f)))
+    if (ImGui::Button(loc::TI(ICON_FA_PLUS, "modal.recent.new_project"), ImVec2(160.0f, 0.0f)))
     {
         std::filesystem::path folder;
         if (platform::PickFolder(window_, folder) && project::CreateProject(folder, state_))
@@ -731,7 +750,7 @@ void EngineApplication::RenderRecentModal()
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open Project", ImVec2(160.0f, 0.0f)))
+    if (ImGui::Button(loc::TI(ICON_FA_FOLDER_OPEN, "modal.recent.open_project"), ImVec2(160.0f, 0.0f)))
     {
         std::filesystem::path folder;
         if (platform::PickFolder(window_, folder) && project::OpenProject(folder, state_))
@@ -741,11 +760,11 @@ void EngineApplication::RenderRecentModal()
         }
     }
 
-    ImGui::SeparatorText(ICON_FA_CLOCK " Recent");
+    ImGui::SeparatorText(loc::TI(ICON_FA_CLOCK, "modal.recent.header"));
 
     if (state_.recent_projects.empty())
     {
-        ImGui::TextDisabled("No recent projects.");
+        ImGui::TextDisabled(loc::T("modal.recent.empty"));
     }
     else
     {
@@ -818,15 +837,183 @@ void EngineApplication::LoadFonts()
         cfg.PixelSnapH       = true;
         cfg.GlyphMinAdvanceX = 13.0f; // keep icons a consistent width
         io.Fonts->AddFontFromFileTTF(font_path.string().c_str(), 13.0f, &cfg, range);
-
-        // A separate large icons-only font for the Assets browser tiles.
-        state_.large_icon_font =
-            io.Fonts->AddFontFromFileTTF(font_path.string().c_str(), 44.0f, nullptr, range);
     }
     else
     {
         state_.AddLog("Icon font missing: " + font_path.string());
     }
+
+    // MergeMode folds glyphs into the font added just before it, so this must
+    // run while the default UI font is current — after the large icons-only
+    // font below, the whole language would merge into that and render '?'.
+    LoadLanguageFont();
+
+    // A separate large icons-only font for the Assets browser tiles.
+    if (std::filesystem::exists(font_path))
+    {
+        static const ImWchar range[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+        state_.large_icon_font =
+            io.Fonts->AddFontFromFileTTF(font_path.string().c_str(), 44.0f, nullptr, range);
+    }
+}
+
+// Resolves a font named by a "_font" key. The faces we ship live in
+// <exe>/fonts, so a release never depends on the user's Windows having a CJK
+// font; the system directory is only a fallback for anything we don't bundle.
+static bool ResolveFontPath(const std::string& file, fs::path& out)
+{
+    wchar_t exe[MAX_PATH];
+    const DWORD n = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const fs::path beside = fs::path(std::wstring(exe, n)).parent_path() / "fonts" / file;
+
+    wchar_t win[MAX_PATH];
+    const UINT wn = ::GetWindowsDirectoryW(win, MAX_PATH);
+    const fs::path system = fs::path(std::wstring(win, wn)) / "Fonts" / file;
+
+    std::error_code ec;
+    if (fs::exists(beside, ec)) { out = beside; return true; }
+    if (fs::exists(system, ec)) { out = system; return true; }
+    out = system; // reported in the failure message
+    return false;
+}
+
+// Merges the glyphs ImGui's built-in font lacks (it stops at U+00FF, so
+// Latin-1 languages need nothing here). Covers both the active language's own
+// script and every language's display name — the Settings dropdown lists them
+// all whatever is selected, so skipping the latter renders those entries '?'.
+// Grouped by font file so a face is opened once.
+void EngineApplication::LoadLanguageFont()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    struct Need
+    {
+        std::string              file;
+        ImFontGlyphRangesBuilder builder;
+        bool                     is_active_font;
+    };
+    std::vector<Need> needs;
+
+    auto need_for = [&needs](const std::string& file) -> Need&
+    {
+        for (size_t i = 0; i < needs.size(); ++i)
+            if (needs[i].file == file)
+                return needs[i];
+        needs.push_back(Need());
+        needs.back().file = file;
+        needs.back().is_active_font = false;
+        return needs.back();
+    };
+
+    // The active language needs its whole script, not just the characters the
+    // translations contain: object names, tags and the Text attribute are typed
+    // by the user.
+    const std::vector<unsigned int>& needed = loc::ExtendedCodepoints();
+    if (!needed.empty())
+    {
+        if (loc::FontFile().empty())
+        {
+            state_.AddLog("Localization: " + loc::Current() +
+                          " needs glyphs past U+00FF but declares no \"_font\"; "
+                          "they will draw as '?'", LogLevel::Warning);
+        }
+        else
+        {
+            Need& n = need_for(loc::FontFile());
+            n.is_active_font = true;
+
+            ImFontAtlas* atlas = io.Fonts; // GetGlyphRanges* are non-const
+            const std::string& set = loc::GlyphSet();
+            const ImWchar* range = nullptr;
+            if      (set == "chinese_simplified") range = atlas->GetGlyphRangesChineseSimplifiedCommon();
+            else if (set == "chinese_full")       range = atlas->GetGlyphRangesChineseFull();
+            else if (set == "japanese")           range = atlas->GetGlyphRangesJapanese();
+            else if (set == "korean")             range = atlas->GetGlyphRangesKorean();
+            else if (set == "cyrillic")           range = atlas->GetGlyphRangesCyrillic();
+            else if (set == "greek")              range = atlas->GetGlyphRangesGreek();
+            else if (set == "thai")               range = atlas->GetGlyphRangesThai();
+            else if (set == "vietnamese")         range = atlas->GetGlyphRangesVietnamese();
+            else if (!set.empty())
+            {
+                state_.AddLog("Localization: unknown \"_glyphs\" value \"" + set + "\" in " +
+                              loc::Current() + "; only text present in the translations "
+                              "will rasterize", LogLevel::Warning);
+            }
+            else
+            {
+                state_.AddLog("Localization: " + loc::Current() + " declares a font but no "
+                              "\"_glyphs\"; typed characters outside the translations will "
+                              "draw as '?'", LogLevel::Warning);
+            }
+
+            if (range)
+                n.builder.AddRanges(range);
+
+            // Union with what the translations use, for anything outside the
+            // standard script. ImGui keeps the first font to supply a
+            // codepoint, so these ranges never displace the stock Latin font.
+            for (size_t i = 0; i < needed.size(); ++i)
+                n.builder.AddChar((ImWchar)needed[i]);
+        }
+    }
+
+    // Every language's dropdown label; one without a font is Latin-1 already.
+    const std::vector<loc::LanguageInfo>& langs = loc::Available();
+    for (size_t i = 0; i < langs.size(); ++i)
+        if (!langs[i].font.empty())
+            need_for(langs[i].font).builder.AddText(langs[i].name.c_str());
+
+    if (needs.empty())
+        return;
+
+    // Must outlive the atlas build, hence static.
+    static std::vector<ImVector<ImWchar> > ranges;
+    ranges.clear();
+    ranges.resize(needs.size());
+
+    for (size_t i = 0; i < needs.size(); ++i)
+    {
+        fs::path chosen;
+        if (!ResolveFontPath(needs[i].file, chosen))
+        {
+            state_.AddLog("Localization: font \"" + needs[i].file + "\" not found beside the exe or in " +
+                          chosen.parent_path().string() + "; affected text will draw as '?'",
+                          needs[i].is_active_font ? LogLevel::Error : LogLevel::Warning);
+            continue;
+        }
+
+        needs[i].builder.BuildRanges(&ranges[i]);
+        if (ranges[i].empty())
+            continue;
+
+        // Larger than the 13px base font: an ideograph packs far more strokes
+        // into the same box, and at 13px turns to mush. Merged glyphs keep
+        // their own raster size; the nudge shifts them off the base baseline.
+        const float kCjkPixelSize = 17.0f;
+        const float kCjkBaselineNudge = 0.0f;
+
+        ImFontConfig cfg;
+        cfg.MergeMode   = true;  // fill the gaps in the default font
+        cfg.PixelSnapH  = true;
+        cfg.FontNo      = 0;     // .ttc collections: 0 is the regular face
+        cfg.GlyphOffset = ImVec2(0.0f, kCjkBaselineNudge);
+
+        if (!io.Fonts->AddFontFromFileTTF(chosen.string().c_str(), kCjkPixelSize, &cfg, ranges[i].Data))
+            state_.AddLog("Localization: failed to load " + chosen.string(), LogLevel::Error);
+    }
+}
+
+// Only safe between frames: Clear() frees every ImFont, so any pointer held
+// across the call — state_.large_icon_font among them — dangles until
+// LoadFonts hands back a fresh one.
+void EngineApplication::RebuildFontAtlas()
+{
+    ImGui_ImplDX9_InvalidateDeviceObjects();
+
+    ImGui::GetIO().Fonts->Clear();
+    state_.large_icon_font = nullptr;
+    LoadFonts();
+    ImGui::GetIO().Fonts->Build();
 }
 
 void EngineApplication::ApplyStyle()
@@ -930,17 +1117,20 @@ void EngineApplication::BuildDefaultDockLayout(ImGuiID dockspace_id)
     ImGuiID right_id  = ImGui::DockBuilderSplitNode(center_id, ImGuiDir_Right, 0.24f, nullptr, &center_id);
     ImGuiID bottom_id = ImGui::DockBuilderSplitNode(center_id, ImGuiDir_Down,  0.28f, nullptr, &center_id);
 
-    ImGui::DockBuilderDockWindow("Files",          left_id);
-    ImGui::DockBuilderDockWindow("Version Control", left_id);
-    ImGui::DockBuilderDockWindow("Viewport",    center_id);
-    ImGui::DockBuilderDockWindow("Editor",      center_id);
-    ImGui::DockBuilderDockWindow("Settings",    center_id);
-    ImGui::DockBuilderDockWindow("Animator",    center_id);
-    ImGui::DockBuilderDockWindow("Mapping",     center_id);
-    ImGui::DockBuilderDockWindow("Inspector",   right_id);
-    ImGui::DockBuilderDockWindow("Log",         bottom_id);
-    ImGui::DockBuilderDockWindow("Assets",      bottom_id);
-    ImGui::DockBuilderDockWindow("Performance", bottom_id);
+    // Captions are translated, so windows are named "<caption>###Name" and
+    // ImHashStr restarts at "###" — the ID is the hash of "###Name", not
+    // "Name". Every by-name lookup must use the same form.
+    ImGui::DockBuilderDockWindow("###Files",           left_id);
+    ImGui::DockBuilderDockWindow("###Version Control", left_id);
+    ImGui::DockBuilderDockWindow("###Viewport",    center_id);
+    ImGui::DockBuilderDockWindow("###Editor",      center_id);
+    ImGui::DockBuilderDockWindow("###Settings",    center_id);
+    ImGui::DockBuilderDockWindow("###Animator",    center_id);
+    ImGui::DockBuilderDockWindow("###Mapping",     center_id);
+    ImGui::DockBuilderDockWindow("###Inspector",   right_id);
+    ImGui::DockBuilderDockWindow("###Log",         bottom_id);
+    ImGui::DockBuilderDockWindow("###Assets",      bottom_id);
+    ImGui::DockBuilderDockWindow("###Performance", bottom_id);
     ImGui::DockBuilderFinish(dockspace_id);
 
     state_.dock_layout_built = true;

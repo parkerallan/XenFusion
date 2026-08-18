@@ -1,0 +1,510 @@
+{
+  "_name": "한국어",
+  "_font": "NotoSansKR-Regular.otf",
+  "_glyphs": "korean",
+  "animator": {
+    "bonemod": {
+      "add_selected_bone": "+ 선택한 본 추가",
+      "advanced": "고급",
+      "affects_children": "자식에 영향",
+      "angle_limit": "각도 제한",
+      "bone_modifiers": "본 모디파이어",
+      "center_offset": "중심 오프셋",
+      "fit_to_bone": "본에 맞추기",
+      "gravity_dir": "중력 방향",
+      "half_extents": "절반 크기",
+      "preset": "프리셋",
+      "radius": "반지름",
+      "remove_modifier": "모디파이어 제거",
+      "type": "종류",
+      "type_collision": "충돌",
+      "type_physics": "물리"
+    },
+    "clips": {
+      "add_clip": "+ 클립 추가",
+      "clip": "클립",
+      "drop_model_fbx_gltf_glb_here": "모델 (.fbx/.gltf/.glb) 을 여기에 놓으세요",
+      "import_selected_model": "선택한 모델 가져오기",
+      "imported_clips": "가져온 클립",
+      "remove_clip": "클립 제거"
+    },
+    "controller": {
+      "face": "얼굴",
+      "general": "일반"
+    },
+    "faceclips": {
+      "clips": "클립",
+      "missing": "없음",
+      "none": "없음"
+    },
+    "livelink": {
+      "calibrate_neutral": "중립 보정",
+      "connect": "연결",
+      "disconnect": "연결 해제",
+      "hint": "중단됨 - 마지막 패킷 출처 %s",
+      "hint_2": "%d 에서 수신 대기 중이지만 아무것도 오지 않음",
+      "hint_3": "이 PC 에는 게이트웨이가 있는 네트워크 어댑터가 없습니다",
+      "hold_still_s": "움직이지 마세요... %.1f초",
+      "live_link_face": "Live Link Face",
+      "not_listening": "수신 대기 중이 아님",
+      "on_selected_object": "선택한 오브젝트에 적용",
+      "point_the_phone_at": "휴대폰을 향하게 하세요  %s : %d",
+      "port": "포트",
+      "preview": "미리보기",
+      "s_from": "%s  %.0f/초  출처 %s"
+    },
+    "no_options": "%s: 옵션 없음",
+    "poses": {
+      "add_pose": "+ 포즈 추가",
+      "default": "(기본)",
+      "expression_poses": "표정 포즈",
+      "none": "없음",
+      "preview": "미리보기",
+      "remove_pose": "포즈 제거",
+      "set_as_default": "기본으로 설정"
+    },
+    "preview": {
+      "bone": "본: %s",
+      "mesh": "메시",
+      "no_clips": "(클립 없음)",
+      "s": "%.2f / %.2f초",
+      "skeleton": "스켈레톤",
+      "texture": "텍스처"
+    },
+    "record": {
+      "hint": "마이크를 기다리는 중...",
+      "microphone": "마이크",
+      "needs_tracking": "트래킹 필요",
+      "record": "녹화",
+      "s_frames": "%.1f초  %u 프레임",
+      "stop": "정지",
+      "take_name": "테이크 이름",
+      "text": "(%s)"
+    },
+    "states": {
+      "add_state": "+ 상태 추가",
+      "default_state": "기본 상태",
+      "loop": "반복",
+      "playback_speed": "재생 속도",
+      "remove": "제거",
+      "set_as_default": "기본으로 설정",
+      "state": "상태",
+      "states": "상태"
+    },
+    "toolbar": {
+      "hint": "애니메이터 컨트롤러를 편집하려면 프로젝트를 여세요.",
+      "unsaved_changes": "저장되지 않은 변경 사항"
+    },
+    "transitions": {
+      "add_transition": "+ 전환 추가",
+      "blend_duration": "블렌드 시간",
+      "exit_time": "종료 시간",
+      "has_exit_time": "종료 시간 사용",
+      "hint": "예: grounded, !grounded, speed > 0.5, moving == true",
+      "remove_transition": "전환 제거",
+      "transition": "전환",
+      "transitions": "전환"
+    }
+  },
+  "assets": {
+    "import": "가져오기",
+    "import_tooltip": "파일 가져오기 (탐색기에서 끌어다 놓아도 됩니다)",
+    "new_folder": "새 폴더",
+    "new_script": "새 스크립트",
+    "new_shader": "새 셰이더"
+  },
+  "common": {
+    "add": "추가",
+    "browse": "찾아보기...",
+    "cancel": "취소",
+    "clear": "지우기",
+    "clear_all": "모두 지우기",
+    "copy": "복사",
+    "delete": "삭제",
+    "new_name": "새 이름:",
+    "no_project": "열린 프로젝트가 없습니다.",
+    "not_set": "(설정되지 않음)",
+    "off": "끔",
+    "on": "켬",
+    "rename": "이름 바꾸기",
+    "save": "저장",
+    "select_all": "모두 선택"
+  },
+  "editor": {
+    "empty": "'파일' 또는 '에셋' 패널에서 텍스트나 코드 파일을 여세요."
+  },
+  "files": {
+    "new_object": "새 오브젝트",
+    "new_scene": "새 씬",
+    "no_project_hint": "파일 > 새 프로젝트 / 프로젝트 열기."
+  },
+  "inspector": {
+    "add_attribute": "속성 추가",
+    "animator": {
+      "auto_play": "자동 재생",
+      "hint": "편집 중에는 바인드 포즈. 재생을 시작하면 컨트롤러가 작동합니다.",
+      "playback_speed": "재생 속도"
+    },
+    "attribute": {
+      "3d_model": "3D 모델",
+      "animator": "애니메이터",
+      "audio": "오디오",
+      "camera": "카메라",
+      "color": "색상",
+      "directional_light": "디렉셔널 라이트",
+      "environment_light": "환경 라이트",
+      "image": "이미지",
+      "point_light": "포인트 라이트",
+      "rigid_body": "리지드 바디",
+      "script": "스크립트",
+      "shader": "셰이더",
+      "skybox": "스카이박스",
+      "spot_light": "스포트 라이트",
+      "text": "텍스트",
+      "trigger_volume": "트리거 볼륨",
+      "video": "비디오"
+    },
+    "attributes": "속성",
+    "audio": {
+      "3d_spatialize": "3D 공간화",
+      "class": "분류",
+      "class_items": [
+        "효과음",
+        "음악",
+        "환경음",
+        "대사"
+      ],
+      "doppler_factor": "도플러 계수",
+      "hint": "재생 모드에서만 소리가 나며 위치는 오브젝트를 따릅니다.",
+      "load_mode": "로드 모드",
+      "load_mode_items": [
+        "자동",
+        "상주",
+        "스트림"
+      ],
+      "loop": "반복",
+      "max_distance": "최대 거리",
+      "min_distance": "최소 거리",
+      "pitch": "피치",
+      "play_items": [
+        "끔",
+        "켬"
+      ],
+      "play_mode": "재생 모드",
+      "priority": "우선순위",
+      "volume": "음량"
+    },
+    "camera": {
+      "acceleration": "가속도",
+      "active": "활성",
+      "add_point": "지점 추가",
+      "far": "먼 클립",
+      "fov": "시야각",
+      "lock_position": "위치 고정",
+      "near": "가까운 클립",
+      "none": "(없음)",
+      "offset": "오프셋",
+      "orbit": "궤도",
+      "path_points": "경로 지점 (%d)",
+      "rotation_offset": "회전 오프셋",
+      "rotation_offset_track": "회전 오프셋",
+      "smoothing": "부드럽게",
+      "speed": "속도",
+      "target": "대상",
+      "type": "종류",
+      "type_items": [
+        "고정",
+        "따라가기",
+        "경로"
+      ]
+    },
+    "color": {
+      "alpha": "알파",
+      "color": "색상",
+      "hint": "위치와 크기는 1280x720 기준 공간입니다.",
+      "hint_2": "우선순위가 높을수록 뒤에 그려집니다.",
+      "lock_aspect_ratio": "비율 고정",
+      "position": "위치",
+      "priority": "우선순위",
+      "size": "크기",
+      "stretch_to_screen": "화면에 맞게 늘리기",
+      "width": "너비"
+    },
+    "hint": "'파일' 패널에서 오브젝트를 선택하세요.",
+    "image": {
+      "alpha": "알파",
+      "hint": "위치와 크기는 1280x720 기준 공간입니다.",
+      "hint_2": "우선순위가 높을수록 뒤에 그려집니다.",
+      "hint_3": "타이밍은 GIF 자체의 프레임 지연을 따릅니다.",
+      "hint_4": "재생 중에는 움직이고, 편집 중에는 1 프레임에서 멈춥니다.",
+      "lock_aspect_ratio": "비율 고정",
+      "play_mode": "재생 모드",
+      "play_mode_items": [
+        "끔",
+        "한 번 재생",
+        "반복"
+      ],
+      "position": "위치",
+      "priority": "우선순위",
+      "size": "크기",
+      "stretch_to_screen": "화면에 맞게 늘리기",
+      "tint": "틴트",
+      "width": "너비"
+    },
+    "light": {
+      "beam_intensity": "광선 강도",
+      "color": "색상",
+      "inner_cone": "내부 원뿔",
+      "intensity": "강도",
+      "mode": "모드",
+      "mode_items": [
+        "구움",
+        "실시간",
+        "혼합"
+      ],
+      "outer_cone": "외부 원뿔",
+      "project_light_shaft": "광선 투사",
+      "range": "범위"
+    },
+    "model": {
+      "cast_shadow": "그림자 드리우기",
+      "importing": "%s 가져오는 중..."
+    },
+    "position": "위치",
+    "rigidbody": {
+      "angular_damping": "각 감쇠",
+      "body": "바디",
+      "body_items": [
+        "스태틱",
+        "다이내믹",
+        "키네마틱"
+      ],
+      "bounciness": "탄성",
+      "friction": "마찰",
+      "gravity": "중력",
+      "gravity_scale": "중력 배율",
+      "half_extents": "절반 크기",
+      "half_height": "절반 높이",
+      "hint": "이 오브젝트의 3D 모델 메시를 사용합니다.",
+      "linear_damping": "선형 감쇠",
+      "lock_rotation": "회전 고정",
+      "mass": "질량",
+      "radius": "반지름",
+      "shape": "형태",
+      "shape_items": [
+        "박스",
+        "구",
+        "캡슐",
+        "실린더",
+        "메시 (볼록)",
+        "메시 (정확)"
+      ]
+    },
+    "rotation": "회전",
+    "scale": "스케일",
+    "script": {
+      "hint": "재생 중에 on_start / on_update(dt) / on_trigger 를 실행합니다."
+    },
+    "skybox": {
+      "hint": "등장방형 (2:1) 이미지. 요만 적용되며 트랜스폼은 무시됩니다.",
+      "hint_2": "씬의 첫 번째 스카이박스가 적용됩니다.",
+      "rotation": "회전"
+    },
+    "text": {
+      "alpha": "알파",
+      "color": "색상",
+      "font_size": "글꼴 크기",
+      "hint": "위치와 크기는 1280x720 기준 공간입니다.",
+      "hint_2": "우선순위가 높을수록 뒤에 그려집니다.",
+      "lock_aspect_ratio": "비율 고정",
+      "position": "위치",
+      "priority": "우선순위",
+      "size": "크기",
+      "text": "텍스트",
+      "width": "너비"
+    },
+    "transform": "트랜스폼",
+    "trigger": {
+      "half_extents": "절반 크기",
+      "half_height": "절반 높이",
+      "hint": "겹침만 알리며 물리적 반응은 없습니다.",
+      "radius": "반지름",
+      "shape": "형태",
+      "shape_items": [
+        "박스",
+        "구",
+        "캡슐",
+        "실린더"
+      ]
+    },
+    "video": {
+      "alpha": "알파",
+      "hint": "위치와 크기는 1280x720 기준 공간입니다.",
+      "hint_2": "우선순위가 높을수록 뒤에 그려집니다.",
+      "hint_3": "편집 모드에서는 첫 프레임을 보여주고, 재생 모드에서 재생됩니다.",
+      "lock_aspect_ratio": "비율 고정",
+      "muted": "음소거",
+      "play_mode": "재생 모드",
+      "play_mode_items": [
+        "끔",
+        "한 번 재생",
+        "반복"
+      ],
+      "position": "위치",
+      "priority": "우선순위",
+      "size": "크기",
+      "stretch_to_screen": "화면에 맞게 늘리기",
+      "tint": "틴트",
+      "volume": "음량",
+      "width": "너비"
+    },
+    "visible": "표시"
+  },
+  "log": {
+    "tooltip": {
+      "auto_scroll": "자동 스크롤: %s",
+      "clear": "로그 지우기"
+    }
+  },
+  "mapping": {
+    "column": {
+      "control": "Xbox 컨트롤",
+      "pc_input": "PC 키 / 마우스",
+      "script_call": "스크립트 호출"
+    },
+    "hint": "PC 키나 마우스를 Xbox 컨트롤에 연결하면 게임패드 없이 미리보기에서 스크립트를 조작할 수 있습니다",
+    "listening": "아무 키나 누르세요...",
+    "mouse": {
+      "minus_x": "마우스 이동 -X",
+      "minus_y": "마우스 이동 -Y",
+      "plus_x": "마우스 이동 +X",
+      "plus_y": "마우스 이동 +Y"
+    },
+    "no_project": "(저장하려면 프로젝트를 여세요)"
+  },
+  "menu": {
+    "build": {
+      "bake_lighting": "라이팅 굽기",
+      "build_iso": ".iso 이미지 만들기",
+      "clean": "빌드 정리",
+      "rebuild_shaders": "엔진 셰이더 다시 빌드",
+      "run_xex": "XEX 빌드 및 실행",
+      "title": "빌드"
+    },
+    "file": {
+      "close_project": "프로젝트 닫기",
+      "exit": "종료",
+      "new_project": "새 프로젝트...",
+      "open_project": "프로젝트 열기...",
+      "recent_projects": "최근 프로젝트...",
+      "save_scene": "씬 저장",
+      "title": "파일"
+    },
+    "view": {
+      "title": "보기"
+    }
+  },
+  "modal": {
+    "import": {
+      "confirm": "가져오기",
+      "destination": "대상",
+      "empty": "(여기에 파일을 놓으세요 - 아직 없음)",
+      "hint": "Windows 탐색기에서 이 창으로 파일을 끌어다 놓으세요.",
+      "staged": "준비된 파일",
+      "title": "에셋 가져오기"
+    },
+    "recent": {
+      "empty": "최근 프로젝트가 없습니다.",
+      "header": "최근",
+      "new_project": "새 프로젝트",
+      "open_project": "프로젝트 열기",
+      "title": "최근 프로젝트"
+    }
+  },
+  "panel": {
+    "animator": {
+      "title": "애니메이터"
+    },
+    "assets": {
+      "title": "에셋"
+    },
+    "editor": {
+      "title": "에디터"
+    },
+    "files": {
+      "title": "파일 목록"
+    },
+    "inspector": {
+      "title": "인스펙터"
+    },
+    "log": {
+      "title": "로그"
+    },
+    "mapping": {
+      "title": "매핑"
+    },
+    "performance": {
+      "title": "성능"
+    },
+    "settings": {
+      "title": "설정"
+    },
+    "style_editor": {
+      "title": "스타일 편집기"
+    },
+    "version_control": {
+      "title": "버전 관리"
+    },
+    "viewport": {
+      "title": "뷰포트"
+    }
+  },
+  "performance": {
+    "counts": "씬: %d   오브젝트: %d",
+    "fps": "%.1f FPS",
+    "frame_ms": "%.3f ms/프레임",
+    "plot_overlay": "프레임 시간 (ms)"
+  },
+  "settings": {
+    "build": {
+      "config": "구성",
+      "header": "빌드 구성",
+      "iso_name": "ISO 이름",
+      "iso_name_hint": "<프로젝트>.iso",
+      "output_dir": "빌드 출력 폴더",
+      "output_dir_default": "  (설정되지 않음 - 엔진의 runtime\\ 폴더를 사용)"
+    },
+    "language": {
+      "header": "언어",
+      "none": "  (lang\\ 에서 언어 파일을 찾을 수 없음)"
+    },
+    "log_filters": {
+      "build": "빌드",
+      "error": "오류",
+      "header": "로그 필터",
+      "info": "정보",
+      "script": "로그",
+      "warning": "경고"
+    },
+    "toolchain": {
+      "emulator": "Xenia 에뮬레이터",
+      "header": "툴체인",
+      "xdk": "Xbox 360 SDK (XDK) 2.0.21256.3"
+    }
+  },
+  "style_editor": {
+    "theme": "엔진 테마"
+  },
+  "vcs": {
+    "commit": "커밋",
+    "commit_hint": "커밋 메시지",
+    "detached": "(분리된 HEAD)",
+    "fetch": "페치",
+    "init_repo": "저장소 초기화",
+    "no_changes": "변경 사항이 없습니다.",
+    "no_repo": "이 프로젝트 폴더는 git 저장소가 아닙니다.",
+    "pull": "풀",
+    "push": "푸시",
+    "refresh": "새로 고침"
+  }
+}

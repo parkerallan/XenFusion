@@ -1,4 +1,5 @@
 #include "panels/FilesPanel.h"
+#include "loc/Loc.h"
 
 #include "project/ProjectIO.h"
 #include "scene/Hierarchy.h"
@@ -146,9 +147,9 @@ namespace
         }
         if (ImGui::BeginPopupContextItem("##obj_ctx"))
         {
-            if (ImGui::MenuItem("Rename")) RequestRename(PendingOp::RenameObject, sceneIndex, objectIndex, scene.objects[objectIndex].name);
-            if (ImGui::MenuItem("Copy"))   g_action = {PendingOp::CopyObject, sceneIndex, objectIndex};
-            if (ImGui::MenuItem("Delete")) g_action = {PendingOp::DeleteObject, sceneIndex, objectIndex};
+            if (ImGui::MenuItem(loc::TL("common.rename"))) RequestRename(PendingOp::RenameObject, sceneIndex, objectIndex, scene.objects[objectIndex].name);
+            if (ImGui::MenuItem(loc::TL("common.copy")))   g_action = {PendingOp::CopyObject, sceneIndex, objectIndex};
+            if (ImGui::MenuItem(loc::TL("common.delete"))) g_action = {PendingOp::DeleteObject, sceneIndex, objectIndex};
             ImGui::EndPopup();
         }
         if (released && !toggled && !releasedOnArrow && !dragging)
@@ -190,9 +191,9 @@ namespace
         }
         if (ImGui::BeginPopupContextItem("##scene_ctx"))
         {
-            if (ImGui::MenuItem("Rename")) RequestRename(PendingOp::RenameScene, sceneIndex, -1, scene.name);
-            if (ImGui::MenuItem("Copy"))   g_action = {PendingOp::CopyScene, sceneIndex, -1};
-            if (ImGui::MenuItem("Delete")) g_action = {PendingOp::DeleteScene, sceneIndex, -1};
+            if (ImGui::MenuItem(loc::TL("common.rename"))) RequestRename(PendingOp::RenameScene, sceneIndex, -1, scene.name);
+            if (ImGui::MenuItem(loc::TL("common.copy")))   g_action = {PendingOp::CopyScene, sceneIndex, -1};
+            if (ImGui::MenuItem(loc::TL("common.delete"))) g_action = {PendingOp::DeleteScene, sceneIndex, -1};
             ImGui::EndPopup();
         }
         if (ImGui::BeginDragDropTarget())
@@ -268,13 +269,13 @@ namespace
                     {
                         state.open_animator_path = p;
                         state.show_animator_panel = true;
-                        ImGui::SetWindowFocus("Animator");
+                        ImGui::SetWindowFocus("###Animator");
                     }
                     else
                     {
                         state.open_file_path = p;
                         state.show_editor_panel = true;
-                        ImGui::SetWindowFocus("Editor");
+                        ImGui::SetWindowFocus("###Editor");
                     }
                 }
             }
@@ -287,7 +288,7 @@ void FilesPanel::Render(EngineState& state)
     if (!state.show_files_panel)
         return;
 
-    if (!ImGui::Begin("Files", &state.show_files_panel))
+    if (!ImGui::Begin(loc::TWin("panel.files.title", "Files"), &state.show_files_panel))
     {
         ImGui::End();
         return;
@@ -295,8 +296,8 @@ void FilesPanel::Render(EngineState& state)
 
     if (!state.HasProject())
     {
-        ImGui::TextDisabled("No project open.");
-        ImGui::TextDisabled("File > New Project / Open Project.");
+        ImGui::TextDisabled(loc::T("common.no_project"));
+        ImGui::TextDisabled(loc::T("files.no_project_hint"));
         ImGui::End();
         return;
     }
@@ -305,7 +306,7 @@ void FilesPanel::Render(EngineState& state)
     ImGui::Text(ICON_FA_FOLDER_OPEN "  %s", state.project_name.c_str());
     ImGui::SameLine();
     {
-        const char* lbl = ICON_FA_PLUS " Add";
+        const char* lbl = loc::TI(ICON_FA_PLUS, "common.add");
         const float w = ImGui::CalcTextSize(lbl).x + ImGui::GetStyle().FramePadding.x * 2.0f;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - w);
         if (ImGui::Button(lbl))
@@ -313,11 +314,11 @@ void FilesPanel::Render(EngineState& state)
     }
     if (ImGui::BeginPopup("files_add"))
     {
-        if (ImGui::MenuItem("New Scene"))
+        if (ImGui::MenuItem(loc::TL("files.new_scene")))
             project::NewScene(state, "Scene");
 
         SceneFile* scene = state.SelectedScene();
-        if (ImGui::MenuItem("New Object", nullptr, false, scene != nullptr))
+        if (ImGui::MenuItem(loc::TL("files.new_object"), nullptr, false, scene != nullptr))
             state.selected_object = project::NewObject(state, *scene, "Object");
 
         ImGui::EndPopup();
@@ -442,11 +443,11 @@ void FilesPanel::Render(EngineState& state)
     }
     if (ImGui::BeginPopup("Rename##files"))
     {
-        ImGui::TextUnformatted("New name:");
+        ImGui::TextUnformatted(loc::T("common.new_name"));
         ImGui::SetNextItemWidth(240.0f);
         const bool enter = ImGui::InputText("##rn", g_rename_buf, sizeof(g_rename_buf),
                                             ImGuiInputTextFlags_EnterReturnsTrue);
-        if ((ImGui::Button("Rename") || enter) && g_rename_buf[0] != '\0')
+        if ((ImGui::Button(loc::TL("common.rename")) || enter) && g_rename_buf[0] != '\0')
         {
             if (g_action.op == PendingOp::RenameScene)
             {
@@ -470,7 +471,7 @@ void FilesPanel::Render(EngineState& state)
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel"))
+        if (ImGui::Button(loc::TL("common.cancel")))
         {
             g_action.op = PendingOp::None;
             ImGui::CloseCurrentPopup();

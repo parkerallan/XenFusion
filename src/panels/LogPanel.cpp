@@ -1,4 +1,5 @@
 #include "panels/LogPanel.h"
+#include "loc/Loc.h"
 
 #include "core/Log.h"
 #include "state/EngineState.h"
@@ -8,6 +9,7 @@
 
 namespace
 {
+    // Not localized: fixed-width markers the log text aligns against.
     const char* Tag(LogLevel l)
     {
         switch (l)
@@ -50,7 +52,7 @@ void LogPanel::Render(EngineState& state)
     if (!state.show_log_panel)
         return;
 
-    if (!ImGui::Begin("Log", &state.show_log_panel))
+    if (!ImGui::Begin(loc::TWin("panel.log.title", "Log"), &state.show_log_panel))
     {
         ImGui::End();
         return;
@@ -63,7 +65,7 @@ void LogPanel::Render(EngineState& state)
     if (ImGui::Button(ICON_FA_TRASH, ImVec2(button, button)))
         applog::Clear();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        ImGui::SetTooltip("Clear log");
+        ImGui::SetTooltip(loc::T("log.tooltip.clear"));
     ImGui::SameLine();
     if (!state.auto_scroll_log)
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
@@ -73,7 +75,8 @@ void LogPanel::Render(EngineState& state)
         ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        ImGui::SetTooltip("Auto-scroll: %s", state.auto_scroll_log ? "On" : "Off");
+        ImGui::SetTooltip(loc::T("log.tooltip.auto_scroll"),
+                          state.auto_scroll_log ? loc::T("common.on") : loc::T("common.off"));
 
     ImGui::Separator();
 
@@ -135,9 +138,9 @@ void LogPanel::Render(EngineState& state)
         bool copy = ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, ImGuiInputFlags_RouteFocused);
         if (ImGui::BeginPopupContextWindow("##logmenu"))
         {
-            if (ImGui::MenuItem("Copy", "Ctrl+C", false, m_selection.Size > 0))
+            if (ImGui::MenuItem(loc::TL("common.copy"), "Ctrl+C", false, m_selection.Size > 0))
                 copy = true;
-            if (ImGui::MenuItem("Select All", "Ctrl+A", false, !m_visible.empty()))
+            if (ImGui::MenuItem(loc::TL("common.select_all"), "Ctrl+A", false, !m_visible.empty()))
                 for (int i = 0; i < (int)m_visible.size(); ++i)
                     m_selection.SetItemSelected((ImGuiID)m_visible[i], true);
             ImGui::EndPopup();

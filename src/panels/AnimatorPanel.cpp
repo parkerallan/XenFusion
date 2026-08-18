@@ -1,4 +1,5 @@
 #include "panels/AnimatorPanel.h"
+#include "loc/Loc.h"
 
 #include "anim/AnimationClip.h"
 #include "anim/FaceShapes.h"
@@ -76,7 +77,7 @@ namespace
     {
         if (values.empty())
         {
-            ImGui::TextDisabled("%s: no options", label);
+            ImGui::TextDisabled(loc::T("animator.no_options"), label);
             return false;
         }
         std::vector<const char*> names;
@@ -225,9 +226,9 @@ bool AnimatorPanel::SaveController(EngineState& state)
 
 void AnimatorPanel::RenderClips(EngineState& state)
 {
-    ImGui::TextUnformatted("Imported Clips");
+    ImGui::TextUnformatted(loc::T("animator.clips.imported_clips"));
     ImGui::Separator();
-    if (ImGui::Button("+ Add Clip"))
+    if (ImGui::Button(loc::TL("animator.clips.add_clip")))
     {
         AnimatorClipReference clip;
         clip.id = "Clip_" + std::to_string(controller_.clips.size() + 1);
@@ -237,10 +238,10 @@ void AnimatorPanel::RenderClips(EngineState& state)
     }
     ImGui::SameLine();
     ImGui::BeginDisabled();
-    ImGui::Button("Import Selected Model");
+    ImGui::Button(loc::TL("animator.clips.import_selected_model"));
     ImGui::EndDisabled();
 
-    ImGui::Button("Drop Model (.fbx/.gltf/.glb) Here", ImVec2(-1.0f, 0.0f));
+    ImGui::Button(loc::TL("animator.clips.drop_model_fbx_gltf_glb_here"), ImVec2(-1.0f, 0.0f));
     if (ImGui::BeginDragDropTarget())
     {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH"))
@@ -260,13 +261,13 @@ void AnimatorPanel::RenderClips(EngineState& state)
         AnimatorClipReference& clip = controller_.clips[index];
         ImGui::PushID((int)index);
         const std::string title = clip.id.empty() ? "Unnamed clip" : clip.id;
-        if (ImGui::TreeNodeEx("clip", 0, "%s", title.c_str()))
+        if (ImGui::TreeNodeEx(loc::TL("animator.clips.clip"), 0, "%s", title.c_str()))
         {
             dirty_ |= InputString("Clip Id", clip.id);
             dirty_ |= InputString("Source Model", clip.source_model_path);
             dirty_ |= ModelDropTarget(state, clip.source_model_path);
             dirty_ |= InputString("Clip Name", clip.clip_name);
-            if (ImGui::Button("Remove Clip")) remove = (int)index;
+            if (ImGui::Button(loc::TL("animator.clips.remove_clip"))) remove = (int)index;
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -280,8 +281,8 @@ void AnimatorPanel::RenderClips(EngineState& state)
 
 void AnimatorPanel::RenderStates()
 {
-    if (!ImGui::CollapsingHeader("States", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    if (ImGui::Button("+ Add State"))
+    if (!ImGui::CollapsingHeader(loc::TL("animator.states.states"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+    if (ImGui::Button(loc::TL("animator.states.add_state")))
     {
         AnimatorStateDefinition state;
         state.name = "State_" + std::to_string(controller_.states.size() + 1);
@@ -301,7 +302,7 @@ void AnimatorPanel::RenderStates()
         AnimatorStateDefinition& state = controller_.states[index];
         ImGui::PushID((int)index);
         const std::string title = state.name.empty() ? "Unnamed state" : state.name;
-        if (ImGui::TreeNodeEx("state", 0, "%s", title.c_str()))
+        if (ImGui::TreeNodeEx(loc::TL("animator.states.state"), 0, "%s", title.c_str()))
         {
             const std::string old_name = state.name;
             if (InputString("Name", state.name))
@@ -315,13 +316,13 @@ void AnimatorPanel::RenderStates()
                 dirty_ = true;
             }
             dirty_ |= StringCombo("Clip", state.clip_id, clip_ids);
-            if (ImGui::DragFloat("Playback Speed", &state.playback_speed, 0.01f, 0.01f, 8.0f, "%.2f"))
+            if (ImGui::DragFloat(loc::TL("animator.states.playback_speed"), &state.playback_speed, 0.01f, 0.01f, 8.0f, "%.2f"))
             { state.playback_speed = (std::max)(0.01f, state.playback_speed); dirty_ = true; }
-            dirty_ |= ImGui::Checkbox("Loop", &state.loop);
-            if (controller_.default_state == state.name) ImGui::TextDisabled("Default state");
-            else if (ImGui::Button("Set As Default")) { controller_.default_state = state.name; dirty_ = true; }
+            dirty_ |= ImGui::Checkbox(loc::TL("animator.states.loop"), &state.loop);
+            if (controller_.default_state == state.name) ImGui::TextDisabled(loc::T("animator.states.default_state"));
+            else if (ImGui::Button(loc::TL("animator.states.set_as_default"))) { controller_.default_state = state.name; dirty_ = true; }
             ImGui::SameLine();
-            if (ImGui::Button("Remove")) remove = (int)index;
+            if (ImGui::Button(loc::TL("animator.states.remove"))) remove = (int)index;
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -341,8 +342,8 @@ void AnimatorPanel::RenderStates()
 
 void AnimatorPanel::RenderTransitions()
 {
-    if (!ImGui::CollapsingHeader("Transitions", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    if (ImGui::Button("+ Add Transition") && !controller_.states.empty())
+    if (!ImGui::CollapsingHeader(loc::TL("animator.transitions.transitions"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+    if (ImGui::Button(loc::TL("animator.transitions.add_transition")) && !controller_.states.empty())
     {
         AnimatorTransitionDefinition transition;
         transition.from_state = controller_.states.front().name;
@@ -359,19 +360,19 @@ void AnimatorPanel::RenderTransitions()
         AnimatorTransitionDefinition& transition = controller_.transitions[index];
         ImGui::PushID((int)index);
         const std::string title = transition.from_state + " -> " + transition.to_state;
-        if (ImGui::TreeNodeEx("transition", 0, "%s", title.c_str()))
+        if (ImGui::TreeNodeEx(loc::TL("animator.transitions.transition"), 0, "%s", title.c_str()))
         {
             dirty_ |= StringCombo("From", transition.from_state, state_names);
             dirty_ |= StringCombo("To", transition.to_state, state_names);
             dirty_ |= InputString("Condition", transition.condition);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Examples: grounded, !grounded, speed > 0.5, moving == true");
-            if (ImGui::DragFloat("Blend Duration", &transition.blend_duration, 0.01f, 0.0f, 10.0f, "%.2f"))
+                ImGui::SetTooltip(loc::T("animator.transitions.hint"));
+            if (ImGui::DragFloat(loc::TL("animator.transitions.blend_duration"), &transition.blend_duration, 0.01f, 0.0f, 10.0f, "%.2f"))
             { transition.blend_duration = (std::max)(0.0f, transition.blend_duration); dirty_ = true; }
-            dirty_ |= ImGui::Checkbox("Has Exit Time", &transition.has_exit_time);
-            if (transition.has_exit_time && ImGui::DragFloat("Exit Time", &transition.exit_time, 0.01f, 0.0f, 1000.0f, "%.2f s"))
+            dirty_ |= ImGui::Checkbox(loc::TL("animator.transitions.has_exit_time"), &transition.has_exit_time);
+            if (transition.has_exit_time && ImGui::DragFloat(loc::TL("animator.transitions.exit_time"), &transition.exit_time, 0.01f, 0.0f, 1000.0f, "%.2f s"))
             { transition.exit_time = (std::max)(0.0f, transition.exit_time); dirty_ = true; }
-            if (ImGui::Button("Remove Transition")) remove = (int)index;
+            if (ImGui::Button(loc::TL("animator.transitions.remove_transition"))) remove = (int)index;
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -385,7 +386,7 @@ void AnimatorPanel::RenderTransitions()
 
 void AnimatorPanel::RenderBoneModifiers(EngineState& state)
 {
-    ImGui::TextUnformatted("Bone Modifiers");
+    ImGui::TextUnformatted(loc::T("animator.bonemod.bone_modifiers"));
     ImGui::Separator();
     const std::string selected_bone = preview_.SelectedBoneName();
     bool already_added = false;
@@ -393,7 +394,7 @@ void AnimatorPanel::RenderBoneModifiers(EngineState& state)
         if (modifier.bone_name == selected_bone) already_added = true;
     const bool can_add = !selected_bone.empty() && !already_added;
     if (!can_add) ImGui::BeginDisabled();
-    if (ImGui::Button("+ Add Selected Bone"))
+    if (ImGui::Button(loc::TL("animator.bonemod.add_selected_bone")))
     {
         AnimatorBoneModifier modifier;
         modifier.bone_name = selected_bone;
@@ -414,8 +415,9 @@ void AnimatorPanel::RenderBoneModifiers(EngineState& state)
             dirty_ |= InputString("Bone", modifier.bone_name);
 
             int type_index = (int)modifier.type;
-            const char* type_names[] = {"Physics", "Collision"};
-            if (ImGui::Combo("Type", &type_index, type_names, IM_ARRAYSIZE(type_names)))
+            const char* type_names[] = { loc::T("animator.bonemod.type_physics"),
+                                         loc::T("animator.bonemod.type_collision") };
+            if (ImGui::Combo(loc::TL("animator.bonemod.type"), &type_index, type_names, IM_ARRAYSIZE(type_names)))
             {
                 const AnimatorBoneModifierType new_type = (AnimatorBoneModifierType)type_index;
                 if (new_type == AnimatorBoneModifierType::Collision &&
@@ -434,7 +436,7 @@ void AnimatorPanel::RenderBoneModifiers(EngineState& state)
                 std::vector<const char*> preset_names;
                 for (std::size_t preset_index = 0; preset_index < preset_count; ++preset_index)
                     preset_names.push_back(presets[preset_index].name);
-                if (ImGui::Combo("Preset", &preset, preset_names.data(), (int)preset_names.size()) && preset > 0)
+                if (ImGui::Combo(loc::TL("animator.bonemod.preset"), &preset, preset_names.data(), (int)preset_names.size()) && preset > 0)
                 {
                     bone_modifiers::ApplyPhysicsPreset(modifier, (std::size_t)preset);
                     dirty_ = true;
@@ -453,25 +455,25 @@ void AnimatorPanel::RenderBoneModifiers(EngineState& state)
                     if (ImGui::DragFloat(field.label, field.value, field.speed, field.minimum, field.maximum, field.format))
                     { *field.value = (std::clamp)(*field.value, field.minimum, field.maximum); dirty_ = true; }
 
-                if (ImGui::TreeNode("Advanced"))
+                if (ImGui::TreeNode(loc::TL("animator.bonemod.advanced")))
                 {
-                    dirty_ |= ImGui::DragFloat3("Gravity Dir", modifier.gravity_dir.data(), .01f, -1, 1, "%.2f");
-                    dirty_ |= ImGui::DragFloat("Angle Limit", &modifier.angle_limit_deg, .5f, 0, 180, "%.1f deg");
-                    dirty_ |= ImGui::DragFloat("Radius", &modifier.radius, .001f, 0, 1, "%.3f");
-                    dirty_ |= ImGui::Checkbox("Affects Children", &modifier.affects_children);
+                    dirty_ |= ImGui::DragFloat3(loc::TL("animator.bonemod.gravity_dir"), modifier.gravity_dir.data(), .01f, -1, 1, "%.2f");
+                    dirty_ |= ImGui::DragFloat(loc::TL("animator.bonemod.angle_limit"), &modifier.angle_limit_deg, .5f, 0, 180, "%.1f deg");
+                    dirty_ |= ImGui::DragFloat(loc::TL("animator.bonemod.radius"), &modifier.radius, .001f, 0, 1, "%.3f");
+                    dirty_ |= ImGui::Checkbox(loc::TL("animator.bonemod.affects_children"), &modifier.affects_children);
                     ImGui::TreePop();
                 }
             }
             else
             {
-                if (ImGui::Button("Fit to Bone"))
+                if (ImGui::Button(loc::TL("animator.bonemod.fit_to_bone")))
                     dirty_ |= preview_.ComputeBoneFitBox(modifier.bone_name,
                         modifier.box_half_extents, modifier.box_center);
-                dirty_ |= ImGui::DragFloat3("Half Extents", modifier.box_half_extents.data(), .005f, 0, 100, "%.3f");
-                dirty_ |= ImGui::DragFloat3("Center Offset", modifier.box_center.data(), .005f, -100, 100, "%.3f");
+                dirty_ |= ImGui::DragFloat3(loc::TL("animator.bonemod.half_extents"), modifier.box_half_extents.data(), .005f, 0, 100, "%.3f");
+                dirty_ |= ImGui::DragFloat3(loc::TL("animator.bonemod.center_offset"), modifier.box_center.data(), .005f, -100, 100, "%.3f");
             }
 
-            if (ImGui::Button("Remove Modifier")) remove = (int)index;
+            if (ImGui::Button(loc::TL("animator.bonemod.remove_modifier"))) remove = (int)index;
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -565,23 +567,23 @@ void AnimatorPanel::RenderPreviewViewport(EngineState& state)
         }
     }
     else
-        ImGui::TextDisabled("(no clips)");
+        ImGui::TextDisabled(loc::T("animator.preview.no_clips"));
     if (face_clip_playing_)
     {
         ImGui::SameLine();
-        ImGui::Text("%.2f / %.2fs", face_clip_time_, face_clip_view_.Duration());
+        ImGui::Text(loc::T("animator.preview.s"), face_clip_time_, face_clip_view_.Duration());
     }
 
     ImGui::SameLine();
-    ImGui::Checkbox("Skeleton", &preview_skeleton_);
+    ImGui::Checkbox(loc::TL("animator.preview.skeleton"), &preview_skeleton_);
     ImGui::SameLine();
-    ImGui::Checkbox("Mesh", &preview_mesh_);
+    ImGui::Checkbox(loc::TL("animator.preview.mesh"), &preview_mesh_);
     ImGui::SameLine();
-    ImGui::Checkbox("Texture", &preview_texture_);
+    ImGui::Checkbox(loc::TL("animator.preview.texture"), &preview_texture_);
     if (!preview_.SelectedBoneName().empty())
     {
         ImGui::SameLine();
-        ImGui::TextDisabled("Bone: %s", preview_.SelectedBoneName().c_str());
+        ImGui::TextDisabled(loc::T("animator.preview.bone"), preview_.SelectedBoneName().c_str());
     }
     preview_time_ = preview_.TimeNormalized();
     ImGui::SetNextItemWidth((std::max)(80.0f, ImGui::GetContentRegionAvail().x - 8.0f));
@@ -634,32 +636,32 @@ void AnimatorPanel::TickTracking(EngineState& state)
 
 void AnimatorPanel::RenderLiveLink(EngineState& state)
 {
-    ImGui::SeparatorText("Live Link Face");
+    ImGui::SeparatorText(loc::T("animator.livelink.live_link_face"));
 
     const double now = ImGui::GetTime();
     const bool receiving = live_link_.IsOpen() && live_link_.Receiving(now);
     if (!live_link_.IsOpen())
     {
         ImGui::SetNextItemWidth(90.0f);
-        ImGui::InputInt("Port", &live_link_port_, 0);
+        ImGui::InputInt(loc::TL("animator.livelink.port"), &live_link_port_, 0);
         ImGui::SameLine();
-        if (ImGui::Button("Connect"))
+        if (ImGui::Button(loc::TL("animator.livelink.connect")))
         {
             if (!live_link_.Open((unsigned short)live_link_port_))
                 state.AddLog("Live Link: " + live_link_.Error(), LogLevel::Error);
         }
         if (live_link_.Error().empty())
-            ImGui::TextDisabled("Not listening");
+            ImGui::TextDisabled(loc::T("animator.livelink.not_listening"));
         else
             ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s",
                                live_link_.Error().c_str());
     }
     else
     {
-        if (ImGui::Button("Disconnect")) { live_link_.Close(); have_live_weights_ = false; }
+        if (ImGui::Button(loc::TL("animator.livelink.disconnect"))) { live_link_.Close(); have_live_weights_ = false; }
         ImGui::SameLine();
         if (receiving)
-            ImGui::Text("%s  %.0f/s  from %s", live_link_.Subject().c_str(),
+            ImGui::Text(loc::T("animator.livelink.s_from"), live_link_.Subject().c_str(),
                         live_link_.PacketsPerSecond(), live_link_.LastSender().c_str());
         else if (live_link_.RejectedCount() > 0)
             ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
@@ -667,10 +669,10 @@ void AnimatorPanel::RenderLiveLink(EngineState& state)
                 live_link_.RejectedCount(), live_link_.LastSender().c_str(),
                 live_link_.LastRejectSize());
         else if (live_link_.DatagramCount() > 0)
-            ImGui::TextDisabled("Stalled - last packet from %s",
+            ImGui::TextDisabled(loc::T("animator.livelink.hint"),
                                 live_link_.LastSender().c_str());
         else
-            ImGui::TextDisabled("Listening on %d, nothing arriving",
+            ImGui::TextDisabled(loc::T("animator.livelink.hint_2"),
                                 live_link_port_);
 
         // Nothing at all means the phone is aimed somewhere else, so say where
@@ -679,10 +681,10 @@ void AnimatorPanel::RenderLiveLink(EngineState& state)
         {
             const std::vector<std::string>& addresses = LocalAddressList();
             if (addresses.empty())
-                ImGui::TextDisabled("This PC has no network adapter with a gateway");
+                ImGui::TextDisabled(loc::T("animator.livelink.hint_3"));
             else
                 for (const std::string& address : addresses)
-                    ImGui::TextDisabled("Point the phone at  %s : %d",
+                    ImGui::TextDisabled(loc::T("animator.livelink.point_the_phone_at"),
                                         address.c_str(), live_link_port_);
         }
     }
@@ -690,9 +692,9 @@ void AnimatorPanel::RenderLiveLink(EngineState& state)
     if (!receiving) ImGui::BeginDisabled();
     if (calibrating_)
     {
-        ImGui::Text("Hold still... %.1fs", calibrate_until_ - now);
+        ImGui::Text(loc::T("animator.livelink.hold_still_s"), calibrate_until_ - now);
     }
-    else if (ImGui::Button("Calibrate Neutral"))
+    else if (ImGui::Button(loc::TL("animator.livelink.calibrate_neutral")))
     {
         live_link_.Calibration().Begin();
         calibrating_ = true;
@@ -701,9 +703,9 @@ void AnimatorPanel::RenderLiveLink(EngineState& state)
     ImGui::SameLine();
     ImGui::TextDisabled(live_link_.Calibration().Valid() ? "(calibrated)" : "(not calibrated)");
 
-    ImGui::Checkbox("Preview", &live_link_preview_);
+    ImGui::Checkbox(loc::TL("animator.livelink.preview"), &live_link_preview_);
     ImGui::SameLine();
-    ImGui::Checkbox("On selected object", &live_link_on_character_);
+    ImGui::Checkbox(loc::TL("animator.livelink.on_selected_object"), &live_link_on_character_);
     if (!receiving) ImGui::EndDisabled();
 }
 
@@ -822,8 +824,8 @@ void AnimatorPanel::UpdateFacePreview()
 void AnimatorPanel::RenderFacePoses()
 {
     AnimatorFaceConfig& face = controller_.face;
-    ImGui::SeparatorText("Expression Poses");
-    if (ImGui::SmallButton("+ Add Pose"))
+    ImGui::SeparatorText(loc::T("animator.poses.expression_poses"));
+    if (ImGui::SmallButton(loc::TL("animator.poses.add_pose")))
     {
         FaceExpressionPose pose;
         pose.name = "Pose " + std::to_string(face.poses.size() + 1);
@@ -846,13 +848,13 @@ void AnimatorPanel::RenderFacePoses()
             dirty_ |= InputString("Name", pose.name);
 
             bool previewing = (face_pose_preview_ == (int)index);
-            if (ImGui::Checkbox("Preview", &previewing))
+            if (ImGui::Checkbox(loc::TL("animator.poses.preview"), &previewing))
                 face_pose_preview_ = previewing ? (int)index : -1;
 
             ImGui::SameLine();
             if (!pose.name.empty() && face.default_pose == pose.name)
-                ImGui::TextDisabled("(default)");
-            else if (ImGui::SmallButton("Set As Default"))
+                ImGui::TextDisabled(loc::T("animator.poses.default"));
+            else if (ImGui::SmallButton(loc::TL("animator.poses.set_as_default")))
             {
                 face.default_pose = pose.name;
                 dirty_ = true;
@@ -897,9 +899,9 @@ void AnimatorPanel::RenderFacePoses()
             }
 
             if (pose.weights.empty())
-                ImGui::TextDisabled("None");
+                ImGui::TextDisabled(loc::T("animator.poses.none"));
 
-            if (ImGui::SmallButton("Remove Pose"))
+            if (ImGui::SmallButton(loc::TL("animator.poses.remove_pose")))
             {
                 if (face.default_pose == pose.name) face.default_pose.clear();
                 face.poses.erase(face.poses.begin() + (std::ptrdiff_t)index);
@@ -914,12 +916,12 @@ void AnimatorPanel::RenderFacePoses()
         ImGui::PopID();
     }
     if (face.poses.empty())
-        ImGui::TextDisabled("None");
+        ImGui::TextDisabled(loc::T("animator.poses.none"));
 }
 
 void AnimatorPanel::RenderRecord(EngineState& state)
 {
-    ImGui::SeparatorText("Record");
+    ImGui::SeparatorText(loc::T("animator.record.record"));
 
     if (!audio_devices_scanned_)
     {
@@ -935,11 +937,11 @@ void AnimatorPanel::RenderRecord(EngineState& state)
     names.push_back("(no audio)");
     for (const std::string& device : audio_devices_) names.push_back(device.c_str());
     ImGui::SetNextItemWidth(280.0f);
-    ImGui::Combo("Microphone", &audio_device_index_, names.data(), (int)names.size());
+    ImGui::Combo(loc::TL("animator.record.microphone"), &audio_device_index_, names.data(), (int)names.size());
     if (!audio_device_error_.empty())
     {
         ImGui::SameLine();
-        ImGui::TextDisabled("(%s)", audio_device_error_.c_str());
+        ImGui::TextDisabled(loc::T("animator.record.text"), audio_device_error_.c_str());
     }
 
     if (audio_device_index_ == 0)
@@ -947,12 +949,12 @@ void AnimatorPanel::RenderRecord(EngineState& state)
                            "No microphone selected - this take will be silent");
 
     ImGui::SetNextItemWidth(280.0f);
-    ImGui::InputText("Take name", take_name_, sizeof(take_name_));
+    ImGui::InputText(loc::TL("animator.record.take_name"), take_name_, sizeof(take_name_));
 
     const double now = ImGui::GetTime();
     if (recorder_.Recording())
     {
-        if (ImGui::Button("Stop"))
+        if (ImGui::Button(loc::TL("animator.record.stop")))
         {
             std::string error;
             if (recorder_.Stop(now, error))
@@ -974,15 +976,15 @@ void AnimatorPanel::RenderRecord(EngineState& state)
         }
         ImGui::SameLine();
         if (recorder_.WaitingForAudio())
-            ImGui::TextDisabled("waiting for the microphone...");
+            ImGui::TextDisabled(loc::T("animator.record.hint"));
         else
-            ImGui::Text("%.1fs  %u frames", recorder_.Elapsed(now), recorder_.FrameCount());
+            ImGui::Text(loc::T("animator.record.s_frames"), recorder_.Elapsed(now), recorder_.FrameCount());
     }
     else
     {
         const bool ready = live_link_.IsOpen() && live_link_.Receiving(now) && take_name_[0];
         if (!ready) ImGui::BeginDisabled();
-        if (ImGui::Button("Record"))
+        if (ImGui::Button(loc::TL("animator.record.record")))
         {
             const std::string relative = std::string("assets/face/") + take_name_;
             const std::string device = audio_device_index_ > 0
@@ -997,7 +999,7 @@ void AnimatorPanel::RenderRecord(EngineState& state)
         if (!live_link_.Receiving(now))
         {
             ImGui::SameLine();
-            ImGui::TextDisabled("needs tracking");
+            ImGui::TextDisabled(loc::T("animator.record.needs_tracking"));
         }
     }
 
@@ -1005,7 +1007,7 @@ void AnimatorPanel::RenderRecord(EngineState& state)
 
 void AnimatorPanel::RenderFaceClips(EngineState& state)
 {
-    ImGui::SeparatorText("Clips");
+    ImGui::SeparatorText(loc::T("animator.faceclips.clips"));
     auto& clips = controller_.face.clips;
     for (std::size_t index = 0; index < clips.size(); ++index)
     {
@@ -1035,12 +1037,12 @@ void AnimatorPanel::RenderFaceClips(EngineState& state)
         {
             ImGui::PopStyleColor();
             ImGui::SameLine();
-            ImGui::TextDisabled("missing");
+            ImGui::TextDisabled(loc::T("animator.faceclips.missing"));
         }
         ImGui::PopID();
     }
     if (clips.empty())
-        ImGui::TextDisabled("None");
+        ImGui::TextDisabled(loc::T("animator.faceclips.none"));
 }
 
 void AnimatorPanel::RenderFace(EngineState& state)
@@ -1071,13 +1073,13 @@ void AnimatorPanel::RenderControllerEditor(EngineState& state)
     dirty_ |= InputString("Controller Name", controller_.name);
     if (ImGui::BeginTabBar("AnimatorEditorTabs"))
     {
-        if (ImGui::BeginTabItem("General"))
+        if (ImGui::BeginTabItem(loc::TL("animator.controller.general")))
         {
             RenderStates();
             RenderTransitions();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Face"))
+        if (ImGui::BeginTabItem(loc::TL("animator.controller.face")))
         {
             RenderFace(state);
             ImGui::EndTabItem();
@@ -1099,10 +1101,10 @@ void AnimatorPanel::RenderControllerEditor(EngineState& state)
 void AnimatorPanel::Render(EngineState& state)
 {
     if (!state.show_animator_panel) return;
-    if (!ImGui::Begin("Animator", &state.show_animator_panel)) { ImGui::End(); return; }
+    if (!ImGui::Begin(loc::TWin("panel.animator.title", "Animator"), &state.show_animator_panel)) { ImGui::End(); return; }
     if (!state.HasProject())
     {
-        ImGui::TextDisabled("Open a project to edit animator controllers.");
+        ImGui::TextDisabled(loc::T("animator.toolbar.hint"));
         ImGui::End();
         return;
     }
@@ -1153,7 +1155,7 @@ void AnimatorPanel::Render(EngineState& state)
     }
     if (selected != 0) ImGui::EndDisabled();
 
-    if (dirty_) { ImGui::SameLine(); ImGui::TextDisabled("Unsaved changes"); }
+    if (dirty_) { ImGui::SameLine(); ImGui::TextDisabled(loc::T("animator.toolbar.unsaved_changes")); }
     if (toolbar_on_same_row)
     {
         ImGui::SameLine();

@@ -1,4 +1,5 @@
 #include "panels/MapperPanel.h"
+#include "loc/Loc.h"
 
 #include "input/ControllerMapping.h"
 #include "state/EngineState.h"
@@ -41,20 +42,18 @@ void MapperPanel::Render(EngineState& state)
     if (!state.show_mapper_panel)
         return;
 
-    if (!ImGui::Begin("Mapping", &state.show_mapper_panel))
+    if (!ImGui::Begin(loc::TWin("panel.mapping.title", "Mapping"), &state.show_mapper_panel))
     {
         ImGui::End();
         return;
     }
 
-    ImGui::TextWrapped(
-        "Bind PC keys/mouse to Xbox controls so you can drive scripts in the Play "
-        "preview without a gamepad");
+    ImGui::TextWrapped(loc::T("mapping.hint"));
 
-    if (ImGui::Button("Clear all")) { state.controller_mapping.Clear(); listening_ = -1; }
+    if (ImGui::Button(loc::TL("common.clear_all"))) { state.controller_mapping.Clear(); listening_ = -1; }
     ImGui::SameLine();
-    if (ImGui::Button("Save"))      { if (state.HasProject()) Save(state); }
-    if (!state.HasProject()) { ImGui::SameLine(); ImGui::TextDisabled("(open a project to save)"); }
+    if (ImGui::Button(loc::TL("common.save")))      { if (state.HasProject()) Save(state); }
+    if (!state.HasProject()) { ImGui::SameLine(); ImGui::TextDisabled(loc::T("mapping.no_project")); }
 
     ImGui::Separator();
 
@@ -66,9 +65,9 @@ void MapperPanel::Render(EngineState& state)
     if (ImGui::BeginTable("##mapping", 3,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
     {
-        ImGui::TableSetupColumn("Xbox control", ImGuiTableColumnFlags_WidthFixed, 110.0f);
-        ImGui::TableSetupColumn("Script call",  ImGuiTableColumnFlags_WidthFixed, 170.0f);
-        ImGui::TableSetupColumn("PC key / mouse");
+        ImGui::TableSetupColumn(loc::TL("mapping.column.control"), ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableSetupColumn(loc::TL("mapping.column.script_call"), ImGuiTableColumnFlags_WidthFixed, 170.0f);
+        ImGui::TableSetupColumn(loc::TL("mapping.column.pc_input"));
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
@@ -90,7 +89,7 @@ void MapperPanel::Render(EngineState& state)
             ImGui::TableSetColumnIndex(2);
             ImGui::PushID(i);
             const bool listening = (listening_ == i);
-            const std::string lbl = listening ? "press a key..." : input::BindingLabel(m.bindings[i]);
+            const std::string lbl = listening ? loc::T("mapping.listening") : input::BindingLabel(m.bindings[i]);
             if (listening) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.38f, 0.10f, 1.0f));
             if (ImGui::Button(lbl.c_str(), ImVec2(-1.0f, 0.0f)))
             {
@@ -101,12 +100,12 @@ void MapperPanel::Render(EngineState& state)
 
             if (ImGui::BeginPopupContextItem("##ctx"))
             {
-                if (ImGui::MenuItem("Mouse Move +X")) { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 0; }
-                if (ImGui::MenuItem("Mouse Move -X")) { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 1; }
-                if (ImGui::MenuItem("Mouse Move +Y")) { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 2; }
-                if (ImGui::MenuItem("Mouse Move -Y")) { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 3; }
+                if (ImGui::MenuItem(loc::TL("mapping.mouse.plus_x")))  { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 0; }
+                if (ImGui::MenuItem(loc::TL("mapping.mouse.minus_x"))) { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 1; }
+                if (ImGui::MenuItem(loc::TL("mapping.mouse.plus_y")))  { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 2; }
+                if (ImGui::MenuItem(loc::TL("mapping.mouse.minus_y"))) { m.bindings[i].kind = input::PcBinding::MouseMove; m.bindings[i].code = 3; }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Clear")) { m.bindings[i] = input::PcBinding(); }
+                if (ImGui::MenuItem(loc::TL("common.clear"))) { m.bindings[i] = input::PcBinding(); }
                 ImGui::EndPopup();
             }
             ImGui::PopID();
